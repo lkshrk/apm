@@ -155,6 +155,13 @@ def run_lsp_integration(  # noqa: PLR0913
             logger.verbose_detail(f"Collected {len(transitive_lsp)} transitive LSP dependency(ies)")
             lsp_deps = LSPIntegrator.deduplicate(lsp_deps + transitive_lsp)
 
+    from apm_cli.security.executables import filter_lsp_by_allow_executables
+
+    package_allow = getattr(apm_package, "allow_executables", None)
+    if not isinstance(package_allow, dict):
+        package_allow = None
+    lsp_deps = filter_lsp_by_allow_executables(lsp_deps, package_allow, logger)
+
     lsp_count = 0
     new_lsp_servers: builtins.set = builtins.set()
 

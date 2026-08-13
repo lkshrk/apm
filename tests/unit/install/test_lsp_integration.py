@@ -160,6 +160,32 @@ class TestRunLspIntegration:
         mock_integrator.install.assert_called_once()
 
     @patch(_PATCH_TARGET)
+    def test_filters_unapproved_lsp_dependencies(self, mock_integrator, tmp_path):
+        """An explicit executable gate blocks LSP servers until approved."""
+        apm_package = MagicMock()
+        apm_package.get_lsp_dependencies.return_value = [_make_dep("pyright")]
+        apm_package.allow_executables = {}
+        mock_integrator.collect_transitive.return_value = []
+        mock_integrator.get_server_names.return_value = set()
+        mock_integrator.get_server_configs.return_value = {}
+        modules = tmp_path / "apm_modules"
+        modules.mkdir()
+
+        count = run_lsp_integration(
+            apm_package=apm_package,
+            apm_modules_path=modules,
+            lock_path=tmp_path / "apm.lock.yaml",
+            existing_lock=None,
+            project_root=tmp_path,
+            user_scope=False,
+            should_install=True,
+            logger=_mock_logger(),
+        )
+
+        assert count == 0
+        mock_integrator.install.assert_not_called()
+
+    @patch(_PATCH_TARGET)
     def test_resolves_targets_for_install(self, mock_integrator, tmp_path):
         """Install orchestration writes only to resolved LSP targets."""
         deps = [_make_dep("pyright")]

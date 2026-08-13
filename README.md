@@ -1,12 +1,12 @@
-# APM – Agent Package Manager
+# APM - Agent Package Manager
 
 **An open-source, community-driven dependency manager for AI agents.**
 
-Think `package.json`, `requirements.txt`, or `Cargo.toml` — but for AI agent configuration.
+Think `package.json`, `requirements.txt`, or `Cargo.toml` -- but for AI agent configuration.
 
 GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini | Windsurf | Kiro
 
-**[Documentation](https://microsoft.github.io/apm/)** · **[Quick Start](https://microsoft.github.io/apm/getting-started/quick-start/)** · **[Agent Plugins v1 migration](https://microsoft.github.io/apm/getting-started/agent-plugins-v1-migration/)** · **[CLI Reference](https://microsoft.github.io/apm/reference/cli-commands/)** · **[Roadmap](https://github.com/orgs/microsoft/projects/2304)**
+**[Documentation](https://microsoft.github.io/apm/)** | **[Quick Start](https://microsoft.github.io/apm/getting-started/quick-start/)** | **[Agent Plugins v1 migration](https://microsoft.github.io/apm/getting-started/agent-plugins-v1-migration/)** | **[CLI Reference](https://microsoft.github.io/apm/reference/cli-commands/)** | **[Roadmap](https://github.com/orgs/microsoft/projects/2304)**
 
 ---
 
@@ -15,12 +15,12 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 
 ## Why APM
 
-AI coding agents need context to be useful — standards, prompts, skills, plugins — but today every developer sets this up manually. Nothing is portable nor reproducible. There's no manifest for it.
+AI coding agents need context to be useful -- standards, prompts, skills, plugins -- but today every developer sets this up manually. Nothing is portable nor reproducible. There's no manifest for it.
 
 **APM fixes this.** Declare your project's agentic dependencies once in `apm.yml`, and every developer who clones your repo gets the same agent setup in seconds. `apm pack` and `apm plugin init` now default to Agent Plugins v1; use `--claude-plugin` only to keep the historical Claude layout.
 
 ```yaml
-# apm.yml — ships with your project
+# apm.yml -- ships with your project
 name: your-project
 version: 1.0.0
 dependencies:
@@ -65,36 +65,36 @@ One command, no configuration -- VS Code and GitHub Copilot read the file automa
 
 ### 1. Portable by manifest
 
-One `apm.yml` describes every primitive your agents need — instructions, skills, prompts, agents, hooks, plugins, MCP servers — and `apm install` reproduces the exact same setup across every client on every machine. `apm.lock.yaml` pins the resolved tree the way `package-lock.json` does for npm.
+One `apm.yml` describes every primitive your agents need -- instructions, skills, prompts, agents, hooks, plugins, MCP servers -- and `apm install` reproduces the exact same setup across every client on every machine. `apm.lock.yaml` pins the resolved tree the way `package-lock.json` does for npm.
 
 - **[One manifest for everything](https://microsoft.github.io/apm/reference/primitive-types/)** -- declared once, deployed across Copilot, Claude, Grok Build, Cursor, OpenCode, Codex, Gemini, Windsurf, Kiro
-- **[Install from anywhere](https://microsoft.github.io/apm/guides/dependencies/)** — GitHub, GitLab, Bitbucket, Azure DevOps, GitHub Enterprise, Gitea, Gogs, any git host
-- **[Transitive dependencies](https://microsoft.github.io/apm/guides/dependencies/)** — packages can depend on packages; APM resolves the full tree
-- **[Author plugins](https://microsoft.github.io/apm/guides/plugins/)** — build Copilot, Claude, and Cursor plugins with dependency management, then export a standard `plugin.json`. `apm pack` and `apm plugin init` now produce Agent Plugins v1 by default; use `--claude-plugin` to preserve the historical Claude plugin layout, or `--format apm` to emit the legacy APM bundle.
-- **[Marketplaces](https://microsoft.github.io/apm/guides/marketplaces/)** — install plugins from curated registries in one command, deployed across all targets and locked
-- **[Pack & distribute](https://microsoft.github.io/apm/guides/pack-distribute/)** — `apm pack` bundles your configuration as a zipped package or a standalone plugin
-- **[CI/CD ready](https://github.com/microsoft/apm-action)** — GitHub Action for automated workflows
+- **[Install from anywhere](https://microsoft.github.io/apm/guides/dependencies/)** -- GitHub, GitLab, Bitbucket, Azure DevOps, GitHub Enterprise, Gitea, Gogs, any git host
+- **[Transitive dependencies](https://microsoft.github.io/apm/guides/dependencies/)** -- packages can depend on packages; APM resolves the full tree
+- **[Author plugins](https://microsoft.github.io/apm/guides/plugins/)** -- build Copilot, Claude, and Cursor plugins with dependency management, then export a standard `plugin.json`. `apm pack` and `apm plugin init` now produce Agent Plugins v1 by default; use `--claude-plugin` to preserve the historical Claude plugin layout, or `--format apm` to emit the legacy APM bundle.
+- **[Marketplaces](https://microsoft.github.io/apm/guides/marketplaces/)** -- install plugins from curated registries in one command, deployed across all targets and locked
+- **[Pack & distribute](https://microsoft.github.io/apm/guides/pack-distribute/)** -- `apm pack` bundles your configuration as a zipped package or a standalone plugin
+- **[CI/CD ready](https://github.com/microsoft/apm-action)** -- GitHub Action for automated workflows
 
 ### 2. Secure by default
 
-Agent context is executable in effect — a prompt is a program for an LLM. APM treats it that way. Every install scans for hidden Unicode that can hijack agent behavior; the lockfile pins integrity hashes; transitive MCP servers are gated by trust prompts.
+Agent context is executable in effect -- a prompt is a program for an LLM. APM treats it that way. Every install scans for hidden Unicode that can hijack agent behavior; the lockfile pins integrity hashes; transitive MCP servers are gated by trust prompts.
 
-- **[Content security](https://microsoft.github.io/apm/enterprise/security/)** — `apm install` blocks compromised packages before agents read them; `apm audit` runs the same checks on demand
-- **[Lockfile integrity](https://microsoft.github.io/apm/enterprise/governance/)** — `apm.lock` records resolved sources and content hashes for full provenance
-- **[SBOM export](https://microsoft.github.io/apm/reference/cli/lock/)** — `apm lock export --format cyclonedx|spdx` emits a standard inventory of what reached disk, straight from the lockfile — provenance for procurement, not a compliance attestation
-- **[Drift detection](https://microsoft.github.io/apm/guides/drift-detection/)** — `apm audit` rebuilds your agent context in scratch and diffs it against your working tree to catch hand-edits before they ship
-- **[MCP trust boundaries](https://microsoft.github.io/apm/guides/mcp-servers/)** — transitive MCP servers require explicit consent
+- **[Content security](https://microsoft.github.io/apm/enterprise/security/)** -- `apm install` blocks compromised packages before agents read them; `apm audit` runs the same checks on demand
+- **[Lockfile integrity](https://microsoft.github.io/apm/enterprise/governance/)** -- `apm.lock` records resolved sources and content hashes for full provenance
+- **[SBOM export](https://microsoft.github.io/apm/reference/cli/lock/)** -- `apm lock export --format cyclonedx|spdx` emits a standard inventory of what reached disk, straight from the lockfile -- provenance for procurement, not a compliance attestation
+- **[Drift detection](https://microsoft.github.io/apm/guides/drift-detection/)** -- `apm audit` rebuilds your agent context in scratch and diffs it against your working tree to catch hand-edits before they ship
+- **[MCP trust boundaries](https://microsoft.github.io/apm/guides/mcp-servers/)** -- transitive MCP servers require explicit consent
 
 ### 3. Governed by policy
 
-`apm-policy.yml` lets a security team say *"these are the only sources, scopes, and primitives this org will allow"* and have every `apm install` enforce it — with tighten-only inheritance from enterprise to org to repo, a published bypass contract, and audit-mode CI gates.
+`apm-policy.yml` lets a security team say *"these are the only sources, scopes, and primitives this org will allow"* and have every `apm install` enforce it -- with tighten-only inheritance from enterprise to org to repo, a published bypass contract, and audit-mode CI gates.
 
 apm-policy.yml governs what gets installed; your agent harness governs what runs. The two planes do not overlap.
 
-- **[Governance Guide](https://microsoft.github.io/apm/enterprise/governance-guide/)** — the canonical enterprise reference: enforcement points, bypass contract, air-gapped story, failure semantics, rollout playbook
-- **[Policy reference](https://microsoft.github.io/apm/enterprise/policy-reference/)** — every check, every field, every default
-- **[Adoption playbook](https://microsoft.github.io/apm/enterprise/adoption-playbook/)** — staged rollout from warn to block across hundreds of repos
-- **[GitHub rulesets integration](https://microsoft.github.io/apm/integrations/github-rulesets/)** — wire `apm audit --ci` into branch protection
+- **[Governance Guide](https://microsoft.github.io/apm/enterprise/governance-guide/)** -- the canonical enterprise reference: enforcement points, bypass contract, air-gapped story, failure semantics, rollout playbook
+- **[Policy reference](https://microsoft.github.io/apm/enterprise/policy-reference/)** -- every check, every field, every default
+- **[Adoption playbook](https://microsoft.github.io/apm/enterprise/adoption-playbook/)** -- staged rollout from warn to block across hundreds of repos
+- **[GitHub rulesets integration](https://microsoft.github.io/apm/integrations/github-rulesets/)** -- wire `apm audit --ci` into branch protection
 
 ## Get Started
 
@@ -159,9 +159,9 @@ See the **[Getting Started guide](https://microsoft.github.io/apm/getting-starte
 
 ## Works with agentrc
 
-[agentrc](https://github.com/microsoft/agentrc) analyzes your codebase and generates tailored agent instructions — architecture, conventions, build commands — from real code, not templates.
+[agentrc](https://github.com/microsoft/agentrc) analyzes your codebase and generates tailored agent instructions -- architecture, conventions, build commands -- from real code, not templates.
 
-Use agentrc to author high-quality instructions, then package them with APM to share across your org. The `.instructions.md` format is shared by both tools — no conversion needed when moving instructions into APM packages.
+Use agentrc to author high-quality instructions, then package them with APM to share across your org. The `.instructions.md` format is shared by both tools -- no conversion needed when moving instructions into APM packages.
 
 ## Community
 
@@ -169,11 +169,11 @@ Created by [@danielmeppiel](https://github.com/danielmeppiel). Maintained by [@d
 
 - [Roadmap & Discussions](https://github.com/microsoft/apm/discussions/116)
 - [Contributing](CONTRIBUTING.md)
-- [AI Native Development guide](https://danielmeppiel.github.io/awesome-ai-native) — a practical learning path for AI-native development
+- [AI Native Development guide](https://danielmeppiel.github.io/awesome-ai-native) -- a practical learning path for AI-native development
 
 ---
 
-**Built on open standards:** [AGENTS.md](https://agents.md) · [Agent Skills](https://agentskills.io) · [MCP](https://modelcontextprotocol.io)
+**Built on open standards:** [AGENTS.md](https://agents.md) | [Agent Skills](https://agentskills.io) | [MCP](https://modelcontextprotocol.io)
 
 ## Trademarks
 

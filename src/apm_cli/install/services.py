@@ -131,7 +131,7 @@ def _check_executable_approval(
     allow_executables: builtins.dict[str, builtins.dict[str, bool]] | None,
     *,
     ctx: InstallContext | None = None,
-) -> tuple[bool, bool, bool, bool]:
+) -> tuple[bool, bool, bool, bool, bool]:
     """Delegate to ``exec_gate.check_executable_approval``."""
     from apm_cli.install.exec_gate import check_executable_approval
 
@@ -356,9 +356,13 @@ def integrate_package_primitives(  # noqa: PLR0913
 
     # Executable approval gate (npm v12-style default-deny). hooks/bin gate
     # below (~424, ~585); mcp/canvas unused (mcp filtered upstream, canvas re-derived ~433).
-    _hooks_approved, _bin_approved, _mcp_approved, _canvas_approved = _check_executable_approval(
-        package_name, package_info, allow_executables, ctx=ctx
-    )
+    (
+        _hooks_approved,
+        _bin_approved,
+        _mcp_approved,
+        _canvas_approved,
+        _lsp_approved,
+    ) = _check_executable_approval(package_name, package_info, allow_executables, ctx=ctx)
 
     from apm_cli.install.target_warnings import warn_unsupported_primitives
 
@@ -862,7 +866,7 @@ def integrate_local_bundle(
             # consumer projects.  Match the deploy-loop semantics so
             # case-folding filesystems do not let a renamed file slip
             # into pack_files unnecessarily.
-            if rel == "apm.lock.yaml" or rel.lower() in bundle_metadata_files:
+            if rel.lower() == "apm.lock.yaml" or rel.lower() in bundle_metadata_files:
                 continue
             pack_files[rel] = hashlib.sha256(fp.read_bytes()).hexdigest()
 
