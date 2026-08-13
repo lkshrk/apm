@@ -72,6 +72,69 @@ class TestPluginInitCommand:
         assert "init" in result.output
         assert "plugin" in result.output.lower()
 
+    def test_plugin_init_defaults_to_agent_plugin_scaffold(self):
+        """Default `apm plugin init` scaffolds the Agent Plugins v1 manifest."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                result = self.runner.invoke(cli, ["plugin", "init", "demo", "--yes"])
+                assert result.exit_code == 0, result.output
+                assert Path("plugin.json").exists()
+                # Agent plugin scaffold must include extensions.com.microsoft.apm.schemaVersion == '1'
+                import json
+
+                pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
+                assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
+                assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_explicit_plugin_flag_matches_default(self):
+        """`--plugin` explicitly selects the same Agent Plugins v1 scaffold."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                result = self.runner.invoke(cli, ["plugin", "init", "demo", "--plugin", "--yes"])
+                assert result.exit_code == 0, result.output
+                import json
+
+                pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
+                assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
+                assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_claude_mode_preserves_legacy_scaffold(self):
+        """`--claude-plugin` must produce the legacy Claude-compatible plugin.json."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                result = self.runner.invoke(
+                    cli, ["plugin", "init", "demo", "--claude-plugin", "--yes"]
+                )
+                assert result.exit_code == 0, result.output
+                import json
+
+                pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
+                # Legacy Claude scaffold does not include Agent Plugins $schema or extensions
+                assert "$schema" not in pj
+                assert "extensions" not in pj
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_conflicting_selectors_is_usage_error(self):
+        """`--plugin` and `--claude-plugin` are mutually exclusive (exit 2)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                result = self.runner.invoke(
+                    cli, ["plugin", "init", "demo", "--plugin", "--claude-plugin", "--yes"]
+                )
+                assert result.exit_code == 2
+                assert "mutually exclusive" in result.output.lower()
+            finally:
+                os.chdir(self.original_dir)
+
 
 class TestInitDeprecationWarnings:
     """Legacy ``apm init --plugin`` / ``--marketplace`` flags still work
@@ -104,6 +167,12 @@ class TestInitDeprecationWarnings:
                 assert "v0.16" in result.stderr
                 # And the legacy flag STILL works (cwd is now demo/)
                 assert Path("plugin.json").exists()
+                # It should follow the Agent Plugins default scaffold
+                import json
+
+                pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
+                assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
+                assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
             finally:
                 os.chdir(self.original_dir)
 

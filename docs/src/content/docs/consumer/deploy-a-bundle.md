@@ -1,6 +1,8 @@
 ---
 title: Deploy a local bundle
 description: Install a plugin-format bundle from a directory or archive without touching apm.yml.
+sidebar:
+  order: 6
 ---
 
 You have a bundle on disk -- a directory or `.zip` someone handed you (or a
@@ -17,30 +19,48 @@ of declaring a dependency in `apm.yml` and resolving it from a registry, you
 deploy a self-contained bundle directly. `apm.yml` is **not modified** --
 the install is imperative, like `dpkg -i` next to `apt install`.
 
+If you still have the historical Claude layout or a legacy APM bundle,
+repack it first. See [Agent Plugins v1 migration](../../getting-started/agent-plugins-v1-migration/).
+
 ## What counts as a bundle
 
-A plugin-format bundle is a directory, zip archive, or legacy gzipped tarball
-with a `plugin.json` at the root and primitive folders alongside it:
+An Agent Plugin v1 bundle is a directory, zip archive, or legacy gzipped tarball with a root `plugin.json` and a converged content tree. Typical layout:
 
 ```
 my-bundle/
 +-- plugin.json
-+-- agents/
 +-- skills/
-+-- commands/
-+-- hooks/
-+-- apm.lock.yaml        # optional: bundle integrity manifest
++-- com.microsoft.apm/
+|   +-- agents/
+|   +-- commands/
+|   +-- instructions/
+|   +-- hooks/
+|   +-- extensions/
+|   +-- lsp.json (optional)
++-- mcp.json               # optional Agent Plugin MCP metadata
++-- apm.lock.yaml          # recommended: bundle integrity manifest
 ```
 
-`plugin.json` requires only a `name`. APM also recognises `plugin.json`
-under `.github/plugin/`, `.claude-plugin/`, or `.cursor-plugin/`. For the
-full schema see [Package anatomy](../../concepts/package-anatomy/).
+Notes:
 
-The optional `apm.lock.yaml` carries `pack.bundle_files` -- a SHA-256
-manifest written by `apm pack --format plugin`. When present, APM verifies
-every listed file before deploying. When absent, older bundles still install
-with a warning unless policy requires hashes. With
-`security.integrity.require_hashes: true`, APM fails closed before deploy.
+- `plugin.json` is the Agent Plugins v1 manifest (only `name` is required). APM will also recognise `plugin.json` under `.github/plugin/`, `.claude-plugin/`, or `.cursor-plugin/` for legacy-compatible packages.
+- `apm.lock.yaml` is the preferred integrity manifest produced by `apm pack`. When present, APM verifies every listed file before deploying. Bundles without `apm.lock.yaml` still install (with a warning) unless org policy requires integrity hashes.
+- Root `mcp.json` is Agent Plugin metadata. Legacy Claude bundles may use `.mcp.json`. APM routes either form into each resolved target's native MCP configuration instead of deploying it verbatim.
+
+Built-in protection blocks critical findings when you run `apm install`,
+`apm compile`, or `apm unpack`. `apm audit` is the explicit reporting,
+remediation, and standalone scan tool. See [Security Model](../../enterprise/security/#local-bundle-install-trust-model)
+and [`apm audit`](../../reference/cli/audit/).
+
+Placeholder and retained-layout semantics:
+
+- APM retains project installs under `apm_modules/.agent-plugins/<plugin-id>/` and global installs under `$APM_HOME/agent-plugins/<plugin-id>/`. Persistent data lives under the corresponding `.plugin-data/<plugin-id>/` or `$APM_HOME/plugin-data/<plugin-id>/` directory. The stable `<plugin-id>` combines the validated plugin name with source identity.
+  - `${PLUGIN_ROOT}` → path to the bundle root (the materialized plugin directory)
+  - `${PLUGIN_DATA}` → path to the persistent plugin data directory
+
+APM expands these placeholders exactly once in MCP arguments, environment values, and `cwd`. It validates `./`-relative commands and working directories against the retained plugin root. Invalid MCP servers are skipped without disabling valid siblings.
+
+These behaviors ensure bundle-origin paths and runtime files resolve consistently whether the bundle is installed from an archive, a checked-in release directory, or from a retained plugin root used by a long-lived host.
 
 ## How the install works
 

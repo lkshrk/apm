@@ -6,7 +6,7 @@ Think `package.json`, `requirements.txt`, or `Cargo.toml` — but for AI agent c
 
 GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini | Windsurf | Kiro
 
-**[Documentation](https://microsoft.github.io/apm/)** · **[Quick Start](https://microsoft.github.io/apm/getting-started/quick-start/)** · **[CLI Reference](https://microsoft.github.io/apm/reference/cli-commands/)** · **[Roadmap](https://github.com/orgs/microsoft/projects/2304)**
+**[Documentation](https://microsoft.github.io/apm/)** · **[Quick Start](https://microsoft.github.io/apm/getting-started/quick-start/)** · **[Agent Plugins v1 migration](https://microsoft.github.io/apm/getting-started/agent-plugins-v1-migration/)** · **[CLI Reference](https://microsoft.github.io/apm/reference/cli-commands/)** · **[Roadmap](https://github.com/orgs/microsoft/projects/2304)**
 
 ---
 
@@ -17,7 +17,7 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 
 AI coding agents need context to be useful — standards, prompts, skills, plugins — but today every developer sets this up manually. Nothing is portable nor reproducible. There's no manifest for it.
 
-**APM fixes this.** Declare your project's agentic dependencies once in `apm.yml`, and every developer who clones your repo gets a fully configured agent setup in seconds — with transitive dependency resolution, just like npm or pip. It's also the first tool that lets you **author plugins** with a real dependency manager and export standard `plugin.json` packages.
+**APM fixes this.** Declare your project's agentic dependencies once in `apm.yml`, and every developer who clones your repo gets the same agent setup in seconds. `apm pack` and `apm plugin init` now default to Agent Plugins v1; use `--claude-plugin` only to keep the historical Claude layout.
 
 ```yaml
 # apm.yml — ships with your project
@@ -70,7 +70,7 @@ One `apm.yml` describes every primitive your agents need — instructions, skill
 - **[One manifest for everything](https://microsoft.github.io/apm/reference/primitive-types/)** -- declared once, deployed across Copilot, Claude, Grok Build, Cursor, OpenCode, Codex, Gemini, Windsurf, Kiro
 - **[Install from anywhere](https://microsoft.github.io/apm/guides/dependencies/)** — GitHub, GitLab, Bitbucket, Azure DevOps, GitHub Enterprise, Gitea, Gogs, any git host
 - **[Transitive dependencies](https://microsoft.github.io/apm/guides/dependencies/)** — packages can depend on packages; APM resolves the full tree
-- **[Author plugins](https://microsoft.github.io/apm/guides/plugins/)** — build Copilot, Claude, and Cursor plugins with dependency management, then export standard `plugin.json`
+- **[Author plugins](https://microsoft.github.io/apm/guides/plugins/)** — build Copilot, Claude, and Cursor plugins with dependency management, then export a standard `plugin.json`. `apm pack` and `apm plugin init` now produce Agent Plugins v1 by default; use `--claude-plugin` to preserve the historical Claude plugin layout, or `--format apm` to emit the legacy APM bundle.
 - **[Marketplaces](https://microsoft.github.io/apm/guides/marketplaces/)** — install plugins from curated registries in one command, deployed across all targets and locked
 - **[Pack & distribute](https://microsoft.github.io/apm/guides/pack-distribute/)** — `apm pack` bundles your configuration as a zipped package or a standalone plugin
 - **[CI/CD ready](https://github.com/microsoft/apm-action)** — GitHub Action for automated workflows

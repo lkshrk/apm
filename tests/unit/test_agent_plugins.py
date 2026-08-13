@@ -1,0 +1,347 @@
+"""Unit tests for the Agent Plugins v1 contract helpers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from jsonschema import Draft202012Validator
+
+from apm_cli.agent_plugins import (
+    AGENT_PLUGINS_VERSION,
+    COM_MICROSOFT_APM_NAMESPACE,
+    COM_MICROSOFT_APM_SCHEMA_VERSION,
+    MCP_SCHEMA_ID,
+    PLUGIN_SCHEMA_ID,
+    read_json_document,
+    supports_mcp_schema_id,
+    supports_plugin_schema_id,
+    validate_lsp_extension_document,
+    validate_mcp_config_document,
+    validate_plugin_manifest_document,
+)
+
+_SCHEMA_DIR = Path(__file__).parent.parent / "fixtures" / "schemas"
+_PLUGIN_SCHEMA_PATH = _SCHEMA_DIR / "agent-plugins-v1.0.0-plugin.schema.json"
+_MCP_SCHEMA_PATH = _SCHEMA_DIR / "agent-plugins-v1.0.0-mcp.schema.json"
+
+
+@pytest.fixture(scope="module")
+def plugin_schema() -> dict:
+    return json.loads(_PLUGIN_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def mcp_schema() -> dict:
+    return json.loads(_MCP_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _validate_against_schema(schema: dict, document: dict) -> None:
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    errors = sorted(validator.iter_errors(document), key=lambda error: list(error.absolute_path))
+    assert errors == [], "\n".join(
+        f"{list(error.absolute_path)}: {error.message}" for error in errors
+    )
+
+
+class TestVendoredSchemas:
+    """Vendored schemas must stay aligned with the official v1 documents."""
+
+    def test_constants_match_v1_contract(self) -> None:
+        assert AGENT_PLUGINS_VERSION == "1.0.0"
+        assert COM_MICROSOFT_APM_NAMESPACE == "com.microsoft.apm"
+        assert COM_MICROSOFT_APM_SCHEMA_VERSION == "1"
+        assert PLUGIN_SCHEMA_ID.endswith("/plugin.schema.json")
+        assert MCP_SCHEMA_ID.endswith("/mcp.schema.json")
+
+    def test_plugin_schema_fixture_integrity(self, plugin_schema: dict) -> None:
+        assert plugin_schema["$id"] == PLUGIN_SCHEMA_ID
+        assert plugin_schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        _validate_against_schema(
+            plugin_schema,
+            {
+                "$schema": PLUGIN_SCHEMA_ID,
+                "name": "agent-plugin",
+                "extensions": {"com.microsoft.apm": {"schemaVersion": "1"}},
+            },
+        )
+
+    def test_mcp_schema_fixture_integrity(self, mcp_schema: dict) -> None:
+        assert mcp_schema["$id"] == MCP_SCHEMA_ID
+        assert mcp_schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+        _validate_against_schema(
+            mcp_schema,
+            {"$schema": MCP_SCHEMA_ID, "mcpServers": {}},
+        )
+
+
+class TestLocalPluginManifestValidation:
+    """Local plugin manifest validation matches the Agent Plugins rules."""
+
+    def test_supported_and_unsupported_schema_ids(self) -> None:
+        assert supports_plugin_schema_id(PLUGIN_SCHEMA_ID) is True
+        assert (
+            supports_plugin_schema_id("https://agent-plugins.org/schemas/0.9.0/plugin.schema.json")
+            is False
+        )
+
+    def test_strict_name_rules(self) -> None:
+        result = validate_plugin_manifest_document(
+            {
+                "$schema": PLUGIN_SCHEMA_ID,
+                "name": "good.plugin-1",
+                "extensions": {"com.microsoft.apm": {"schemaVersion": "1"}},
+            }
+        )
+        assert result.is_valid is True
+        assert result.normalized is not None
+        assert result.normalized["name"] == "good.plugin-1"
+
+    @pytest.mark.parametrize(
+        "name",
+        ["Bad-Name", "-start", "end-", "too.many..dots", "has--double", ""],
+    )
+    def test_invalid_plugin_names_fail(self, name: str) -> None:
+        result = validate_plugin_manifest_document(
+            {
+                "$schema": PLUGIN_SCHEMA_ID,
+                "name": name,
+                "extensions": {"com.microsoft.apm": {"schemaVersion": "1"}},
+            }
+        )
+        assert result.is_valid is False
+        assert result.errors
+
+    def test_unknown_top_level_fields_are_warned_and_ignored(self) -> None:
+        result = validate_plugin_manifest_document(
+            {
+                "$schema": PLUGIN_SCHEMA_ID,
+                "name": "plugin-name",
+                "mystery": "ignored",
+                "extensions": {"com.microsoft.apm": {"schemaVersion": "1"}},
+            }
+        )
+        assert result.is_valid is True
+        assert any("mystery" in warning for warning in result.warnings)
+        assert result.normalized is not None
+        assert "mystery" not in result.normalized
+
+    def test_non_object_extensions_are_ignored_with_warning(self) -> None:
+        result = validate_plugin_manifest_document(
+            {
+                "$schema": PLUGIN_SCHEMA_ID,
+                "name": "plugin-name",
+                "extensions": "ignore me",
+            }
+        )
+        assert result.is_valid is True
+        assert result.normalized == {"$schema": PLUGIN_SCHEMA_ID, "name": "plugin-name"}
+        assert any("extensions field ignored" in warning for warning in result.warnings)
+
+    def test_supported_extension_block_is_optional(self) -> None:
+        result = validate_plugin_manifest_document(
+            {"$schema": PLUGIN_SCHEMA_ID, "name": "plugin-name"}
+        )
+        assert result.is_valid is True
+
+    def test_ordinary_type_violations_are_fatal(self) -> None:
+        result = validate_plugin_manifest_document(
+            {"$schema": PLUGIN_SCHEMA_ID, "name": "plugin-name", "keywords": ["ok", 1]}
+        )
+        assert result.is_valid is False
+        assert any("keywords" in error for error in result.errors)
+
+
+class TestLocalMcpValidation:
+    """Local MCP validation keeps top-level and server-level failure boundaries."""
+
+    def test_supported_and_unsupported_schema_ids(self) -> None:
+        assert supports_mcp_schema_id(MCP_SCHEMA_ID) is True
+        assert (
+            supports_mcp_schema_id("https://agent-plugins.org/schemas/0.9.0/mcp.schema.json")
+            is False
+        )
+
+    def test_top_level_validation_rejects_unknown_fields(self) -> None:
+        result = validate_mcp_config_document(
+            {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {},
+                "unexpected": True,
+            }
+        )
+        assert result.is_valid is False
+        assert any("unexpected" in error for error in result.errors)
+
+    @pytest.mark.parametrize(
+        "server_kind, invalid_server_name, expected_present_names",
+        [
+            (
+                "stdio",
+                "remote-bad",
+                ("stdio-ok", "sse-ok"),
+            ),
+            (
+                "streamable-http",
+                "remote-bad",
+                ("stdio-ok", "sse-ok"),
+            ),
+            (
+                "sse",
+                "sse-bad",
+                ("stdio-ok", "remote-ok"),
+            ),
+        ],
+    )
+    def test_per_server_isolation(
+        self,
+        server_kind: str,
+        invalid_server_name: str,
+        expected_present_names: tuple[str, ...],
+    ) -> None:
+        if server_kind == "stdio":
+            document = {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {
+                    "stdio-ok": {"type": "stdio", "command": "./bin/tool", "cwd": "./data"},
+                    invalid_server_name: {
+                        "type": "streamable-http",
+                        "url": "http://example.com/mcp",
+                    },
+                    "sse-ok": {"type": "sse", "url": "https://example.com/sse"},
+                },
+            }
+        elif server_kind == "streamable-http":
+            document = {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {
+                    "stdio-ok": {"type": "stdio", "command": "./bin/tool"},
+                    invalid_server_name: {
+                        "type": "streamable-http",
+                        "url": "http://example.com/mcp",
+                    },
+                    "sse-ok": {"type": "sse", "url": "https://example.com/sse"},
+                },
+            }
+        else:
+            document = {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {
+                    "stdio-ok": {"type": "stdio", "command": "./bin/tool"},
+                    "remote-ok": {"type": "streamable-http", "url": "https://example.com/mcp"},
+                    invalid_server_name: {"type": "sse", "url": "https://example.com/#frag"},
+                },
+            }
+
+        result = validate_mcp_config_document(document)
+        assert result.is_valid is False
+        assert result.normalized is not None
+        for name in expected_present_names:
+            assert name in result.normalized["mcpServers"]
+        assert invalid_server_name not in result.normalized["mcpServers"]
+        assert any("url" in error or "command" in error for error in result.errors)
+
+    def test_stdio_env_and_headers_are_strict(self) -> None:
+        result = validate_mcp_config_document(
+            {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {
+                    "tool": {
+                        "type": "stdio",
+                        "command": "./bin/tool",
+                        "env": {"PLUGIN_ROOT": "nope"},
+                    }
+                },
+            }
+        )
+        assert result.is_valid is False
+        assert any("reserved name" in error for error in result.errors)
+
+    def test_remote_url_rules_are_strict(self) -> None:
+        result = validate_mcp_config_document(
+            {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {
+                    "tool": {
+                        "type": "streamable-http",
+                        "url": "http://example.com/mcp",
+                    }
+                },
+            }
+        )
+        assert result.is_valid is False
+        assert any("url" in error for error in result.errors)
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--token=literal"],
+            ["--api-key", "literal"],
+            ["Authorization: Bearer literal"],
+        ],
+    )
+    def test_stdio_args_reject_literal_secrets(self, args: list[str]) -> None:
+        result = validate_mcp_config_document(
+            {
+                "$schema": MCP_SCHEMA_ID,
+                "mcpServers": {"tool": {"type": "stdio", "command": "tool", "args": args}},
+            }
+        )
+
+        assert result.is_valid is False
+        assert any("literal secret" in error for error in result.errors)
+
+
+class TestLspExtensionValidation:
+    """The APM LSP extension is bounded by one strict validator."""
+
+    def test_relative_command_and_mapping_are_valid(self) -> None:
+        result = validate_lsp_extension_document(
+            {
+                "lspServers": {
+                    "pyright": {
+                        "command": "./bin/pyright",
+                        "extensionToLanguage": {".py": "python"},
+                    }
+                }
+            }
+        )
+
+        assert result.is_valid is True
+
+    def test_literal_secret_env_is_rejected(self) -> None:
+        result = validate_lsp_extension_document(
+            {
+                "lspServers": {
+                    "pyright": {
+                        "command": "pyright",
+                        "extensionToLanguage": {".py": "python"},
+                        "env": {"API_TOKEN": "literal"},
+                    }
+                }
+            }
+        )
+
+        assert result.is_valid is False
+        assert any("literal secret" in error for error in result.errors)
+
+
+class TestFileLoading:
+    """File helpers use bounded local JSON reads."""
+
+    def test_read_json_document_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "manifest.json"
+        payload = {"$schema": PLUGIN_SCHEMA_ID, "name": "round-trip"}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert read_json_document(path) == payload
+
+    def test_read_json_document_rejects_symlink(self, tmp_path: Path) -> None:
+        target = tmp_path / "target.json"
+        target.write_text("{}", encoding="utf-8")
+        link = tmp_path / "manifest.json"
+        link.symlink_to(target)
+
+        with pytest.raises(ValueError, match="must not be a symlink"):
+            read_json_document(link)

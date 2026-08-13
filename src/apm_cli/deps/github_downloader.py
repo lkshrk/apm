@@ -1823,7 +1823,8 @@ class GitHubPackageDownloader:
                     package.source = dep_ref.to_github_url()
                     package.resolved_commit = resolved_ref.resolved_commit
                     if (
-                        validation_result.package_type == PackageType.MARKETPLACE_PLUGIN
+                        validation_result.package_type
+                        in (PackageType.AGENT_PLUGIN, PackageType.MARKETPLACE_PLUGIN)
                         and package.version == "0.0.0"
                         and resolved_ref.resolved_commit
                     ):

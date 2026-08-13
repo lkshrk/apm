@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from ..deps.lockfile import LockFile
 from ..integration.targets import KNOWN_TARGETS
+from .formats import BundleFormat, coerce_bundle_format
 
 # Cross-target path equivalences for skills/ and agents/ directories.
 # Only these two directory types are semantically identical across targets;
@@ -181,7 +182,7 @@ def _filter_files_by_target(
 
 def enrich_lockfile_for_pack(
     lockfile: LockFile,
-    fmt: str,
+    fmt: str | BundleFormat,
     target: str | list[str],
     *,
     bundle_files: dict[str, str] | None = None,
@@ -213,6 +214,8 @@ def enrich_lockfile_for_pack(
     """
     import yaml
 
+    bundle_format = coerce_bundle_format(fmt)
+
     # Build a filtered lockfile YAML: each dep's deployed_files is narrowed
     # to only the paths matching the pack target (with cross-target mapping).
     all_mappings: dict[str, str] = {}
@@ -241,7 +244,7 @@ def enrich_lockfile_for_pack(
     # with consumers that expect a plain string in pack.target.
     target_str = ",".join(target) if isinstance(target, list) else target
     pack_meta: dict = {
-        "format": fmt,
+        "format": bundle_format.lock_value,
         "target": target_str,
         "packed_at": datetime.now(timezone.utc).isoformat(),
     }

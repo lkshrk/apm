@@ -1223,12 +1223,10 @@ class TestBundleMcpWiringE2E:
         assert result.exit_code == 0, result.output
         mock_install.assert_not_called()
 
-    def test_bundle_mcp_integrator_failure_does_not_break_install(
+    def test_bundle_mcp_integrator_failure_fails_install(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """If the integrator raises, the install still succeeds with
-        a warning -- file deploys must not be undone by an MCP wiring
-        hiccup."""
+        """MCP wiring failures must fail rather than report partial success."""
         from apm_cli.integration.targets import KNOWN_TARGETS
 
         bundle = self._make_mcp_bundle(tmp_path)
@@ -1241,10 +1239,9 @@ class TestBundleMcpWiringE2E:
         ):
             result = _invoke_install(project, str(bundle), monkeypatch=monkeypatch)
 
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1
         assert (project / ".agents" / "skills" / "coding" / "SKILL.md").is_file()
-        # Warning should mention MCP wiring.
-        assert "MCP" in result.output or "mcp" in result.output
+        assert "integrator blew up" in result.output
 
     def test_bundle_mcp_dry_run_does_not_call_integrator(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

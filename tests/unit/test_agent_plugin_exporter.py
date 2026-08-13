@@ -1,0 +1,312 @@
+"""Unit tests for the Agent Plugin bundle exporter."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+import yaml
+from jsonschema import Draft202012Validator
+
+from apm_cli.bundle.agent_plugin_exporter import export_agent_plugin_bundle
+from apm_cli.bundle.packer import pack_bundle
+
+_SCHEMA_DIR = Path(__file__).parent.parent / "fixtures" / "schemas"
+_PLUGIN_SCHEMA_PATH = _SCHEMA_DIR / "agent-plugins-v1.0.0-plugin.schema.json"
+_MCP_SCHEMA_PATH = _SCHEMA_DIR / "agent-plugins-v1.0.0-mcp.schema.json"
+
+
+def _write_lockfile(
+    root: Path,
+    *,
+    mcp_configs: dict | None = None,
+    lsp_configs: dict | None = None,
+) -> None:
+    (root / "apm.lock.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "lockfile_version": "1",
+                "generated_at": "2025-01-01T00:00:00+00:00",
+                "dependencies": [],
+                "mcp_servers": sorted((mcp_configs or {}).keys()),
+                "mcp_configs": mcp_configs or {},
+                "lsp_servers": sorted((lsp_configs or {}).keys()),
+                "lsp_configs": lsp_configs or {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _validate(schema_path: Path, document: dict) -> None:
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    errors = list(validator.iter_errors(document))
+    assert errors == [], "\n".join(
+        f"{list(error.absolute_path)}: {error.message}" for error in errors
+    )
+
+
+def _write_agent_project(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "apm.yml").write_text(
+        """\
+name: agent-pack
+version: 1.2.3
+description: Agent plugin pack test
+author:
+  name: Tester
+  email: tester@example.com
+license: MIT
+homepage: https://example.com
+repository: https://example.com/repo
+keywords: [alpha, beta]
+""",
+        encoding="utf-8",
+    )
+    _write_lockfile(
+        root,
+        mcp_configs={
+            "safe": {
+                "name": "safe",
+                "transport": "stdio",
+                "registry": False,
+                "command": "tool",
+                "args": ["--ok"],
+            }
+        },
+        lsp_configs={
+            "pyright": {
+                "command": "pyright-langserver",
+                "extensionToLanguage": {".py": "python"},
+            }
+        },
+    )
+    (root / ".apm" / "agents").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "agents" / "agent.md").write_text("agent", encoding="utf-8")
+    (root / ".apm" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (root / ".apm" / "commands").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "commands" / "hello.md").write_text("command", encoding="utf-8")
+    (root / ".apm" / "instructions").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "instructions" / "note.md").write_text("note", encoding="utf-8")
+    (root / ".apm" / "extensions").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "extensions" / "ext.json").write_text("{}", encoding="utf-8")
+    (root / ".apm" / "hooks").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "hooks" / "hooks.json").write_text(
+        json.dumps({"preCommit": ["lint"]}),
+        encoding="utf-8",
+    )
+    (root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "safe": {"type": "stdio", "command": "tool", "args": ["--ok"]},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / ".lsp.json").write_text(
+        json.dumps(
+            {
+                "lspServers": {
+                    "raw-file-must-not-win": {
+                        "command": "untrusted",
+                        "extensionToLanguage": {".raw": "raw"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    for name in ("README.md", "LICENSE", "CHANGELOG.md"):
+        (root / name).write_text(name, encoding="utf-8")
+    return root
+
+
+def test_agent_bundle_writes_namespaced_layout_and_valid_docs(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build")
+
+    bundle = result.bundle_path
+    assert (bundle / "plugin.json").is_file()
+    assert (bundle / "skills" / "demo" / "SKILL.md").is_file()
+    assert (bundle / "com.microsoft.apm" / "agents" / "agent.md").is_file()
+    assert (bundle / "com.microsoft.apm" / "commands" / "hello.md").is_file()
+    assert (bundle / "com.microsoft.apm" / "instructions" / "note.md").is_file()
+    assert (bundle / "com.microsoft.apm" / "extensions" / "ext.json").is_file()
+    assert (bundle / "com.microsoft.apm" / "hooks" / "hooks.json").is_file()
+    assert (bundle / "mcp.json").is_file()
+    assert (bundle / "com.microsoft.apm" / "lsp.json").is_file()
+    lsp_document = json.loads(
+        (bundle / "com.microsoft.apm" / "lsp.json").read_text(encoding="utf-8")
+    )
+    assert set(lsp_document["lspServers"]) == {"pyright"}
+    assert (bundle / "README.md").is_file()
+    assert (bundle / "LICENSE").is_file()
+    assert (bundle / "CHANGELOG.md").is_file()
+    assert (bundle / "apm.lock.yaml").is_file()
+    assert not (bundle / "apm.yml").exists()
+    assert not (bundle / "apm.yaml").exists()
+
+    plugin_json = json.loads((bundle / "plugin.json").read_text(encoding="utf-8"))
+    mcp_json = json.loads((bundle / "mcp.json").read_text(encoding="utf-8"))
+    lsp_json = json.loads((bundle / "com.microsoft.apm" / "lsp.json").read_text(encoding="utf-8"))
+    lockfile = yaml.safe_load((bundle / "apm.lock.yaml").read_text(encoding="utf-8"))
+    _validate(_PLUGIN_SCHEMA_PATH, plugin_json)
+    _validate(_MCP_SCHEMA_PATH, mcp_json)
+    assert plugin_json["extensions"] == {"com.microsoft.apm": {"schemaVersion": "1"}}
+    assert lockfile["pack"]["format"] == "agent-plugin"
+    assert lsp_json["lspServers"]["pyright"]["command"] == "pyright-langserver"
+
+
+def test_agent_bundle_dry_run_includes_transition_warning(tmp_path: Path, monkeypatch) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    monkeypatch.setattr("apm_cli.version.get_version", lambda: "0.30.0")
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build", dry_run=True)
+
+    assert any("defaults to Agent Plugin output" in warning for warning in result.warnings)
+
+
+def test_public_packer_defaults_to_agent_plugin(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+
+    result = pack_bundle(project, tmp_path / "build")
+
+    assert (result.bundle_path / "plugin.json").is_file()
+    assert not (result.bundle_path / "apm.yml").exists()
+
+
+def test_agent_bundle_rejects_unrepresentable_resolved_mcp(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    _write_lockfile(
+        project,
+        mcp_configs={
+            "unsafe": {
+                "name": "unsafe",
+                "transport": "stdio",
+                "registry": False,
+                "command": "sh -c tool",
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"mcpServers\.unsafe\.command"):
+        export_agent_plugin_bundle(project, tmp_path / "build")
+
+
+def test_agent_bundle_rejects_nonconforming_manifest_name(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    apm_yml = project / "apm.yml"
+    apm_yml.write_text(
+        apm_yml.read_text(encoding="utf-8").replace(
+            "name: agent-pack",
+            "name: Invalid Plugin Name",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Agent Plugins naming rules"):
+        export_agent_plugin_bundle(project, tmp_path / "build")
+
+
+def test_agent_bundle_projects_production_mcp_and_excludes_dev_and_stale(
+    tmp_path: Path,
+) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    apm_yml = project / "apm.yml"
+    apm_yml.write_text(
+        apm_yml.read_text(encoding="utf-8")
+        + """
+dependencies:
+  mcp:
+    - name: prod
+      registry: false
+      transport: http
+      url: https://example.com/mcp
+devDependencies:
+  mcp:
+    - name: dev-only
+      registry: false
+      transport: stdio
+      command: dev-tool
+""",
+        encoding="utf-8",
+    )
+    configs = {
+        "prod": {
+            "name": "prod",
+            "registry": False,
+            "transport": "http",
+            "url": "https://example.com/mcp",
+        },
+        "dev-only": {
+            "name": "dev-only",
+            "registry": False,
+            "transport": "stdio",
+            "command": "dev-tool",
+        },
+        "stale": {
+            "name": "stale",
+            "registry": False,
+            "transport": "stdio",
+            "command": "stale-tool",
+        },
+    }
+    _write_lockfile(project, mcp_configs=configs)
+    lockfile = yaml.safe_load((project / "apm.lock.yaml").read_text(encoding="utf-8"))
+    lockfile["mcp_servers"].remove("stale")
+    (project / "apm.lock.yaml").write_text(yaml.safe_dump(lockfile), encoding="utf-8")
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build")
+
+    mcp = json.loads((result.bundle_path / "mcp.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"] == {
+        "prod": {
+            "type": "streamable-http",
+            "url": "https://example.com/mcp",
+        }
+    }
+
+
+def test_agent_bundle_rejects_common_literal_secret_fields(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    _write_lockfile(
+        project,
+        mcp_configs={
+            "unsafe": {
+                "name": "unsafe",
+                "registry": False,
+                "transport": "stdio",
+                "command": "tool",
+                "env": {"AWS_ACCESS_KEY_ID": "literal-value"},
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"must use .* references"):
+        export_agent_plugin_bundle(project, tmp_path / "build")
+
+
+def test_agent_bundle_rejects_literal_secret_arguments(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    _write_lockfile(
+        project,
+        mcp_configs={
+            "unsafe": {
+                "name": "unsafe",
+                "registry": False,
+                "transport": "stdio",
+                "command": "tool",
+                "args": ["--token=literal-value"],
+            }
+        },
+    )
+
+    with pytest.raises(ValueError, match=r"argument values must use .* references"):
+        export_agent_plugin_bundle(project, tmp_path / "build")

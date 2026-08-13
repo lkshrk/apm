@@ -62,6 +62,58 @@ marketplace:
     )
 
 
+def _write_agent_block_yml(root: Path) -> None:
+    _write_apm_yml(
+        root,
+        """\
+name: agent-pack
+version: 1.0.0
+description: agent plugin fixture
+dependencies:
+  apm: []
+""",
+    )
+    _write_minimal_lockfile(root)
+    lockfile = root / "apm.lock.yaml"
+    lockfile.write_text(
+        _LOCKFILE_TEMPLATE
+        + "mcp_servers: [safe]\n"
+        + "mcp_configs:\n"
+        + "  safe:\n"
+        + "    name: safe\n"
+        + "    transport: stdio\n"
+        + "    command: tool\n"
+        + "lsp_servers: [pyright]\n"
+        + "lsp_configs:\n"
+        + "  pyright:\n"
+        + "    name: pyright\n"
+        + "    command: pyright-langserver\n"
+        + "    extensionToLanguage:\n"
+        + "      .py: python\n",
+        encoding="utf-8",
+    )
+    (root / ".apm" / "agents").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "agents" / "agent.md").write_text("agent", encoding="utf-8")
+    (root / ".apm" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (root / ".apm" / "commands").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "commands" / "hello.md").write_text("command", encoding="utf-8")
+    (root / ".apm" / "instructions").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "instructions" / "note.md").write_text("note", encoding="utf-8")
+    (root / ".apm" / "extensions").mkdir(parents=True, exist_ok=True)
+    (root / ".apm" / "extensions" / "ext.json").write_text("{}", encoding="utf-8")
+    (root / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"safe": {"type": "stdio", "command": "tool"}}}),
+        encoding="utf-8",
+    )
+    (root / ".lsp.json").write_text(
+        json.dumps({"lspServers": {"pyright": {"command": "pyright-langserver"}}}),
+        encoding="utf-8",
+    )
+    for name in ("README.md", "LICENSE", "CHANGELOG.md"):
+        (root / name).write_text(name, encoding="utf-8")
+
+
 @pytest.fixture
 def runner():
     return CliRunner()
@@ -88,6 +140,62 @@ class TestPackUnified:
         assert (tmp_path / "build").exists()
         # Marketplace.json should NOT be created
         assert not (tmp_path / ".claude-plugin" / "marketplace.json").exists()
+
+    def test_pack_defaults_to_agent_plugin(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_agent_block_yml(tmp_path)
+
+        result = runner.invoke(pack_cmd, [])
+
+        assert result.exit_code == 0, result.output
+        bundle = next((tmp_path / "build").iterdir())
+        assert (bundle / "plugin.json").exists()
+        assert (bundle / "skills" / "demo" / "SKILL.md").exists()
+        assert (bundle / "com.microsoft.apm" / "agents" / "agent.md").exists()
+        assert (bundle / "com.microsoft.apm" / "commands" / "hello.md").exists()
+        assert (bundle / "com.microsoft.apm" / "instructions" / "note.md").exists()
+        assert (bundle / "com.microsoft.apm" / "extensions" / "ext.json").exists()
+        assert (bundle / "mcp.json").exists()
+        assert (bundle / "com.microsoft.apm" / "lsp.json").exists()
+        assert (bundle / "README.md").exists()
+        assert (bundle / "LICENSE").exists()
+        assert (bundle / "CHANGELOG.md").exists()
+        assert not (bundle / "apm.yml").exists()
+        assert not (bundle / "apm.yaml").exists()
+
+    def test_pack_json_keeps_agent_warning_valid(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("apm_cli.version.get_version", lambda: "0.30.0")
+        _write_agent_block_yml(tmp_path)
+
+        result = runner.invoke(pack_cmd, ["--json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["warnings"]
+        assert any("defaults to Agent Plugin output" in warning for warning in payload["warnings"])
+
+    def test_pack_claude_plugin_preserves_legacy_layout(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_agent_block_yml(tmp_path)
+
+        result = runner.invoke(pack_cmd, ["--claude-plugin"])
+
+        assert result.exit_code == 0, result.output
+        bundle = next((tmp_path / "build").iterdir())
+        assert (bundle / "plugin.json").exists()
+        assert (bundle / "agents" / "agent.md").exists()
+        assert not (bundle / "com.microsoft.apm" / "agents" / "agent.md").exists()
+
+    def test_pack_conflicting_format_selectors_error(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_agent_block_yml(tmp_path)
+
+        result = runner.invoke(pack_cmd, ["--plugin", "--claude-plugin"])
+
+        assert result.exit_code == 2
+        assert "Options --plugin, --claude-plugin are mutually exclusive" in result.output
 
     def test_pack_marketplace_only(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

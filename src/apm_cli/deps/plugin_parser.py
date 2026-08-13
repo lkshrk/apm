@@ -319,7 +319,8 @@ def _extract_mcp_servers(plugin_path: Path, manifest: dict[str, Any]) -> dict[st
     - ``list`` -> read each file path, merge (last-wins on name conflict).
     - ``dict`` -> use directly as inline server definitions.
 
-    When ``mcpServers`` is absent and ``.mcp.json`` (or ``.github/.mcp.json``)
+    When ``mcpServers`` is absent and ``mcp.json`` (or ``.mcp.json`` /
+    ``.github/.mcp.json``)
     exists at plugin root, read it as the default (matches Claude Code
     auto-discovery).
 
@@ -355,9 +356,9 @@ def _extract_mcp_servers(plugin_path: Path, manifest: dict[str, Any]) -> dict[st
             logger.warning("Unsupported mcpServers type %s; ignoring", type(mcp_value).__name__)
             return {}
     else:
-        # Fall back to auto-discovery: .mcp.json then .github/.mcp.json
+        # Fall back to auto-discovery: mcp.json then .mcp.json then .github/.mcp.json
         servers = {}
-        for fallback in (".mcp.json", ".github/.mcp.json"):
+        for fallback in ("mcp.json", ".mcp.json", ".github/.mcp.json"):
             candidate = plugin_path / fallback
             if candidate.exists() and candidate.is_file() and not candidate.is_symlink():
                 servers = _read_mcp_json(candidate, logger)
@@ -516,7 +517,8 @@ def _extract_lsp_servers(plugin_path: Path, manifest: dict[str, Any]) -> dict[st
     - ``str``  -> read that file path relative to plugin root, parse JSON.
     - ``dict`` -> use directly as inline server definitions.
 
-    When ``lspServers`` is absent and ``.lsp.json`` exists at plugin root,
+    When ``lspServers`` is absent and ``lsp.json`` / ``.lsp.json`` exists at
+    plugin root, read it as the default (matches Claude Code auto-discovery).
     read it as the default (matches Claude Code auto-discovery).
 
     Security: symlinks are skipped, JSON parse errors are logged as warnings.
@@ -543,11 +545,14 @@ def _extract_lsp_servers(plugin_path: Path, manifest: dict[str, Any]) -> dict[st
             logger.warning("Unsupported lspServers type %s; ignoring", type(lsp_value).__name__)
             return {}
     else:
-        # Fall back to auto-discovery: .lsp.json
+        # Fall back to auto-discovery: com.microsoft.apm/lsp.json, lsp.json, then .lsp.json
         servers = {}
-        candidate = plugin_path / ".lsp.json"
-        if candidate.exists() and candidate.is_file() and not candidate.is_symlink():
-            servers = _read_lsp_json(candidate, logger)
+        for fallback in ("com.microsoft.apm/lsp.json", "lsp.json", ".lsp.json"):
+            candidate = plugin_path / fallback
+            if candidate.exists() and candidate.is_file() and not candidate.is_symlink():
+                servers = _read_lsp_json(candidate, logger)
+                if servers:
+                    break
 
     # Substitute ${CLAUDE_PLUGIN_ROOT} in all string values
     if servers:

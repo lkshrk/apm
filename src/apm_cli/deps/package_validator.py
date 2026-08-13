@@ -271,14 +271,14 @@ def stamp_plugin_version(
     of the resolved commit SHA -- both on the in-memory ``package`` object
     and in the on-disk ``apm.yml`` so subsequent reloads agree.
 
-    Idempotent: only acts when ``package_type`` is MARKETPLACE_PLUGIN,
+    Idempotent: only acts when ``package_type`` is AGENT_PLUGIN or MARKETPLACE_PLUGIN,
     ``package.version == "0.0.0"``, and a usable commit SHA is provided.
     """
     from ..models.validation import PackageType
 
     if package is None:
         return
-    if package_type != PackageType.MARKETPLACE_PLUGIN:
+    if package_type not in (PackageType.AGENT_PLUGIN, PackageType.MARKETPLACE_PLUGIN):
         return
     if getattr(package, "version", None) != "0.0.0":
         return

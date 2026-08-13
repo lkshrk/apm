@@ -1540,7 +1540,7 @@ class TestExportPluginBundle:
 
 
 class TestExportPluginBundleViaPackBundle:
-    """Verify pack_bundle(fmt='plugin') delegates correctly."""
+    """Verify pack_bundle(fmt='plugin') delegates to the Agent Plugin exporter."""
 
     def test_fmt_plugin_delegates(self, tmp_path):
         from apm_cli.bundle.packer import pack_bundle
@@ -1551,7 +1551,7 @@ class TestExportPluginBundleViaPackBundle:
         result = pack_bundle(project, out, fmt="plugin")
 
         assert (result.bundle_path / "plugin.json").exists()
-        assert (result.bundle_path / "agents" / "a.agent.md").exists()
+        assert (result.bundle_path / "com.microsoft.apm" / "agents" / "a.agent.md").exists()
 
     def test_force_flag_passed_through(self, tmp_path):
         from apm_cli.bundle.packer import pack_bundle
@@ -1567,5 +1567,7 @@ class TestExportPluginBundleViaPackBundle:
         with patch("apm_cli.bundle.plugin_exporter._rich_warning"):
             result = pack_bundle(project, out, fmt="plugin", force=True)
 
-        content = (result.bundle_path / "agents" / "shared.agent.md").read_text()
+        content = (
+            result.bundle_path / "com.microsoft.apm" / "agents" / "shared.agent.md"
+        ).read_text()
         assert content == "from-second"

@@ -45,6 +45,9 @@ check_pattern \
     src/apm_cli/bundle/packer.py \
     src/apm_cli/install/mcp/integration.py \
     src/apm_cli/commands/uninstall/engine.py
+if ! bash scripts/check_bundle_format_authority.sh; then
+    violations=$((violations + 1))
+fi
 effective_target_owner="src/apm_cli/core/target_detection.py"
 effective_target_definition_count=$(grep -Ec \
     '^def resolve_effective_target_decision\(' "$effective_target_owner" || true)

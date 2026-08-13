@@ -1455,7 +1455,7 @@ def test_plural_targets_drive_bundle_filtering(tmp_path: Path) -> None:
     )
     (tmp_path / "apm.lock.yaml").write_text(lockfile.to_yaml(), encoding="utf-8")
 
-    result = pack_bundle(tmp_path, tmp_path / "out", dry_run=True)
+    result = pack_bundle(tmp_path, tmp_path / "out", fmt="apm", dry_run=True)
 
     assert result.files == [claude_file]
 
@@ -1521,6 +1521,10 @@ def test_architecture_mcp_manifest_targets_route_through_catalog_parser() -> Non
     integration_source = (root / "src/apm_cli/install/mcp/integration.py").read_text(
         encoding="utf-8"
     )
+    manifest_integration_source = integration_source.split(
+        "def run_mcp_integration(",
+        maxsplit=1,
+    )[1]
     ownership_source = (root / "src/apm_cli/install/mcp/ownership.py").read_text(encoding="utf-8")
 
     assert "parse_targets_field" in adapter_calls
@@ -1530,8 +1534,8 @@ def test_architecture_mcp_manifest_targets_route_through_catalog_parser() -> Non
     assert manifest_selection_calls[0].lineno < discovery_calls[0].lineno
     assert all(node.func.id != "parse_targets_field" for node in resolver_calls)
     assert 'return {"target": singular, "targets": list(plural)}' in target_projection
-    assert integration_source.index("parse_targets_field(mcp_apm_config)") < (
-        integration_source.index("MCPIntegrator.install(")
+    assert manifest_integration_source.index("parse_targets_field(mcp_apm_config)") < (
+        manifest_integration_source.index("MCPIntegrator.install(")
     )
     assert "AC21: MCP manifest target precedence authority" in guard
     assert (

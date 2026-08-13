@@ -73,6 +73,7 @@ def _validate_lockfile_container(data: object) -> dict[str, Any]:
         "mcp_target_servers",
         "mcp_config_provenance",
         "lsp_configs",
+        "lsp_config_provenance",
         "local_deployed_file_hashes",
     )
     for field_name in list_fields:
@@ -712,6 +713,7 @@ class LockFile:
     mcp_config_provenance: dict[str, str | list[str]] = field(default_factory=dict)
     lsp_servers: list[str] = field(default_factory=list)
     lsp_configs: dict[str, dict] = field(default_factory=dict)
+    lsp_config_provenance: dict[str, str] = field(default_factory=dict)
     local_deployed_files: list[str] = field(default_factory=list)
     local_deployed_file_hashes: dict[str, str] = field(default_factory=dict)
     deployment_ledger: DeploymentLedger = field(
@@ -824,6 +826,8 @@ class LockFile:
                 data["lsp_servers"] = sorted(self.lsp_servers)
             if self.lsp_configs:
                 data["lsp_configs"] = dict(sorted(self.lsp_configs.items()))
+            if self.lsp_config_provenance:
+                data["lsp_config_provenance"] = dict(sorted(self.lsp_config_provenance.items()))
             if self.local_deployed_files:
                 data["local_deployed_files"] = sorted(self.local_deployed_files)
             if self.local_deployed_file_hashes:
@@ -868,6 +872,7 @@ class LockFile:
         lock.mcp_config_provenance = dict(data.get("mcp_config_provenance") or {})
         lock.lsp_servers = list(data.get("lsp_servers", []))
         lock.lsp_configs = dict(data.get("lsp_configs") or {})
+        lock.lsp_config_provenance = dict(data.get("lsp_config_provenance") or {})
         lock.local_deployed_files = list(data.get("local_deployed_files", []))
         lock.local_deployed_file_hashes = dict(data.get("local_deployed_file_hashes") or {})
         # Synthesize a virtual self-entry representing the project's own
@@ -1042,13 +1047,13 @@ class LockFile:
             return False
         if self.lsp_configs != other.lsp_configs:
             return False
-        if sorted(self.local_deployed_files) != sorted(other.local_deployed_files):
+        if self.lsp_config_provenance != other.lsp_config_provenance:
             return False
         # Issue #887: include hash dict in equivalence so post-install
         # hash updates persist even when the file list is unchanged.
-        if dict(self.local_deployed_file_hashes) != dict(other.local_deployed_file_hashes):  # noqa: SIM103
-            return False
-        return True
+        return sorted(self.local_deployed_files) == sorted(other.local_deployed_files) and dict(
+            self.local_deployed_file_hashes
+        ) == dict(other.local_deployed_file_hashes)
 
     @classmethod
     def installed_paths_for_project(cls, project_root: Path) -> list[str]:

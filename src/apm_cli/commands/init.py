@@ -135,6 +135,7 @@ def _perform_init(
     target_flag,
     verbose,
     source="init",
+    plugin_mode: str = "agent",
 ):
     """Shared init body. Called by `apm init` and `apm plugin init`.
 
@@ -180,8 +181,8 @@ def _perform_init(
         if plugin and not _validate_plugin_name(final_project_name):
             logger.error(
                 f"Invalid plugin name '{final_project_name}'. "
-                "Must be kebab-case (lowercase letters, numbers, hyphens), "
-                "start with a letter, and be at most 64 characters."
+                "Use 1-64 lowercase letters, numbers, dots, or hyphens; "
+                "begin and end with a letter or number; and do not use '..' or '--'."
             )
             sys.exit(1)
 
@@ -246,7 +247,7 @@ def _perform_init(
 
         # Create plugin.json for plugin mode
         if plugin:
-            _create_plugin_json(config)
+            _create_plugin_json(config, mode=plugin_mode)
 
         # Append marketplace authoring block when requested.
         if marketplace_flag:
@@ -300,7 +301,8 @@ def _perform_init(
         if plugin:
             next_steps = [
                 "Add dev dependencies:    apm install --dev <owner>/<repo>",
-                "Pack as plugin:          apm pack",
+                "Pack as plugin (Agent Plugins v1):   apm pack --plugin",
+                "Legacy Claude plugin format:         apm pack --claude-plugin",
             ]
         elif source == "init":
             next_steps = [
@@ -314,7 +316,7 @@ def _perform_init(
                 "Install a skill:                apm install github/awesome-copilot/skills/documentation-writer",
                 "Install a marketplace plugin:   apm install frontend-web-dev@awesome-copilot",
                 "Install a versioned package:    apm install microsoft/apm-sample-package#v1.0.0",
-                "Author your own plugin:         apm pack",
+                "Author your own plugin:         apm pack --plugin",
             ]
 
         # Agentrc integration (#518): suggest agentrc when no instructions exist.

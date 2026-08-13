@@ -110,6 +110,15 @@ class ClaudePluginFormatEvidence:
     plugin_dirs_present: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class AgentPluginFormatEvidence:
+    """File-system signals gathered by ``AgentPluginDetector``."""
+
+    plugin_json_path: Path | None
+    schema_id: str | None
+    supported: bool
+
+
 # ---------------------------------------------------------------------------
 # DetectionReport -- aggregated output of PackageFormatRegistry
 # ---------------------------------------------------------------------------
@@ -132,6 +141,7 @@ class DetectionReport:
     apm_yml: ApmYmlFormatEvidence | None = None
     skill_md: SkillMdFormatEvidence | None = None
     hook_json: HookJsonFormatEvidence | None = None
+    agent_plugin: AgentPluginFormatEvidence | None = None
     claude_plugin: ClaudePluginFormatEvidence | None = None
 
 
@@ -154,6 +164,7 @@ class FormatDetector(Protocol):
         ApmYmlFormatEvidence
         | SkillMdFormatEvidence
         | HookJsonFormatEvidence
+        | AgentPluginFormatEvidence
         | ClaudePluginFormatEvidence
         | None
     ):
@@ -273,6 +284,39 @@ class ClaudePluginDetector:
         )
 
 
+class AgentPluginDetector:
+    """Detects Agent Plugin root-manifest signals before Claude fallbacks."""
+
+    def detect(self, package_path: Path) -> AgentPluginFormatEvidence | None:
+        plugin_json_path = package_path / "plugin.json"
+        if not plugin_json_path.exists() and not plugin_json_path.is_symlink():
+            return None
+        if plugin_json_path.is_symlink():
+            return AgentPluginFormatEvidence(
+                plugin_json_path=plugin_json_path, schema_id=None, supported=False
+            )
+        try:
+            from ..agent_plugins.io import read_json_document
+
+            document = read_json_document(plugin_json_path)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(document, dict):
+            return None
+        schema_id = document.get("$schema")
+        if not isinstance(schema_id, str):
+            return None
+        from ..agent_plugins.validation import is_agent_plugin_schema_id, supports_plugin_schema_id
+
+        if not is_agent_plugin_schema_id(schema_id):
+            return None
+        return AgentPluginFormatEvidence(
+            plugin_json_path=plugin_json_path,
+            schema_id=schema_id,
+            supported=supports_plugin_schema_id(schema_id),
+        )
+
+
 # ---------------------------------------------------------------------------
 # PackageFormatRegistry
 # ---------------------------------------------------------------------------
@@ -281,9 +325,14 @@ class ClaudePluginDetector:
 # classification priority (that lives in NormalizationPlanner); all
 # detectors always run.
 _DEFAULT_DETECTORS: tuple[
-    ApmYmlDetector | SkillMdDetector | HookJsonDetector | ClaudePluginDetector,
+    ApmYmlDetector
+    | SkillMdDetector
+    | HookJsonDetector
+    | AgentPluginDetector
+    | ClaudePluginDetector,
     ...,
 ] = (
+    AgentPluginDetector(),
     ClaudePluginDetector(),
     SkillMdDetector(),
     ApmYmlDetector(),
@@ -303,7 +352,11 @@ class PackageFormatRegistry:
         self,
         detectors: (
             tuple[
-                ApmYmlDetector | SkillMdDetector | HookJsonDetector | ClaudePluginDetector,
+                ApmYmlDetector
+                | SkillMdDetector
+                | HookJsonDetector
+                | AgentPluginDetector
+                | ClaudePluginDetector,
                 ...,
             ]
             | None
@@ -316,6 +369,7 @@ class PackageFormatRegistry:
         apm_yml_ev: ApmYmlFormatEvidence | None = None
         skill_md_ev: SkillMdFormatEvidence | None = None
         hook_json_ev: HookJsonFormatEvidence | None = None
+        agent_plugin_ev: AgentPluginFormatEvidence | None = None
         claude_plugin_ev: ClaudePluginFormatEvidence | None = None
 
         for detector in self._detectors:
@@ -326,6 +380,8 @@ class PackageFormatRegistry:
                 skill_md_ev = result
             elif isinstance(result, HookJsonFormatEvidence):
                 hook_json_ev = result
+            elif isinstance(result, AgentPluginFormatEvidence):
+                agent_plugin_ev = result
             elif isinstance(result, ClaudePluginFormatEvidence):
                 claude_plugin_ev = result
 
@@ -333,6 +389,7 @@ class PackageFormatRegistry:
             apm_yml=apm_yml_ev,
             skill_md=skill_md_ev,
             hook_json=hook_json_ev,
+            agent_plugin=agent_plugin_ev,
             claude_plugin=claude_plugin_ev,
         )
 
@@ -351,14 +408,16 @@ class NormalizationPlanner:
 
     Cascade (first match wins):
 
-    1. ``MARKETPLACE_PLUGIN`` -- Claude plugin detector found a manifest
+    1. ``AGENT_PLUGIN`` -- root ``plugin.json`` matches the Agent Plugins
+       schema family.
+    2. ``MARKETPLACE_PLUGIN`` -- Claude plugin detector found a manifest
        (``plugin.json`` or ``.claude-plugin/``).
-    2. ``HYBRID`` -- root ``SKILL.md`` AND ``apm.yml`` both present.
-    3. ``CLAUDE_SKILL`` -- root ``SKILL.md`` only (no ``apm.yml``).
-    4. ``SKILL_BUNDLE`` -- nested ``skills/<name>/SKILL.md`` found.
-    5. ``APM_PACKAGE`` -- ``apm.yml`` with ``.apm/`` or declared deps.
-    6. ``HOOK_PACKAGE`` -- hooks JSON found, nothing else.
-    7. ``INVALID`` -- no recognisable signals.
+    3. ``HYBRID`` -- root ``SKILL.md`` AND ``apm.yml`` both present.
+    4. ``CLAUDE_SKILL`` -- root ``SKILL.md`` only (no ``apm.yml``).
+    5. ``SKILL_BUNDLE`` -- nested ``skills/<name>/SKILL.md`` found.
+    6. ``APM_PACKAGE`` -- ``apm.yml`` with ``.apm/`` or declared deps.
+    7. ``HOOK_PACKAGE`` -- hooks JSON found, nothing else.
+    8. ``INVALID`` -- no recognisable signals.
 
     Future: :meth:`plan_normalizers` will return an ordered list of
     normalizer callables so mixed packages can run multiple passes.
@@ -372,37 +431,44 @@ class NormalizationPlanner:
         """
         from .validation import PackageType
 
+        ap = report.agent_plugin
         cp = report.claude_plugin
         sm = report.skill_md
         ay = report.apm_yml
         hj = report.hook_json
 
-        # 1. Claude plugin manifest present -> MARKETPLACE_PLUGIN
+        # 1. Agent plugin manifest present -> AGENT_PLUGIN or INVALID.
+        if ap is not None:
+            if ap.supported:
+                return PackageType.AGENT_PLUGIN, ap.plugin_json_path
+            return PackageType.INVALID, ap.plugin_json_path
+
+        # 2. Claude plugin manifest present -> MARKETPLACE_PLUGIN
         if cp is not None:
             return PackageType.MARKETPLACE_PLUGIN, cp.plugin_json_path
 
-        # 2. Root SKILL.md + apm.yml -> HYBRID
+        # 3. Root SKILL.md + apm.yml -> HYBRID
         has_root_skill_md = sm is not None and sm.skill_md_path is not None
         if ay is not None and has_root_skill_md:
             return PackageType.HYBRID, None
 
-        # 3. Root SKILL.md only (no apm.yml) -> CLAUDE_SKILL
+        # 4. Root SKILL.md only (no apm.yml) -> CLAUDE_SKILL
         if has_root_skill_md:
             return PackageType.CLAUDE_SKILL, None
 
-        # 4. Nested skills/<name>/SKILL.md -> SKILL_BUNDLE (apm.yml optional)
+        # 5. Nested skills/<name>/SKILL.md -> SKILL_BUNDLE (apm.yml optional)
         if sm is not None and sm.nested_skill_dirs:
             return PackageType.SKILL_BUNDLE, None
 
-        # 5. apm.yml present -> APM classification
+        # 6. apm.yml present -> APM classification
         if ay is not None:
             if ay.has_apm_dir or ay.declares_dependencies:
                 return PackageType.APM_PACKAGE, None
             return PackageType.INVALID, None
 
-        # 6. hooks/*.json only -> HOOK_PACKAGE
+        # 7. hooks/*.json only -> HOOK_PACKAGE
         if hj is not None:
             return PackageType.HOOK_PACKAGE, None
 
-        # 7. Nothing recognisable -> INVALID
+        # 8. Nothing recognisable -> INVALID
         return PackageType.INVALID, None

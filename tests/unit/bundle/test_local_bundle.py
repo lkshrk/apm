@@ -178,14 +178,66 @@ class TestDetectLocalBundle:
         assert result is not None
         assert result.package_id == "my-custom-id"
 
-    def test_detect_falls_back_to_dirname_when_no_id(self, tmp_path: Path) -> None:
+    def test_detect_uses_manifest_name_when_no_id(self, tmp_path: Path) -> None:
         bundle = _make_plugin_bundle(tmp_path, plugin_id="")
         # Rewrite plugin.json without id
         pj = {"name": "Test Plugin"}
         (bundle / "plugin.json").write_text(json.dumps(pj), encoding="utf-8")
         result = detect_local_bundle(bundle)
         assert result is not None
-        assert result.package_id == bundle.name
+        assert result.package_id == "Test Plugin"
+
+    def test_detect_rejects_unsupported_agent_plugin_schema(self, tmp_path: Path) -> None:
+        bundle = _make_plugin_bundle(tmp_path)
+        (bundle / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": "https://agent-plugins.org/schemas/2.0.0/plugin.schema.json",
+                    "name": "future-plugin",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Unsupported Agent Plugin schema"):
+            detect_local_bundle(bundle)
+
+    def test_detect_rejects_symlinked_plugin_manifest(self, tmp_path: Path) -> None:
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        target = tmp_path / "plugin.json"
+        target.write_text('{"name":"outside"}', encoding="utf-8")
+        (bundle / "plugin.json").symlink_to(target)
+
+        with pytest.raises(ValueError, match="missing or invalid"):
+            detect_local_bundle(bundle)
+
+    def test_detect_rejects_case_colliding_metadata(self, tmp_path: Path) -> None:
+        bundle = _make_plugin_bundle(tmp_path)
+        (bundle / "Plugin.json").write_text("{}", encoding="utf-8")
+        matching = [
+            entry.name for entry in bundle.iterdir() if entry.name.casefold() == "plugin.json"
+        ]
+        if len(matching) < 2:
+            pytest.skip("case-insensitive filesystem cannot create a metadata collision")
+
+        with pytest.raises(ValueError, match="ambiguous metadata paths"):
+            detect_local_bundle(bundle)
+
+    def test_detect_rejects_invalid_agent_manifest_before_install(self, tmp_path: Path) -> None:
+        bundle = _make_plugin_bundle(tmp_path)
+        (bundle / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+                    "name": "Invalid Name",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="Invalid Agent Plugin manifest"):
+            detect_local_bundle(bundle)
 
     def test_detect_reads_pack_targets(self, tmp_path: Path) -> None:
         bundle = _make_plugin_bundle(tmp_path, pack_target="copilot,claude")
@@ -512,6 +564,13 @@ class TestCheckTargetMismatch:
         warning = check_target_mismatch(
             bundle_targets=["copilot", "claude"],
             install_targets=["copilot", "claude"],
+        )
+        assert warning is None
+
+    def test_target_alias_match_no_warning(self) -> None:
+        warning = check_target_mismatch(
+            bundle_targets=["vscode"],
+            install_targets=["copilot"],
         )
         assert warning is None
 

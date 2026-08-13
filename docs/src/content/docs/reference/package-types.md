@@ -4,7 +4,7 @@ sidebar:
   order: 4
 ---
 
-APM supports five package layouts, each with distinct install semantics.
+APM supports six package layouts, each with distinct install semantics.
 Pick the layout that matches the author's intent -- APM preserves it.
 
 ## Layout summary
@@ -15,7 +15,8 @@ Pick the layout that matches the author's intent -- APM preserves it.
 | `SKILL.md` (alone or with apm.yml -- HYBRID) | "I am one skill bundle" | Copy the whole bundle to `<target>/skills/<name>/` |
 | `skills/<name>/SKILL.md` (nested) | "I ship many skills in one repo" | Promote each nested skill to `<target>/skills/<name>/` |
 | `hooks/*.json` only (no apm.yml or SKILL.md) | "I ship a set of harness hooks" | Deploy each hook to the target's `hooks/` directory |
-| `plugin.json` / `.claude-plugin/` | Claude plugin collection | Dissect via plugin artifact mapping |
+| `plugin.json` with an Agent Plugins `$schema` | Portable Agent Plugin | Validate standard skills and MCP, then restore recognized APM extensions |
+| `.claude-plugin/` or Claude `plugin.json` | Claude plugin collection | Dissect via historical plugin artifact mapping |
 
 ## APM package (`.apm/` directory)
 
@@ -192,9 +193,42 @@ primitives. If you also ship skills or instructions, prefer the `.apm/`
 layout and put your hooks under `.apm/hooks/` so they install alongside
 the rest.
 
-## Plugin collection (`plugin.json`)
+## Agent Plugin (`plugin.json`)
 
-A Claude-native plugin layout. APM dissects the plugin artifacts and maps
+The default portable artifact produced by `apm pack`. `plugin.json` identifies
+the pinned Agent Plugins v1 schema, standard skills live under `skills/`, and
+optional MCP configuration lives at `mcp.json`. APM-only primitives use the
+versioned `com.microsoft.apm/` extension namespace.
+
+```text
+my-plugin/
++-- plugin.json
++-- skills/
+|   +-- search/SKILL.md
++-- mcp.json
++-- com.microsoft.apm/
+|   +-- agents/
+|   +-- commands/
+|   +-- instructions/
+|   +-- hooks/
+|   +-- extensions/
+|   +-- lsp.json
++-- apm.lock.yaml
+```
+
+**What gets installed:** valid standard skills and MCP servers are loaded
+independently. Recognized `com.microsoft.apm` content is routed through APM's
+existing policy, collision, and deployment machinery. `apm.yml` remains the
+recommended authoring manifest and is intentionally not distributed in the
+packed artifact.
+
+For the compatibility decision table and warning schedule, see
+[Agent Plugins v1 migration](../../getting-started/agent-plugins-v1-migration/).
+For the install-time trust boundary, see [Security Model](../../enterprise/security/).
+
+## Claude plugin collection (`.claude-plugin/` or `plugin.json`)
+
+A historical Claude-native plugin layout. APM dissects its artifacts and maps
 them into runtime directories.
 
 ```

@@ -31,6 +31,10 @@ import yaml
 from click.testing import CliRunner
 
 from apm_cli.bundle.local_bundle import check_target_mismatch
+from apm_cli.install.agent_plugin_runtime import (
+    commit_agent_plugin_bundle,
+    stage_agent_plugin_bundle,
+)
 from apm_cli.install.services import integrate_local_bundle
 from apm_cli.integration.targets import KNOWN_TARGETS
 
@@ -95,7 +99,7 @@ def _make_tarball(base: Path, bundle_dir: Path) -> Path:
     return archive
 
 
-def _bundle_info(bundle_dir: Path):
+def _bundle_info(bundle_dir: Path, *, bundle_format: str = "claude-plugin"):
     """Synthetic ``LocalBundleInfo`` mirroring what the CLI seam produces."""
     lock = yaml.safe_load((bundle_dir / "apm.lock.yaml").read_text(encoding="utf-8"))
     return types.SimpleNamespace(
@@ -103,6 +107,9 @@ def _bundle_info(bundle_dir: Path):
         lockfile=lock,
         package_id="ai",
         pack_targets=[lock.get("pack", {}).get("target", "all")],
+        format=bundle_format,
+        retained_root=None,
+        data_root=None,
         temp_dir=None,
     )
 
@@ -200,6 +207,78 @@ class TestMcpJsonNeverDeployed:
             assert Path(f).name.lower() != ".mcp.json", f".mcp.json deployed as flat file to {f}"
         for child in (project / target.root_dir).rglob("*"):
             assert child.name.lower() != ".mcp.json", f".mcp.json materialised at {child}"
+
+
+class TestAgentPluginMaterialization:
+    def test_agent_plugin_bundle_materializes_retained_roots_and_data(self, tmp_path: Path) -> None:
+        bundle = _build_bundle(
+            tmp_path,
+            files={
+                "com.microsoft.apm/agents/coder.md": "# Coder\n",
+                "com.microsoft.apm/extensions/ext.json": "{}",
+                "mcp.json": json.dumps({"mcpServers": {"good": {"type": "stdio", "command": "x"}}}),
+                "com.microsoft.apm/lsp.json": json.dumps(
+                    {
+                        "lspServers": {
+                            "pyright": {
+                                "command": "pyright-langserver",
+                                "extensionToLanguage": {".py": "python"},
+                            }
+                        }
+                    }
+                ),
+            },
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        bi = _bundle_info(bundle, bundle_format="agent-plugin")
+        target = KNOWN_TARGETS["copilot"]
+        bi = stage_agent_plugin_bundle(bi, project, global_=False)
+
+        result = integrate_local_bundle(
+            bi,
+            project,
+            targets=[target],
+            force=False,
+            dry_run=False,
+            diagnostics=None,
+            logger=None,
+            scope=None,
+            alias=None,
+        )
+        commit_agent_plugin_bundle(bi)
+
+        retained_roots = list((project / "apm_modules" / ".agent-plugins").iterdir())
+        data_roots = list((project / "apm_modules" / ".plugin-data").iterdir())
+        assert retained_roots
+        assert data_roots
+        assert any("extensions/ext.json" in f.replace("\\", "/") for f in result["deployed_files"])
+        assert (project / target.root_dir / "extensions" / "ext.json").is_file()
+
+    def test_agent_plugin_bundle_dry_run_creates_no_retained_roots(self, tmp_path: Path) -> None:
+        bundle = _build_bundle(
+            tmp_path,
+            files={"com.microsoft.apm/agents/coder.md": "# Coder\n"},
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        bi = _bundle_info(bundle, bundle_format="agent-plugin")
+
+        result = integrate_local_bundle(
+            bi,
+            project,
+            targets=[KNOWN_TARGETS["copilot"]],
+            force=False,
+            dry_run=True,
+            diagnostics=None,
+            logger=None,
+            scope=None,
+            alias=None,
+        )
+
+        assert result["deployed_files"]
+        assert not (project / "apm_modules" / ".agent-plugins").exists()
+        assert not (project / "apm_modules" / ".plugin-data").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +542,81 @@ class TestBundleMcpWiring:
         deps = _parse_bundle_mcp_servers(bundle)
         assert {d.name for d in deps} == {"x"}
 
+    def test_parse_bundle_mcp_servers_root_mcp_json(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"root": {"type": "stdio", "command": "echo"}}}),
+            encoding="utf-8",
+        )
+        deps = _parse_bundle_mcp_servers(bundle)
+        assert {d.name for d in deps} == {"root"}
+
+    def test_parse_bundle_mcp_servers_root_invalid_server_is_skipped(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "good": {"type": "stdio", "command": "echo"},
+                        "bad": {"type": "sse", "url": "http://example.com/#frag"},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        deps = _parse_bundle_mcp_servers(bundle)
+        assert {d.name for d in deps} == {"good"}
+
+    def test_parse_bundle_mcp_servers_materializes_placeholders_and_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+
+        bundle = tmp_path / "apm-home" / "agent-plugins" / "agent-123"
+        data_root = tmp_path / "apm-home" / "plugin-data" / "agent-123"
+        bundle.mkdir(parents=True)
+        data_root.mkdir(parents=True)
+        (bundle / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "tool": {
+                            "type": "stdio",
+                            "command": "./bin/tool",
+                            "cwd": "./run",
+                            "args": ["--root", "${PLUGIN_ROOT}", "--data", "${PLUGIN_DATA}"],
+                            "env": {"ROOT": "${PLUGIN_ROOT}", "DATA": "${PLUGIN_DATA}"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        deps = _parse_bundle_mcp_servers(bundle, data_root=data_root)
+        assert len(deps) == 1
+        dep = deps[0]
+        assert dep.command == str((bundle / "bin" / "tool").resolve())
+        assert dep.cwd == str((bundle / "run").resolve())
+        assert dep.args == [
+            "--root",
+            str(bundle),
+            "--data",
+            str(data_root),
+        ]
+        assert dep.env == {
+            "ROOT": str(bundle),
+            "DATA": str(data_root),
+            "PLUGIN_ROOT": str(bundle),
+            "PLUGIN_DATA": str(data_root),
+        }
+
     def test_parse_bundle_mcp_servers_missing_or_malformed_returns_empty(
         self, tmp_path: Path
     ) -> None:
@@ -494,6 +648,27 @@ class TestBundleMcpWiring:
         )
         deps = _parse_bundle_mcp_servers(bundle)
         assert {d.name for d in deps} == {"good"}
+
+    def test_parse_bundle_lsp_servers_root_lsp_json(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_bundle_lsp_servers
+
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        (bundle / "lsp.json").write_text(
+            json.dumps(
+                {
+                    "lspServers": {
+                        "pyright": {
+                            "command": "pyright-langserver",
+                            "extensionToLanguage": {".py": "python"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        deps = _parse_bundle_lsp_servers(bundle)
+        assert {d.name for d in deps} == {"pyright"}
 
     def test_wire_bundle_mcp_servers_invokes_integrator_with_csv_targets(
         self, tmp_path: Path, monkeypatch
@@ -583,13 +758,10 @@ class TestBundleMcpWiring:
         # Integrator is not invoked when the bundle has no servers to wire.
         assert called["n"] == 0
 
-    def test_wire_bundle_mcp_servers_isolates_integrator_failure(
+    def test_wire_bundle_mcp_servers_propagates_integrator_failure(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """A failing ``MCPIntegrator.install`` must not propagate -- the
-        rest of the install completes and the user is told to wire the
-        servers manually via ``apm.yml``.
-        """
+        """A failed executable integration must abort the bundle transaction."""
         from apm_cli.install import local_bundle_handler
 
         bundle = tmp_path / "bundle"
@@ -614,16 +786,16 @@ class TestBundleMcpWiring:
             warning=lambda msg, *a, **k: warnings.append(msg),
         )
 
-        count = local_bundle_handler._wire_bundle_mcp_servers(
-            bundle_dir=bundle,
-            targets=[KNOWN_TARGETS["copilot"]],
-            project_root=tmp_path / "project",
-            user_scope=False,
-            verbose=False,
-            logger=logger,
-        )
-        assert count == 0
-        assert any("simulated wiring failure" in w for w in warnings)
+        with pytest.raises(RuntimeError, match="simulated wiring failure"):
+            local_bundle_handler._wire_bundle_mcp_servers(
+                bundle_dir=bundle,
+                targets=[KNOWN_TARGETS["copilot"]],
+                project_root=tmp_path / "project",
+                user_scope=False,
+                verbose=False,
+                logger=logger,
+            )
+        assert warnings == []
 
 
 # ---------------------------------------------------------------------------

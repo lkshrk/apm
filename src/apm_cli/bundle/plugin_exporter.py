@@ -50,6 +50,56 @@ def _validate_output_rel(rel: str) -> bool:
     return ".." not in Path(rel).parts
 
 
+def _scan_bundle_sources(file_map: dict[str, tuple[Path, str]], logger=None) -> None:
+    """Warn when bundle source files contain hidden Unicode characters."""
+    from ..security.gate import WARN_POLICY, SecurityGate
+
+    scan_findings_total = 0
+    for src, _owner in file_map.values():
+        if src.is_symlink():
+            continue
+        if src.is_dir():
+            verdict = SecurityGate.scan_files(src, policy=WARN_POLICY)
+            scan_findings_total += len(verdict.all_findings)
+        elif src.is_file():
+            try:
+                text = src.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            verdict = SecurityGate.scan_text(text, str(src), policy=WARN_POLICY)
+            scan_findings_total += len(verdict.all_findings)
+    if scan_findings_total:
+        message = (
+            f"Bundle contains {scan_findings_total} hidden character(s) across "
+            "source files -- run 'apm audit' to inspect before publishing"
+        )
+        if logger:
+            logger.warning(message)
+        else:
+            _rich_warning(message)
+
+
+def _write_bundle_sources(
+    file_map: dict[str, tuple[Path, str]],
+    bundle_dir: Path,
+    output_dir: Path,
+) -> None:
+    """Write validated bundle sources into a clean output directory."""
+    if bundle_dir.exists():
+        safe_rmtree(bundle_dir, output_dir)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    for output_rel, (source_abs, _owner) in file_map.items():
+        if not _validate_output_rel(output_rel) or source_abs.is_symlink():
+            continue
+        dest = bundle_dir / output_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            ensure_path_within(dest, bundle_dir)
+        except PathTraversalError:
+            continue
+        shutil.copy2(source_abs, dest, follow_symlinks=False)
+
+
 _SAFE_BUNDLE_NAME_RE = re.compile(r"[^a-zA-Z0-9._-]")
 
 
@@ -941,49 +991,10 @@ def export_plugin_bundle(
         return PackResult(bundle_path=bundle_path, files=output_files)
 
     # 10. Security scan (warn-only, never blocks)
-    from ..security.gate import WARN_POLICY, SecurityGate
-
-    scan_findings_total = 0
-    for _rel, (src, _owner) in file_map.items():
-        if src.is_symlink():
-            continue
-        if src.is_dir():
-            verdict = SecurityGate.scan_files(src, policy=WARN_POLICY)
-            scan_findings_total += len(verdict.all_findings)
-        elif src.is_file():
-            try:
-                text = src.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                continue
-            verdict = SecurityGate.scan_text(text, str(src), policy=WARN_POLICY)
-            scan_findings_total += len(verdict.all_findings)
-    if scan_findings_total:
-        _warn_msg = (
-            f"Bundle contains {scan_findings_total} hidden character(s) across "
-            f"source files — run 'apm audit' to inspect before publishing"
-        )
-        if logger:
-            logger.warning(_warn_msg)
-        else:
-            _rich_warning(_warn_msg)
+    _scan_bundle_sources(file_map, logger)
 
     # 11. Write files to output directory (clean slate to prevent symlink attacks)
-    if bundle_dir.exists():
-        safe_rmtree(bundle_dir, output_dir)
-    bundle_dir.mkdir(parents=True, exist_ok=True)
-
-    for output_rel, (source_abs, _owner) in file_map.items():
-        if not _validate_output_rel(output_rel):
-            continue
-        dest = bundle_dir / output_rel
-        if source_abs.is_symlink():
-            continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            ensure_path_within(dest, bundle_dir)
-        except PathTraversalError:
-            continue
-        shutil.copy2(source_abs, dest, follow_symlinks=False)
+    _write_bundle_sources(file_map, bundle_dir, output_dir)
 
     # 12. Write merged hooks.json
     if merged_hooks:

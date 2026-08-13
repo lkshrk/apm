@@ -15,9 +15,16 @@ apm pack [OPTIONS]
 
 `apm pack` produces distributable artifacts from the current APM project. It reads `apm.yml` to decide what to emit:
 
+For the producer walkthrough and compatibility table, see
+[Pack a bundle](../../../producer/pack-a-bundle/) and
+[Agent Plugins v1 migration](../../../getting-started/agent-plugins-v1-migration/).
+For the install-time trust boundary, see
+[Security Model](../../../enterprise/security/#local-bundle-install-trust-model)
+and [`apm audit`](../audit/).
+
 - `dependencies:` mapping present -> a bundle (directory by default, or archive with `--archive`; see `--archive-format`). An explicit empty mapping (`dependencies: {}`) produces a bundle of the package's local content; an omitted or null `dependencies:` value does not.
 - `marketplace:` block present -> selected marketplace artifacts.
-- `target:` (or `targets:`) field containing `claude` or `copilot` -> ecosystem-specific `plugin.json` files.
+- `target:` (or `targets:`) containing `copilot` -> a Copilot manifest. Claude sidecar generation runs only with `--claude-plugin`.
 - Both blocks present -> bundle plus selected marketplace artifacts in a single run.
 
 The bundle is built from `apm.lock.yaml`. An enriched copy of the lockfile (per-file SHA-256 in `bundle_files`, plus `pack:` metadata) is embedded inside the bundle so `apm install <bundle>` can verify integrity at install time.
@@ -28,7 +35,9 @@ Bundles are target-agnostic. The consumer's project decides where files land at 
 
 | Flag | Default | Description |
 |---|---|---|
-| `--format plugin\|apm` | `plugin` | Bundle format. `plugin` emits a Claude Code plugin directory with `plugin.json` and plugin-native subdirs (`agents/`, `skills/`, `commands/`, `instructions/`, `hooks/`). `apm` emits the legacy APM bundle layout, kept for tooling that still consumes it (e.g. `microsoft/apm-action@v1` restore mode). |
+| `--plugin` | off | Explicitly request Agent Plugin v1 output (the default when no `--format` selector is provided). |
+| `--claude-plugin` | off | Select the historical Claude plugin exporter and enable target-driven `.claude-plugin/plugin.json` generation. |
+| `--format plugin\|agent-plugin\|claude-plugin\|apm` | `plugin` | `plugin` and `agent-plugin` emit Agent Plugin v1. `claude-plugin` selects the historical Claude layout. `apm` emits the legacy APM bundle. |
 | `--archive` | off | Produce a `.zip` archive instead of a directory (previous default: `.tar.gz`; use `--archive-format tar.gz` for legacy CI pipelines). Bundle only. |
 | `--archive-format zip\|tar.gz` | `zip` | Archive format when `--archive` is set. `zip` is natively extractable on Windows and matches the format expected by Claude Code and plugin hosts. `tar.gz` is typically smaller for text-heavy bundles and preserves the previous default for pipelines that depend on it. |
 | `-o`, `--output PATH` | `./build` | Bundle output directory. Does not affect the `marketplace.json` path. |
@@ -104,20 +113,37 @@ apm pack --archive --dry-run -v
 
 ## Output format
 
-### Plugin bundle (`--format plugin`, default)
+### Agent Plugin bundle (`--format plugin`, default)
 
-A Claude Code plugin directory under `--output`. Contains:
+By default `apm pack` emits an Agent Plugin v1 bundle (the canonical Agent Plugin layout). `--plugin` and `--format plugin` both select this output. The Agent Plugin bundle is a converged, schema-validated artifact intended as the canonical distributable for plugin hosts and APM consumers.
 
-- `plugin.json` -- schema-conformant manifest. Convention-dir keys are stripped because Claude Code auto-discovers them.
-- Plugin-native subdirs populated from local source and installed dependencies: `agents/`, `skills/`, `commands/`, `instructions/`, `hooks/`, `extensions/` (canvas extensions, when the `canvas` experimental flag is enabled).
-  - When `.apm/` exists, local primitives and hooks are sourced from `.apm/`. Root convention sources are skipped with actionable warnings.
-  - Without `.apm/`, supported plugin-native root directories remain pack sources, including after `apm init` writes [`includes: auto`](../../manifest-schema/#39-includes).
-  - An explicit `includes:` list is exhaustive. A missing or unpackable listed path stops packing instead of falling back to implicit discovery.
-- Installed dependencies are packed exclusively from lockfile-attested `deployed_files`; the `apm_modules` cache is never packed (it has no provenance or integrity guarantee). Each attested file is verified against its `deployed_file_hashes` SHA-256 before inclusion.
-  - If the dependency declares `skills:`, only the named skills are included; the cache cannot add extras.
-  - If a dependency has cached primitives but no `deployed_files`, `apm pack` fails and tells you to run `apm install`.
-- A merged `hooks.json` from the producer's own hooks. Dependency hook-configs and MCP-configs are not merged into the bundle; dependencies contribute only their attested `deployed_files` (hook scripts recorded there still map into `hooks/`).
-- `apm.lock.yaml` -- enriched copy with `pack:` metadata and a `bundle_files` map of per-file SHA-256 digests, used by `apm install` for install-time integrity verification.
+Contents (typical):
+
+- `plugin.json` — Agent Plugins v1 manifest (synthesised from `apm.yml` when not authored). Note: `apm.yml` remains the authoring source; `plugin.json` is the produced artifact the host consumes.
+- Converged content:
+  - `skills/` — top-level skill bundles (one directory per named skill).
+  - `com.microsoft.apm/agents/`, `com.microsoft.apm/commands/`, `com.microsoft.apm/instructions/`, `com.microsoft.apm/hooks/`, `com.microsoft.apm/extensions/` — the namespaced payload that holds primitive categories in the Agent Plugin namespace.
+  - `com.microsoft.apm/lsp.json` when LSP servers are present.
+- Optional root `mcp.json` / `.mcp.json` — producer-declared MCP metadata. Packed as bundle metadata and routed into each target's native MCP config at install time; the bundle's `.mcp.json` is not deployed verbatim.
+- `apm.lock.yaml` at the bundle root — an enriched lockfile with `pack:` metadata and a `bundle_files` map of per-file SHA-256 digests used by `apm install` for install-time integrity verification.
+- Optional docs copied from the project root when present: `README.md`, `LICENSE`, `CHANGELOG.md`.
+
+Source and dependency rules:
+
+- Local primitives are sourced from `.apm/` when present. Without `.apm/`, APM falls back to root convention directories such as `agents/`, `skills/`, `commands/`, and `hooks/`, but `.apm/` is preferred and root sources are skipped with an actionable warning when both exist. An explicit `includes:` list is exhaustive; missing or unpackable listed paths fail the pack instead of falling back.
+- Installed dependencies are included only from lockfile-attested `deployed_files`; the `apm_modules` cache is never packed. Each attested file is verified against its recorded SHA-256 (`deployed_file_hashes`). If a dependency declares a `skills:` subset, only the named skills are included. A dependency with cached primitives but no `deployed_files` causes `apm pack` to fail and instruct you to run `apm install`.
+
+Compatibility flags and migration notes:
+
+- `--claude-plugin` preserves the historical Claude-compatible exporter and layout (the legacy Claude plugin manifest and directory shapes). Use this flag to remain fully compatible with Claude Code hosts that expect the older layout.
+- `--plugin` and `--format plugin` map to the Agent Plugin v1 output (the new canonical format).
+- `--format apm` emits the legacy APM bundle layout for tooling that still requires it.
+
+Notes:
+
+- `apm.yml` is the source-of-truth for authoring. `plugin.json` is an emitted artifact and may be regenerated by `apm pack` from `apm.yml`.
+- The embedded `apm.lock.yaml` is the authoritative provenance and integrity record for the bundle content.
+- The packer performs Agent Plugins schema validation and integrity checks; packing fails on missing provenance, unstated deployed files, or other conditions the exporter cannot satisfy, with actionable instructions to fix the source and retry.
 - `devDependencies` are excluded.
 
 ### APM bundle (`--format apm`)
@@ -146,7 +172,7 @@ Configure marketplace artifact paths in `apm.yml` with the `marketplace.outputs`
 
 ### Plugin manifests
 
-Ship one APM package; consumers get a native plugin for their tool of choice. When `apm.yml` declares a [`target:`](../../manifest-schema/#36-target) (or `targets:`) field containing `claude` or `copilot`, `apm pack` generates an ecosystem-specific `plugin.json` so the same source tree drops into a Claude Code plugin directory or a Copilot plugin path with no hand-editing.
+By default, an Agent Plugin build emits only the target-driven Copilot sidecar. To generate the historical Claude sidecar and layout, run `apm pack --claude-plugin`. Use `targets: [claude, copilot]` together with `apm pack --claude-plugin` to emit both sidecars.
 
 | Ecosystem | Output path |
 |---|---|
@@ -163,10 +189,10 @@ target: claude
 ```
 
 ```bash
-apm pack   # writes .claude-plugin/plugin.json
+apm pack --claude-plugin   # writes .claude-plugin/plugin.json
 ```
 
-Use `targets: [claude, copilot]` instead to emit both `.claude-plugin/plugin.json` and `.github/plugin/plugin.json` from the one source tree in a single `apm pack`.
+Use `targets: [claude, copilot]` with `apm pack --claude-plugin` to emit both sidecars. A default Agent Plugin build emits only the Copilot sidecar.
 
 `target:` and `targets:` are mutually exclusive: declaring both is a build error (exit `1`). An empty `targets:` list or an unrecognised ecosystem token is likewise rejected before any artifact is written.
 
@@ -219,5 +245,6 @@ Plugin manifest generation runs after BUNDLE and MARKETPLACE phases so the gener
 - [`apm unpack`](../unpack/) -- inverse, deprecated; prefer `apm install <bundle>`.
 - [`apm install`](../install/) -- consumer side; installs a packed bundle directory, `.zip`, or `.tar.gz`.
 - [Pack a bundle (producer guide)](../../../producer/pack-a-bundle/) -- task-oriented walkthrough.
+- [Agent Plugins v1 migration](../../../getting-started/agent-plugins-v1-migration/) -- compatibility table and warning schedule.
 - [Publish to a marketplace](../../../producer/publish-to-a-marketplace/) -- end-to-end marketplace flow.
 - [Lockfile spec](../../lockfile-spec/) -- `pack:` metadata and `bundle_files` schema.

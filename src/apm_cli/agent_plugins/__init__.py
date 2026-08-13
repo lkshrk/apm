@@ -1,0 +1,56 @@
+"""Agent Plugins v1 contract helpers."""
+
+from .constants import (
+    AGENT_PLUGINS_SCHEMA_PREFIX,
+    AGENT_PLUGINS_VERSION,
+    COM_MICROSOFT_APM_NAMESPACE,
+    COM_MICROSOFT_APM_SCHEMA_VERSION,
+    MCP_SCHEMA_ID,
+    PLUGIN_SCHEMA_ID,
+    SUPPORTED_MCP_SCHEMA_IDS,
+    SUPPORTED_PLUGIN_SCHEMA_IDS,
+)
+from .io import MAX_JSON_BYTES, read_json_document
+from .validation import (
+    ValidationResult,
+    args_contain_literal_secret,
+    contains_literal_secret_fields,
+    is_agent_plugin_schema_id,
+    schema_version_from_id,
+    supports_mcp_schema_id,
+    supports_plugin_schema_id,
+    url_contains_literal_secret,
+    validate_lsp_extension_document,
+    validate_lsp_extension_file,
+    validate_mcp_config_document,
+    validate_mcp_config_file,
+    validate_plugin_manifest_document,
+    validate_plugin_manifest_file,
+)
+
+__all__ = [
+    "AGENT_PLUGINS_SCHEMA_PREFIX",
+    "AGENT_PLUGINS_VERSION",
+    "COM_MICROSOFT_APM_NAMESPACE",
+    "COM_MICROSOFT_APM_SCHEMA_VERSION",
+    "MAX_JSON_BYTES",
+    "MCP_SCHEMA_ID",
+    "PLUGIN_SCHEMA_ID",
+    "SUPPORTED_MCP_SCHEMA_IDS",
+    "SUPPORTED_PLUGIN_SCHEMA_IDS",
+    "ValidationResult",
+    "args_contain_literal_secret",
+    "contains_literal_secret_fields",
+    "is_agent_plugin_schema_id",
+    "read_json_document",
+    "schema_version_from_id",
+    "supports_mcp_schema_id",
+    "supports_plugin_schema_id",
+    "url_contains_literal_secret",
+    "validate_lsp_extension_document",
+    "validate_lsp_extension_file",
+    "validate_mcp_config_document",
+    "validate_mcp_config_file",
+    "validate_plugin_manifest_document",
+    "validate_plugin_manifest_file",
+]

@@ -203,6 +203,9 @@ apm install ./my-bundle.zip --as custom-name
 apm install ./my-bundle --target opencode
 ```
 
+If the bundle still uses the historical Claude layout or legacy APM
+bundle format, repack it first. See [Agent Plugins v1 migration](../../../getting-started/agent-plugins-v1-migration/).
+
 ### Install only a subset of skills from a bundle
 
 ```bash

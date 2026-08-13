@@ -29,12 +29,13 @@ EXEC_TYPE_HOOKS = "hooks"
 EXEC_TYPE_MCP = "mcp"
 EXEC_TYPE_BIN = "bin"
 EXEC_TYPE_CANVAS = "canvas"
+EXEC_TYPE_LSP = "lsp"
 
 # Types with active enforcement in the install gate.
 ENFORCED_EXEC_TYPES = (EXEC_TYPE_HOOKS, EXEC_TYPE_BIN, EXEC_TYPE_MCP, EXEC_TYPE_CANVAS)
 
 # All recognised exec-type keys (for manifest validation).
-ALL_EXEC_TYPES = (EXEC_TYPE_HOOKS, EXEC_TYPE_MCP, EXEC_TYPE_BIN, EXEC_TYPE_CANVAS)
+ALL_EXEC_TYPES = (EXEC_TYPE_HOOKS, EXEC_TYPE_MCP, EXEC_TYPE_BIN, EXEC_TYPE_CANVAS, EXEC_TYPE_LSP)
 
 
 @dataclass(frozen=True)

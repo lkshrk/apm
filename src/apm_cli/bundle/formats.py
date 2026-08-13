@@ -1,0 +1,141 @@
+"""Canonical bundle format authority for ``apm pack``."""
+
+from __future__ import annotations
+
+import enum
+import re
+
+
+class BundleFormat(str, enum.Enum):
+    """Supported bundle output families."""
+
+    AGENT_PLUGIN = "agent-plugin"
+    CLAUDE_PLUGIN = "claude-plugin"
+    APM = "apm"
+
+    @property
+    def lock_value(self) -> str:
+        """Return the value written to ``pack.format``."""
+        return self.value
+
+    @property
+    def display_name(self) -> str:
+        """Return a human-friendly label."""
+        return {
+            BundleFormat.AGENT_PLUGIN: "Agent Plugin",
+            BundleFormat.CLAUDE_PLUGIN: "Claude plugin",
+            BundleFormat.APM: "APM",
+        }[self]
+
+
+_CLI_CHOICES = ("plugin", "agent-plugin", "claude", "claude-plugin", "apm")
+_SELECTOR_ALIASES: dict[str, BundleFormat] = {
+    "plugin": BundleFormat.AGENT_PLUGIN,
+    "agent-plugin": BundleFormat.AGENT_PLUGIN,
+    "agent_plugin": BundleFormat.AGENT_PLUGIN,
+    "claude": BundleFormat.CLAUDE_PLUGIN,
+    "claude-plugin": BundleFormat.CLAUDE_PLUGIN,
+    "claude_plugin": BundleFormat.CLAUDE_PLUGIN,
+    "apm": BundleFormat.APM,
+}
+_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)")
+
+
+def cli_format_choices() -> tuple[str, ...]:
+    """Return accepted ``--format`` selector tokens."""
+    return _CLI_CHOICES
+
+
+def coerce_bundle_format(value: str | BundleFormat | None) -> BundleFormat:
+    """Normalize *value* to a :class:`BundleFormat`."""
+    if value is None:
+        return BundleFormat.AGENT_PLUGIN
+    if isinstance(value, BundleFormat):
+        return value
+    key = value.strip().lower().replace(" ", "-").replace("_", "-")
+    if key in _SELECTOR_ALIASES:
+        return _SELECTOR_ALIASES[key]
+    for member in BundleFormat:
+        if key == member.value:
+            return member
+    known = ", ".join(_CLI_CHOICES)
+    raise ValueError(f"Unknown bundle format {value!r}. Known selectors: {known}")
+
+
+def resolve_bundle_format(
+    fmt: str | None,
+    *,
+    plugin: bool = False,
+    claude_plugin: bool = False,
+) -> BundleFormat:
+    """Resolve CLI selectors to a canonical bundle format.
+
+    ``--plugin`` and ``--format plugin`` both map to Agent Plugin output.
+    ``--claude-plugin`` preserves the historical Claude exporter behavior.
+    Contradictory explicit selectors raise ``ValueError`` so the caller can
+    surface a Click usage error.
+    """
+    selections: list[BundleFormat] = []
+    if fmt is not None:
+        selections.append(coerce_bundle_format(fmt))
+    if plugin:
+        selections.append(BundleFormat.AGENT_PLUGIN)
+    if claude_plugin:
+        selections.append(BundleFormat.CLAUDE_PLUGIN)
+
+    chosen = []
+    for selection in selections:
+        if selection not in chosen:
+            chosen.append(selection)
+
+    if len(chosen) > 1:
+        selector_text = ", ".join(format_selection_text(fmt, plugin, claude_plugin))
+        raise ValueError(f"Options {selector_text} are mutually exclusive")
+    if chosen:
+        return chosen[0]
+    return BundleFormat.AGENT_PLUGIN
+
+
+def format_selection_text(
+    fmt: str | None,
+    plugin: bool,
+    claude_plugin: bool,
+) -> tuple[str, ...]:
+    """Return the explicit selectors used by the caller."""
+    selected: list[str] = []
+    if fmt is not None:
+        selected.append(f"--format {fmt}")
+    if plugin:
+        selected.append("--plugin")
+    if claude_plugin:
+        selected.append("--claude-plugin")
+    return tuple(selected)
+
+
+def agent_plugin_warning(version: str | None = None) -> str | None:
+    """Return the transition warning for the Agent Plugin default window."""
+    if version is None:
+        from ..version import get_version
+
+        version = get_version()
+    match = _VERSION_RE.match(version)
+    if match is None:
+        return None
+    major = int(match.group("major"))
+    minor = int(match.group("minor"))
+    if major == 0 and 29 <= minor <= 33:
+        return (
+            "apm pack now defaults to Agent Plugin output; use --claude-plugin "
+            "for the legacy Claude plugin bundle."
+        )
+    return None
+
+
+__all__ = [
+    "BundleFormat",
+    "agent_plugin_warning",
+    "cli_format_choices",
+    "coerce_bundle_format",
+    "format_selection_text",
+    "resolve_bundle_format",
+]

@@ -47,6 +47,7 @@ class TestLockfileEnrichment:
         parsed = yaml.safe_load(result)
 
         assert parsed["lockfile_version"] == "1"
+        assert parsed["pack"]["format"] == "agent-plugin"
 
     def test_does_not_mutate_original(self):
         lf = _make_lockfile()

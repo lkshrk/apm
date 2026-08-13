@@ -59,6 +59,7 @@ def _format_package_type_label(pkg_type) -> str | None:
 
     return {
         PackageType.CLAUDE_SKILL: "Skill (SKILL.md detected)",
+        PackageType.AGENT_PLUGIN: "Agent Plugin (plugin.json)",
         PackageType.MARKETPLACE_PLUGIN: "Marketplace Plugin (plugin.json or agents/skills/commands)",
         PackageType.HYBRID: "Hybrid (apm.yml + SKILL.md)",
         PackageType.APM_PACKAGE: "APM Package (apm.yml)",
@@ -289,7 +290,7 @@ class LocalDependencySource(DependencySource):
         # Detect package type
         pkg_type, plugin_json_path = detect_package_type(install_path)
         local_info.package_type = pkg_type
-        if pkg_type == PackageType.MARKETPLACE_PLUGIN:
+        if pkg_type in {PackageType.AGENT_PLUGIN, PackageType.MARKETPLACE_PLUGIN}:
             from apm_cli.deps.plugin_parser import normalize_plugin_directory
 
             normalize_plugin_directory(install_path, plugin_json_path)

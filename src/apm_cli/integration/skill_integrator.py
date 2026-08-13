@@ -204,7 +204,7 @@ def get_effective_type(package_info) -> "PackageContentType":
 
     Determines type by:
     1. Package has SKILL.md (PackageType.CLAUDE_SKILL or HYBRID) -> SKILL
-    2. Package is a SKILL_BUNDLE or MARKETPLACE_PLUGIN (has skills/) -> SKILL
+    2. Package is a SKILL_BUNDLE or plugin package with skills/ -> SKILL
     3. Otherwise -> INSTRUCTIONS (compile to AGENTS.md only)
 
     Args:
@@ -219,7 +219,7 @@ def get_effective_type(package_info) -> "PackageContentType":
     # PackageType.CLAUDE_SKILL = has root SKILL.md only
     # PackageType.HYBRID = has both apm.yml AND root SKILL.md
     # PackageType.SKILL_BUNDLE = has skills/<name>/SKILL.md (nested bundle)
-    # PackageType.MARKETPLACE_PLUGIN = has plugin manifest (plugin.json or
+    # PackageType.AGENT_PLUGIN / MARKETPLACE_PLUGIN = has plugin manifest (plugin.json or
     #   .claude-plugin/); may or may not include skills/. The integrator
     #   path gates on actual skills/ presence, so plugins without skills
     #   are inert in the SKILL branch.
@@ -227,6 +227,7 @@ def get_effective_type(package_info) -> "PackageContentType":
         PackageType.CLAUDE_SKILL,
         PackageType.HYBRID,
         PackageType.SKILL_BUNDLE,
+        PackageType.AGENT_PLUGIN,
         PackageType.MARKETPLACE_PLUGIN,
     ):
         return PackageContentType.SKILL
@@ -626,7 +627,10 @@ class SkillIntegrator(BaseIntegrator):
 
         normalized = package_path / ".apm" / "skills"
         root_bundle = package_path / "skills"
-        if package_info.package_type is PackageType.MARKETPLACE_PLUGIN:
+        if package_info.package_type in (
+            PackageType.AGENT_PLUGIN,
+            PackageType.MARKETPLACE_PLUGIN,
+        ):
             return SkillIntegrator._skill_names_in_directory(normalized)
 
         root_names = SkillIntegrator._skill_names_in_directory(root_bundle)
@@ -1423,7 +1427,10 @@ class SkillIntegrator(BaseIntegrator):
         bin_skip_reason: str | None = None
         from apm_cli.models.apm_package import PackageType as _PackageType
 
-        if package_info.package_type == _PackageType.MARKETPLACE_PLUGIN:
+        if package_info.package_type in (
+            _PackageType.AGENT_PLUGIN,
+            _PackageType.MARKETPLACE_PLUGIN,
+        ):
             if skip_bin:
                 bin_skip_reason = bin_skip_reason_override or "not_approved"
             else:

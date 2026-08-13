@@ -838,6 +838,15 @@ def integrate_local_bundle(
     )
 
     bundle_dir: Path = bundle_info.source_dir
+    bundle_metadata_files = {
+        "plugin.json",
+        ".mcp.json",
+        "mcp.json",
+        ".lsp.json",
+        "lsp.json",
+        "com.microsoft.apm/mcp.json",
+        "com.microsoft.apm/lsp.json",
+    }
     pack_files = _bundle_pack_files(bundle_info)
 
     if not pack_files:
@@ -853,7 +862,7 @@ def integrate_local_bundle(
             # consumer projects.  Match the deploy-loop semantics so
             # case-folding filesystems do not let a renamed file slip
             # into pack_files unnecessarily.
-            if rel == "apm.lock.yaml" or rel.lower() == "plugin.json" or rel.lower() == ".mcp.json":
+            if rel == "apm.lock.yaml" or rel.lower() in bundle_metadata_files:
                 continue
             pack_files[rel] = hashlib.sha256(fp.read_bytes()).hexdigest()
 
@@ -879,7 +888,7 @@ def integrate_local_bundle(
     # the previously-inline guards in the deploy loop.
     _filtered_pack_files: dict[str, str] = {}
     for _rel, _hash in pack_files.items():
-        if _rel.lower() in {"plugin.json", ".mcp.json"}:
+        if _rel.lower() in bundle_metadata_files:
             continue
         _filtered_pack_files[_rel] = _hash
     pack_files = _filtered_pack_files
