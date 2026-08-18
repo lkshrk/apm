@@ -153,7 +153,12 @@ def _check_facade(tree: ast.Module, path: Path) -> list[str]:
     violations = _boundary_violations(
         function,
         path,
-        allowed_calls=frozenset({"ValueError", "prepare_agent_plugin_mcp_servers"}),
+        allowed_calls=frozenset(
+            {
+                "AgentPluginDeploymentBoundaryError",
+                "prepare_agent_plugin_mcp_servers",
+            }
+        ),
     )
     plugin_value = _named_assignment(function, "plugin")
     if plugin_value is None or not _attribute_chain(
@@ -163,6 +168,36 @@ def _check_facade(tree: ast.Module, path: Path) -> list[str]:
         violations.append(
             f"{path}:{function.lineno}: native MCP preparation must consume package_info.package."
             "agent_plugin directly"
+        )
+    missing_ir_guards = [
+        node
+        for node in function.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "plugin"
+        and len(node.test.ops) == 1
+        and isinstance(node.test.ops[0], ast.Is)
+        and len(node.test.comparators) == 1
+        and isinstance(node.test.comparators[0], ast.Constant)
+        and node.test.comparators[0].value is None
+    ]
+    typed_missing_ir_raises = []
+    if len(missing_ir_guards) == 1:
+        typed_missing_ir_raises = [
+            node
+            for node in ast.walk(missing_ir_guards[0])
+            if isinstance(node, ast.Raise)
+            and isinstance(node.exc, ast.Call)
+            and _call_name(node.exc) == "AgentPluginDeploymentBoundaryError"
+            and len(node.exc.args) == 1
+            and isinstance(node.exc.args[0], ast.Name)
+            and node.exc.args[0].id == "AGENT_PLUGIN_IR_MISSING"
+        ]
+    if len(missing_ir_guards) != 1 or len(typed_missing_ir_raises) != 1:
+        violations.append(
+            f"{path}:{function.lineno}: missing attached Agent Plugin IR must raise "
+            "AgentPluginDeploymentBoundaryError with AGENT_PLUGIN_IR_MISSING"
         )
     projection = _single_call(function, "prepare_agent_plugin_mcp_servers")
     if (

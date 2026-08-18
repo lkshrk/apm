@@ -7,6 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import urlparse
 
+import pytest
+
+from apm_cli.agent_plugins.errors import (
+    AGENT_PLUGIN_IR_MISSING,
+    AgentPluginDeploymentBoundaryError,
+)
 from apm_cli.agent_plugins.ir import (
     AgentPlugin,
     AgentPluginComponents,
@@ -135,6 +141,24 @@ def _package_info(plugin: AgentPlugin, root: Path) -> PackageInfo:
 
 def _prepared_by_name(preparation: AgentPluginMCPPreparation) -> dict:
     return {result.server_name: result.config for result in preparation.successes}
+
+
+def test_native_preparation_rejects_missing_attached_ir_with_typed_boundary(
+    tmp_path: Path,
+) -> None:
+    package_info = PackageInfo(
+        package=APMPackage(name="not-native", version="1.0.0"),
+        install_path=tmp_path,
+    )
+
+    with pytest.raises(AgentPluginDeploymentBoundaryError) as raised:
+        prepare_attached_agent_plugin_mcp(
+            package_info,
+            plugin_root=tmp_path / "deployed",
+            plugin_data=tmp_path / "data",
+        )
+
+    assert str(raised.value) == AGENT_PLUGIN_IR_MISSING
 
 
 def test_native_preparation_expands_only_portable_path_placeholders(tmp_path: Path) -> None:

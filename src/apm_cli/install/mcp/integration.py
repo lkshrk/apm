@@ -25,7 +25,12 @@ def prepare_attached_agent_plugin_mcp(
     """Prepare native MCP facts exclusively from the attached canonical IR."""
     plugin = package_info.package.agent_plugin
     if plugin is None:
-        raise ValueError("Native Agent Plugin MCP preparation requires attached canonical IR")
+        from apm_cli.agent_plugins.errors import (
+            AGENT_PLUGIN_IR_MISSING,
+            AgentPluginDeploymentBoundaryError,
+        )
+
+        raise AgentPluginDeploymentBoundaryError(AGENT_PLUGIN_IR_MISSING)
 
     from apm_cli.integration.mcp_integrator_native import prepare_agent_plugin_mcp_servers
 

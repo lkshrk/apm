@@ -42,6 +42,23 @@ def test_native_agent_plugin_mcp_has_static_boundary() -> None:
             "must consume package_info.package.agent_plugin directly",
         ),
         (
+            "src/apm_cli/install/mcp/integration.py",
+            "    if plugin is None:\n"
+            "        from apm_cli.agent_plugins.errors import (\n"
+            "            AGENT_PLUGIN_IR_MISSING,\n"
+            "            AgentPluginDeploymentBoundaryError,\n"
+            "        )\n\n"
+            "        raise AgentPluginDeploymentBoundaryError(AGENT_PLUGIN_IR_MISSING)",
+            "    if plugin is None:\n        pass",
+            "missing attached Agent Plugin IR must raise",
+        ),
+        (
+            "src/apm_cli/install/mcp/integration.py",
+            "        raise AgentPluginDeploymentBoundaryError(AGENT_PLUGIN_IR_MISSING)",
+            '        raise AttributeError("agent_plugin")',
+            "missing attached Agent Plugin IR must raise",
+        ),
+        (
             "src/apm_cli/integration/mcp_integrator_native.py",
             'r"\\$\\{(?P<name>PLUGIN_ROOT|PLUGIN_DATA)\\}"',
             'r"\\$\\{(?P<name>[^}]+)\\}"',
