@@ -11,8 +11,29 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from apm_cli.core.target_detection import EffectiveTargetDecision
-    from apm_cli.models.apm_package import APMPackage
+    from apm_cli.models.apm_package import APMPackage, PackageInfo
     from apm_cli.models.dependency.mcp import MCPDependency
+    from apm_cli.models.dependency.native_mcp import AgentPluginMCPPreparation
+
+
+def prepare_attached_agent_plugin_mcp(
+    package_info: "PackageInfo",
+    *,
+    plugin_root: Path,
+    plugin_data: Path,
+) -> "AgentPluginMCPPreparation":
+    """Prepare native MCP facts exclusively from the attached canonical IR."""
+    plugin = package_info.package.agent_plugin
+    if plugin is None:
+        raise ValueError("Native Agent Plugin MCP preparation requires attached canonical IR")
+
+    from apm_cli.integration.mcp_integrator_native import prepare_agent_plugin_mcp_servers
+
+    return prepare_agent_plugin_mcp_servers(
+        plugin,
+        plugin_root=plugin_root,
+        plugin_data=plugin_data,
+    )
 
 
 def run_owned_mcp_integration(

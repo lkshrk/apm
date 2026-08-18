@@ -2,6 +2,15 @@
 
 from .lsp import LSPDependency
 from .mcp import MCPDependency
+from .native_mcp import (
+    AgentPluginMCPPreparation,
+    AgentPluginMCPPreparationFailure,
+    AgentPluginMCPPreparationResult,
+    AgentPluginMCPPreparationSuccess,
+    AgentPluginMCPProvenance,
+    AgentPluginMCPServerConfig,
+    AgentPluginMCPServerProvenance,
+)
 from .reference import DependencyReference
 from .types import (
     GitReferenceType,
@@ -12,6 +21,13 @@ from .types import (
 )
 
 __all__ = [
+    "AgentPluginMCPPreparation",
+    "AgentPluginMCPPreparationFailure",
+    "AgentPluginMCPPreparationResult",
+    "AgentPluginMCPPreparationSuccess",
+    "AgentPluginMCPProvenance",
+    "AgentPluginMCPServerConfig",
+    "AgentPluginMCPServerProvenance",
     "DependencyReference",
     "GitReferenceType",
     "LSPDependency",
