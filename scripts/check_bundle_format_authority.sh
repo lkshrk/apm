@@ -49,6 +49,18 @@ if [ -f "$agent_plugin_exporter" ]; then
         echo "[x] Agent Plugin production must canonically reload staged output before commit"
         exit 1
     fi
+
+fi
+
+reproducible_archive="$repo_root/src/apm_cli/bundle/reproducible_archive.py"
+if [ -f "$reproducible_archive" ] \
+    && { grep -q '\.read_bytes(' "$reproducible_archive" \
+        || grep -q 'source\.read(' "$reproducible_archive" \
+        || grep -q 'BytesIO' "$reproducible_archive" \
+        || ! grep -q 'shutil.copyfileobj(source, member)' "$reproducible_archive" \
+        || ! grep -q 'archive.addfile(info, source)' "$reproducible_archive"; }; then
+    echo "[x] Reproducible archives must stream file payloads without full-file buffering"
+    exit 1
 fi
 
 init_owner="$repo_root/src/apm_cli/commands/init.py"

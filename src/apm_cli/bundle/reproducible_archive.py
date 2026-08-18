@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import gzip
-import io
+import shutil
 import stat
 import tarfile
 import zipfile
@@ -42,7 +42,8 @@ def _write_zip(bundle_dir: Path, archive_path: Path) -> None:
             info.create_system = 3
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (stat.S_IFREG | _normalized_mode(path)) << 16
-            archive.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED)
+            with path.open("rb") as source, archive.open(info, "w") as member:
+                shutil.copyfileobj(source, member)
 
 
 def _write_tar_gz(bundle_dir: Path, archive_path: Path) -> None:
@@ -50,16 +51,16 @@ def _write_tar_gz(bundle_dir: Path, archive_path: Path) -> None:
         with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as compressed:
             with tarfile.open(fileobj=compressed, mode="w", format=tarfile.GNU_FORMAT) as archive:
                 for path in _archive_files(bundle_dir):
-                    payload = path.read_bytes()
                     info = tarfile.TarInfo(_archive_name(bundle_dir, path))
-                    info.size = len(payload)
+                    info.size = path.stat().st_size
                     info.mode = _normalized_mode(path)
                     info.mtime = 0
                     info.uid = 0
                     info.gid = 0
                     info.uname = ""
                     info.gname = ""
-                    archive.addfile(info, io.BytesIO(payload))
+                    with path.open("rb") as source:
+                        archive.addfile(info, source)
 
 
 def write_reproducible_archive(

@@ -217,7 +217,7 @@ class TestPackUnified:
         result = runner.invoke(pack_cmd, ["--plugin", "--claude-plugin"])
 
         assert result.exit_code == 2
-        assert "Options --plugin, --claude-plugin are mutually exclusive" in result.output
+        assert "Choose one bundle format selector" in result.output
 
     def test_pack_marketplace_only(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

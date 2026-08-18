@@ -202,6 +202,12 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
             "rendered.append(",
             "Agent Plugin client projection must type every unsupported component",
         ),
+        (
+            "src/apm_cli/bundle/reproducible_archive.py",
+            "shutil.copyfileobj(source, member)",
+            "member.write(path.read_bytes())",
+            "Reproducible archives must stream file payloads without full-file buffering",
+        ),
     ],
 )
 def test_producer_projection_guard_kills_contract_mutations(

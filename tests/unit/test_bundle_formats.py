@@ -34,7 +34,7 @@ class TestBundleFormatSelection:
         assert resolve_bundle_format(None) is PREFERRED_PLUGIN_FORMAT
 
     def test_conflicting_selectors_raise(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(ValueError, match="Choose one bundle format selector"):
             resolve_bundle_format("apm", plugin=True)
 
     @pytest.mark.parametrize(
@@ -45,7 +45,7 @@ class TestBundleFormatSelection:
         ],
     )
     def test_redundant_selectors_are_rejected(self, fmt, plugin, claude_plugin):
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        with pytest.raises(ValueError, match="Choose one bundle format selector"):
             resolve_bundle_format(fmt, plugin=plugin, claude_plugin=claude_plugin)
 
 

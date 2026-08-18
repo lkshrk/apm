@@ -125,7 +125,7 @@ class TestInitCommand:
 
                 assert result.exit_code == 0
                 assert "apm.yml already exists" in result.output
-                assert "--yes specified, overwriting apm.yml..." in result.output
+                assert "--yes specified, overwriting: apm.yml" in result.output
             finally:
                 os.chdir(self.original_dir)  # restore CWD before TemporaryDirectory cleanup
 

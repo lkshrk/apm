@@ -74,8 +74,8 @@ def resolve_bundle_format(
 
     ``--plugin`` and ``--format plugin`` both map to Agent Plugin output.
     ``--claude-plugin`` preserves the historical Claude exporter behavior.
-    Contradictory explicit selectors raise ``ValueError`` so the caller can
-    surface a Click usage error.
+    Multiple explicit selectors raise ``ValueError`` so the caller can surface
+    a Click usage error, including when two selectors resolve to the same format.
     """
     selections: list[BundleFormat] = []
     if fmt is not None:
@@ -87,7 +87,7 @@ def resolve_bundle_format(
 
     if len(selections) > 1:
         selector_text = ", ".join(format_selection_text(fmt, plugin, claude_plugin))
-        raise ValueError(f"Options {selector_text} are mutually exclusive")
+        raise ValueError(f"Choose one bundle format selector; received: {selector_text}")
     if selections:
         return selections[0]
     return PREFERRED_PLUGIN_FORMAT

@@ -89,8 +89,7 @@ class TestPluginInitCommand:
             finally:
                 os.chdir(self.original_dir)
 
-    def test_plugin_init_explicit_plugin_flag_matches_default(self):
-        """`--plugin` explicitly selects the same Agent Plugins v1 scaffold."""
+    def test_plugin_init_explicit_plugin_flag_creates_complete_native_scaffold(self):
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
@@ -102,6 +101,10 @@ class TestPluginInitCommand:
                 assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
                 assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
                 assert Path("mcp.json").is_file()
+                assert "Created Files" in result.output
+                assert "apm.yml" in result.output
+                assert "plugin.json" in result.output
+                assert "mcp.json" in result.output
                 from apm_cli.agent_plugins import load_agent_plugin
 
                 loaded = load_agent_plugin(Path.cwd())
@@ -130,7 +133,7 @@ class TestPluginInitCommand:
                 os.chdir(self.original_dir)
 
     def test_plugin_init_conflicting_selectors_is_usage_error(self):
-        """`--plugin` and `--claude-plugin` are mutually exclusive (exit 2)."""
+        """Multiple plugin format selectors produce a clear usage error."""
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
@@ -138,7 +141,7 @@ class TestPluginInitCommand:
                     cli, ["plugin", "init", "demo", "--plugin", "--claude-plugin", "--yes"]
                 )
                 assert result.exit_code == 2
-                assert "mutually exclusive" in result.output.lower()
+                assert "choose one plugin format selector" in result.output.lower()
             finally:
                 os.chdir(self.original_dir)
 
@@ -159,8 +162,43 @@ class TestPluginInitCommand:
                 assert result.exit_code == 1
                 assert "canonical scaffold rejection" in result.output
                 assert "initialized successfully" not in result.output
+                assert not Path("apm.yml").exists()
                 assert not Path("plugin.json").exists()
                 assert not Path("mcp.json").exists()
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_native_loader_failure_preserves_existing_generated_files(
+        self, monkeypatch
+    ):
+        """Brownfield --yes leaves every generated file byte-identical on rejection."""
+
+        def _reject(_root):
+            raise ValueError("canonical scaffold rejection")
+
+        monkeypatch.setattr("apm_cli.agent_plugins.load_agent_plugin", _reject)
+        existing = {
+            "apm.yml": b"name: existing\n",
+            "plugin.json": b'{"name":"existing"}\n',
+            "mcp.json": b'{"mcpServers":{"existing":{}}}\n',
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                project = Path("demo")
+                project.mkdir()
+                for filename, payload in existing.items():
+                    (project / filename).write_bytes(payload)
+                result = self.runner.invoke(
+                    cli,
+                    ["plugin", "init", "demo", "--plugin", "--yes"],
+                )
+                assert result.exit_code == 1
+                assert "canonical scaffold rejection" in result.output
+                assert (
+                    "--yes specified, overwriting: apm.yml, plugin.json, mcp.json" in result.output
+                )
+                assert {filename: Path(filename).read_bytes() for filename in existing} == existing
             finally:
                 os.chdir(self.original_dir)
 
@@ -169,10 +207,12 @@ class TestPluginInitCommand:
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
-                Path("mcp.json").write_text("sentinel\n", encoding="utf-8")
+                project = Path("demo")
+                project.mkdir()
+                (project / "mcp.json").write_text("sentinel\n", encoding="utf-8")
                 result = self.runner.invoke(
                     cli,
-                    ["plugin", "init", ".", "--plugin"],
+                    ["plugin", "init", "demo", "--plugin"],
                     input="n\n",
                 )
                 assert result.exit_code == 0, result.output

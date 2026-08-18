@@ -204,10 +204,10 @@ def _perform_init(
 
         # Handle existing generated files in brownfield projects
         if existing_generated_paths:
+            rendered_paths = ", ".join(path.as_posix() for path in existing_generated_paths)
             if existing_generated_paths == [Path(APM_YML_FILENAME)]:
                 logger.warning("apm.yml already exists")
             else:
-                rendered_paths = ", ".join(path.as_posix() for path in existing_generated_paths)
                 logger.warning(f"Generated files already exist: {rendered_paths}")
 
             if not yes:
@@ -217,7 +217,7 @@ def _perform_init(
                     logger.progress("Initialization cancelled.")
                     return
             else:
-                logger.progress("--yes specified, overwriting apm.yml...")
+                logger.progress(f"--yes specified, overwriting: {rendered_paths}")
 
         # Get project configuration (interactive mode or defaults)
         if not yes:
@@ -248,8 +248,6 @@ def _perform_init(
 
         logger.start(f"Initializing APM project: {config['name']}", symbol="running")
 
-        # Create apm.yml (with devDependencies for plugin mode)
-        _create_minimal_apm_yml(config, plugin=plugin)
         native_sources = find_plugin_root_sources(project_root)
         if native_sources and not (project_root / ".apm").is_dir():
             rendered_sources = ", ".join(
@@ -262,11 +260,11 @@ def _perform_init(
                 "to source from that directory.",
             )
 
-        # Create plugin.json for plugin mode
-        if plugin:
-            if effective_plugin_mode == "agent":
-                _write_and_validate_agent_plugin_scaffold(project_root, config)
-            else:
+        if plugin and effective_plugin_mode == "agent":
+            _write_and_validate_agent_plugin_scaffold(project_root, config)
+        else:
+            _create_minimal_apm_yml(config, plugin=plugin)
+            if plugin:
                 _create_plugin_json(config, mode=effective_plugin_mode)
 
         # Append marketplace authoring block when requested.
@@ -301,6 +299,8 @@ def _perform_init(
                 ]
                 if plugin:
                     files_data.append(("*", "plugin.json", "Plugin metadata"))
+                    if effective_plugin_mode == "agent":
+                        files_data.append(("*", "mcp.json", "MCP server configuration"))
                 table = _create_files_table(files_data, title="Created Files")
                 console.print(table)
         except (ImportError, NameError):
@@ -308,6 +308,8 @@ def _perform_init(
             click.echo("  * apm.yml - Project configuration")
             if plugin:
                 click.echo("  * plugin.json - Plugin metadata")
+                if effective_plugin_mode == "agent":
+                    click.echo("  * mcp.json - MCP server configuration")
 
         _rich_blank_line()
 
@@ -403,7 +405,7 @@ def _perform_init(
 
 
 def _write_and_validate_agent_plugin_scaffold(project_root: Path, config: dict) -> None:
-    """Stage and canonically validate native scaffold files before replacement."""
+    """Stage, validate, and commit all native scaffold files as one transaction."""
     import json
     import tempfile
 
@@ -416,6 +418,11 @@ def _write_and_validate_agent_plugin_scaffold(project_root: Path, config: dict) 
     mcp_document = {"$schema": MCP_SCHEMA_ID, "mcpServers": {}}
     with tempfile.TemporaryDirectory(prefix=".apm-plugin-init-", dir=project_root) as stage:
         staged_root = Path(stage)
+        _create_minimal_apm_yml(
+            config,
+            plugin=True,
+            target_path=staged_root / APM_YML_FILENAME,
+        )
         _create_plugin_json(config, mode="agent", target_path=staged_root / "plugin.json")
         (staged_root / "mcp.json").write_text(
             json.dumps(mcp_document, indent=2, sort_keys=True) + "\n",
@@ -430,8 +437,40 @@ def _write_and_validate_agent_plugin_scaffold(project_root: Path, config: dict) 
         if errors:
             raise ValueError("Generated Agent Plugin scaffold is invalid: " + "; ".join(errors))
 
-        for filename in ("plugin.json", "mcp.json"):
+        _commit_staged_scaffold(
+            staged_root,
+            project_root,
+            (APM_YML_FILENAME, "plugin.json", "mcp.json"),
+        )
+
+
+def _commit_staged_scaffold(
+    staged_root: Path,
+    project_root: Path,
+    filenames: tuple[str, ...],
+) -> None:
+    """Replace a generated file set, restoring every prior file on failure."""
+    backup_root = staged_root / ".backup"
+    backup_root.mkdir()
+    backups: dict[str, Path] = {}
+    committed: list[str] = []
+    try:
+        for filename in filenames:
+            destination = project_root / filename
+            if destination.exists():
+                backup = backup_root / filename
+                os.replace(destination, backup)
+                backups[filename] = backup
+        for filename in filenames:
             os.replace(staged_root / filename, project_root / filename)
+            committed.append(filename)
+    except Exception:
+        for filename in committed:
+            (project_root / filename).unlink(missing_ok=True)
+        for filename, backup in backups.items():
+            if backup.exists():
+                os.replace(backup, project_root / filename)
+        raise
 
 
 def _interactive_project_setup(default_name, logger):

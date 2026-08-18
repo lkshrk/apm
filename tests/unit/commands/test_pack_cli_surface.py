@@ -488,7 +488,7 @@ class TestPackCmdFlags:
     def test_redundant_format_selectors_are_usage_error(self) -> None:
         result = CliRunner().invoke(pack_cmd, ["--plugin", "--format", "plugin"])
         assert result.exit_code == 2
-        assert "mutually exclusive" in result.output
+        assert "Choose one bundle format selector" in result.output
 
     def test_archive_help_includes_migration_and_size_cues(self) -> None:
         result = CliRunner().invoke(pack_cmd, ["--help"])

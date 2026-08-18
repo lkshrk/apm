@@ -42,9 +42,8 @@ def init(project_name, yes, target_flag, plugin_flag, claude_plugin, verbose):
     Equivalent to the deprecated ``apm init --plugin`` flag. Use
     ``apm marketplace init`` to publish a marketplace.
     """
-    # Mutually exclusive selector enforcement: raise Click usage error (exit code 2)
     if plugin_flag and claude_plugin:
-        raise click.UsageError("Options --plugin and --claude-plugin are mutually exclusive")
+        raise click.UsageError("Choose one plugin format selector: --plugin or --claude-plugin")
 
     plugin_mode = "agent" if plugin_flag else "claude" if claude_plugin else None
 
