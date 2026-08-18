@@ -48,6 +48,7 @@ REQUIRED_COMPONENT_VALIDATION = {
     "provenance",
 }
 REQUIRED_CONTEXT_VALIDATION = {"plugin_name", "plugin_version", "explicit_consent"}
+REQUIRED_SOURCE_VALIDATION = EXPECTED_SOURCE_FIELDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,20 @@ def _condition_attributes(node: ast.AST | None, owner: str) -> set[str]:
         for condition in ast.walk(node)
         if isinstance(condition, ast.If)
         for child in ast.walk(condition.test)
+        if isinstance(child, ast.Attribute)
+        and isinstance(child.value, ast.Name)
+        and child.value.id == owner
+        and isinstance(child.ctx, ast.Load)
+    }
+
+
+def _loaded_attributes(node: ast.AST | None, owner: str) -> set[str]:
+    """Return attributes loaded from a named local anywhere in a function."""
+    if node is None:
+        return set()
+    return {
+        child.attr
+        for child in ast.walk(node)
         if isinstance(child, ast.Attribute)
         and isinstance(child.value, ast.Name)
         and child.value.id == owner
@@ -187,6 +202,16 @@ def check_root(root: Path) -> list[Violation]:
                 OWNER_PATH,
                 getattr(validator, "lineno", 1),
                 "trust-context validation is missing: " + ", ".join(missing_context_fields),
+            )
+        )
+    source_validation = _loaded_attributes(validator, "source")
+    missing_source_fields = sorted(REQUIRED_SOURCE_VALIDATION - source_validation)
+    if missing_source_fields:
+        violations.append(
+            Violation(
+                OWNER_PATH,
+                getattr(validator, "lineno", 1),
+                "source-fact validation is missing: " + ", ".join(missing_source_fields),
             )
         )
     resolver = _definition(owner_tree, DECISION_OWNER)

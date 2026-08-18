@@ -312,7 +312,7 @@ class ExecComponentFailure:
 
 @dataclass(frozen=True, slots=True)
 class AgentPluginExecInventory:
-    """Complete executable/declarative inventory for one canonical plugin."""
+    """Executable/declarative inventory exposed by the current canonical IR."""
 
     components: tuple[ExecutableComponent, ...]
     failures: tuple[ExecComponentFailure, ...]

@@ -99,6 +99,30 @@ def test_missing_component_identity_validation_is_rejected(tmp_path: Path) -> No
     assert any("component validation is missing" in message for message in _messages(root))
 
 
+def test_missing_plugin_name_validation_is_rejected(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(text.replace("        not context.plugin_name\n", "        False\n", 1))
+
+    assert any("trust-context validation is missing" in message for message in _messages(root))
+
+
+def test_missing_content_digest_validation_is_rejected(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace(
+            "for value in (source.resolved_revision, source.content_digest):",
+            "for value in (source.resolved_revision,):",
+            1,
+        )
+    )
+
+    assert any("source-fact validation is missing" in message for message in _messages(root))
+
+
 def test_implicit_gate_disabled_approval_mutation_is_rejected(tmp_path: Path) -> None:
     root = _contract_root(tmp_path)
     owner = root / "src/apm_cli/security/executables.py"

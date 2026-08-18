@@ -162,6 +162,37 @@ def test_inventory_classifies_portable_v1_components_without_ingress_paths(
     }
 
 
+def test_sse_mcp_is_declarative_remote_content(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    sse = replace(
+        plugin.components.mcp_servers[1],
+        name="legacy-remote",
+        server_type=McpServerType.SSE,
+        provenance=SourceProvenance(
+            tmp_path / "mcp.json",
+            "/mcpServers/legacy-remote",
+        ),
+    )
+    plugin = replace(
+        plugin,
+        components=replace(plugin.components, mcp_servers=(sse,)),
+    )
+
+    evaluation = evaluate_agent_plugin_executable_trust(
+        plugin,
+        trust_context=_policy(),
+        source_facts=SOURCE_FACTS,
+    )
+
+    result = next(
+        item for item in evaluation.results if item.context.component.name == "legacy-remote"
+    )
+    assert result.context.component.kind == COMPONENT_KIND_MCP_REMOTE
+    assert result.context.component.classification == EXEC_CLASS_DECLARATIVE
+    assert result.decision.trust_state == TRUST_DECLARATIVE
+    assert result.failure is None
+
+
 @pytest.mark.parametrize(
     "ingress",
     ("directory", "archive", "git", "local", "registry", "marketplace"),
@@ -276,6 +307,7 @@ def test_default_and_gate_disabled_paths_remain_fail_closed(tmp_path: Path) -> N
     (
         ExecSourceFacts(canonical_source=""),
         replace(SOURCE_FACTS, resolved_revision=""),
+        replace(SOURCE_FACTS, content_digest=""),
         replace(SOURCE_FACTS, integrity_verified=False),
         replace(SOURCE_FACTS, signature_verified=False),
         replace(SOURCE_FACTS, integrity_verified=0),
@@ -301,6 +333,27 @@ def test_malformed_or_failed_provenance_denies_even_with_consent(
     assert result.decision.trust_state == TRUST_DENIED
     assert result.failure is not None
     assert result.failure.code == FAILURE_INVALID_PROVENANCE
+
+
+def test_empty_plugin_name_fails_closed(tmp_path: Path) -> None:
+    plugin = _plugin(tmp_path)
+    plugin = replace(plugin, identity=replace(plugin.identity, name=""))
+    component = replace(_stdio_component(_plugin(tmp_path / "valid")), plugin_key="")
+
+    result = resolve_agent_plugin_exec_decision(
+        assemble_agent_plugin_exec_trust_context(
+            _policy(project_allow={PLUGIN_KEY: {EXEC_TYPE_MCP: True}}),
+            plugin=plugin,
+            component=component,
+            source=SOURCE_FACTS,
+            explicit_consent=True,
+        )
+    )
+
+    assert result.decision.allowed is False
+    assert result.failure is not None
+    assert result.failure.code == FAILURE_INVALID_COMPONENT
+    assert result.failure.deciding_layer == LAYER_INVALID_COMPONENT
 
 
 def test_missing_version_and_unknown_component_identity_fail_closed(tmp_path: Path) -> None:
