@@ -6,12 +6,17 @@ import gzip
 import hashlib
 import json
 import shutil
+from dataclasses import fields
 from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
 
-from apm_cli.agent_plugins import NotAgentPluginError, load_agent_plugin
+from apm_cli.agent_plugins import (
+    AgentPluginComponents,
+    NotAgentPluginError,
+    load_agent_plugin,
+)
 
 pytestmark = [pytest.mark.integration, pytest.mark.component]
 
@@ -133,6 +138,56 @@ def test_discovery_accepts_only_exact_root_agent_plugin_paths(tmp_path: Path) ->
         "MCP.JSON": (),
         "nested/mcp.json": (),
     }, f"{_CLAUSES['components']}; {_CLAUSES['mcp-loading']}"
+
+
+def test_portable_core_has_exactly_skills_and_mcp_servers(tmp_path: Path) -> None:
+    """Raw client component-like roots never expand the portable v1 vocabulary."""
+    plugin_root = _copy_portable_plugin(tmp_path, "portable-core")
+    for directory in ("agents", "commands", "hooks", "instructions", "extensions", "bin"):
+        component = plugin_root / directory
+        component.mkdir()
+        (component / "payload.txt").write_text(directory, encoding="ascii")
+    (plugin_root / "lsp.json").write_text(
+        json.dumps(
+            {
+                "lspServers": {
+                    "alternate": {
+                        "command": "alternate",
+                        "extensionToLanguage": {".alt": "alternate"},
+                    }
+                }
+            }
+        ),
+        encoding="ascii",
+    )
+
+    plugin = load_agent_plugin(plugin_root)
+
+    assert tuple(field.name for field in fields(AgentPluginComponents)) == (
+        "skills",
+        "mcp_servers",
+    )
+    assert tuple(skill.name for skill in plugin.components.skills) == ("contract-skill",)
+    assert tuple(server.name for server in plugin.components.mcp_servers) == (
+        "contract-remote",
+        "contract-stdio",
+    )
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.lsp is not None
+    assert tuple(server.name for server in plugin.apm_components.lsp.servers) == ("contract-lsp",)
+    ignored_paths = {
+        diagnostic.path
+        for diagnostic in plugin.diagnostics
+        if diagnostic.code == "portable.component.ignored"
+    }
+    assert ignored_paths == {
+        "agents",
+        "commands",
+        "extensions",
+        "hooks",
+        "instructions",
+        "lsp.json",
+    }
 
 
 def test_loader_preserves_portable_runtime_expressions(tmp_path: Path) -> None:

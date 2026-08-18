@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
 
 import yaml
 
+from ..utils.path_security import PathTraversalError, ensure_path_within
+from .assets import AssetInventory, AssetInventoryError, open_verified_asset
 from .constants import (
     AGENT_PLUGINS_SCHEMA_PREFIX,
     AGENT_PLUGINS_VERSION,
     COM_MICROSOFT_APM_NAMESPACE,
+    COM_MICROSOFT_APM_SCHEMA_VERSION,
     PLUGIN_SCHEMA_ID,
 )
 from .errors import (
@@ -24,17 +28,24 @@ from .errors import (
     NotAgentPluginError,
     UnsupportedAgentPluginVersionError,
 )
-from .io import read_json_document
+from .io import MAX_JSON_BYTES, decode_json_document, read_json_document
 from .ir import (
     AgentPlugin,
+    AgentPluginAsset,
     AgentPluginComponents,
     AgentPluginDetection,
     AgentPluginDiagnostic,
+    AgentPluginExecutable,
     AgentPluginIdentity,
     AgentPluginMcpServer,
     AgentPluginSkill,
     ApmConfiguration,
+    ApmExtensionComponents,
     ApmExtensionData,
+    ApmExtensionFileComponent,
+    ApmExtensionHookComponent,
+    ApmExtensionLspComponent,
+    ApmExtensionLspServer,
     DiagnosticSeverity,
     FrozenJsonArray,
     FrozenJsonObject,
@@ -42,7 +53,11 @@ from .ir import (
     McpServerType,
     SourceProvenance,
 )
-from .validation import validate_mcp_config_file, validate_plugin_manifest_document
+from .validation import (
+    validate_lsp_extension_document,
+    validate_mcp_config_file,
+    validate_plugin_manifest_document,
+)
 
 _PORTABLE_IDENTITY_FIELDS = frozenset(
     {
@@ -74,6 +89,18 @@ _APM_CONFIGURATION_FIELDS = frozenset(
     }
 )
 _REJECTED_MANIFEST_SCHEMA_ID = "<rejected-root-plugin-json>"
+_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")
+_APM_ALLOWED_ROOT_ENTRIES = frozenset({*_APM_DIRECTORY_COMPONENTS, "hooks", "lsp.json"})
+_IGNORED_PORTABLE_COMPONENT_PATHS = (
+    "agents",
+    "commands",
+    "hooks",
+    "instructions",
+    "extensions",
+    "lsp.json",
+)
+_PLUGIN_ROOT_REFERENCE_RE = re.compile(r"\$\{PLUGIN_ROOT\}[/\\]([^\s\"']+)")
+_RELATIVE_REFERENCE_RE = re.compile(r"(?<![A-Za-z0-9_])\.[/\\]([^\s\"']+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +211,8 @@ def _read_admissible_root_manifest(package_root: Path) -> _AdmissibleRootManifes
         ) from exc
     if not manifest_present:
         return None
+    if "plugin.json".casefold() in _case_ambiguous_names(package_root):
+        raise AgentPluginManifestError("Root plugin.json is case-ambiguous")
     try:
         document = read_json_document(manifest_path, reject_duplicate_schema=True)
     except (OSError, ValueError) as exc:
@@ -229,10 +258,19 @@ def _load_v1(
     )
     diagnostics.extend(authority_diagnostics)
 
-    skills, skill_diagnostics = _discover_skills(root)
+    asset_inventory = AssetInventory(root)
+    skills, skill_diagnostics = _discover_skills(root, asset_inventory)
     diagnostics.extend(skill_diagnostics)
-    mcp_servers, mcp_diagnostics = _discover_mcp_servers(root)
+    mcp_servers, mcp_diagnostics = _discover_mcp_servers(root, asset_inventory)
     diagnostics.extend(mcp_diagnostics)
+    apm_extension = _apm_extension_from_manifest(manifest, manifest_path)
+    apm_components, extension_diagnostics = _discover_apm_extension_components(
+        root,
+        apm_extension,
+        asset_inventory,
+    )
+    diagnostics.extend(extension_diagnostics)
+    diagnostics.extend(_ignored_portable_component_diagnostics(root))
 
     return AgentPlugin(
         specification_version=AGENT_PLUGINS_VERSION,
@@ -240,7 +278,7 @@ def _load_v1(
         manifest=SourceProvenance(path=manifest_path, json_pointer=""),
         identity=identity,
         components=AgentPluginComponents(skills=skills, mcp_servers=mcp_servers),
-        apm_extension=_apm_extension_from_manifest(manifest, manifest_path),
+        apm_extension=apm_extension,
         apm_configuration=apm_configuration,
         diagnostics=tuple(
             sorted(
@@ -248,6 +286,7 @@ def _load_v1(
                 key=lambda item: (item.path, item.component or "", item.code, item.message),
             )
         ),
+        apm_components=apm_components,
     )
 
 
@@ -383,10 +422,22 @@ def _identity_conflicts(
 
 def _discover_skills(
     root: Path,
+    asset_inventory: AssetInventory,
 ) -> tuple[tuple[AgentPluginSkill, ...], list[AgentPluginDiagnostic]]:
     skills_path = root / "skills"
     if not _has_exact_entry(root, "skills"):
         return (), []
+    if "skills".casefold() in _case_ambiguous_names(root):
+        return (), [
+            _diagnostic(
+                code="skills.location.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message="Agent Plugins root skills directory is case-ambiguous",
+                root=root,
+                path=skills_path,
+                component="skills",
+            )
+        ]
     if skills_path.is_symlink() or not skills_path.is_dir():
         return (), [
             _diagnostic(
@@ -403,8 +454,31 @@ def _discover_skills(
 
     skills: list[AgentPluginSkill] = []
     diagnostics: list[AgentPluginDiagnostic] = []
+    ambiguous_names = _case_ambiguous_names(skills_path)
     for child in sorted(skills_path.iterdir(), key=lambda item: item.name):
+        if child.name.casefold() in ambiguous_names:
+            diagnostics.append(
+                _diagnostic(
+                    code="skill.path.ambiguous",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"Skill directory {child.name} is case-ambiguous and was skipped",
+                    root=root,
+                    path=child,
+                    component=f"skill:{child.name}",
+                )
+            )
+            continue
         if child.is_symlink() or not child.is_dir():
+            diagnostics.append(
+                _diagnostic(
+                    code="skill.location.invalid",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"Skill entry {child.name} is not a regular directory and was skipped",
+                    root=root,
+                    path=child,
+                    component=f"skill:{child.name}",
+                )
+            )
             continue
         skill_manifest = child / "SKILL.md"
         if not _has_exact_entry(child, "SKILL.md"):
@@ -432,9 +506,28 @@ def _discover_skills(
             )
             continue
         try:
+            assets = asset_inventory.collect_component(child)
+        except (AssetInventoryError, OSError) as exc:
+            diagnostics.append(
+                _diagnostic(
+                    code="skill.assets.invalid",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"Skill {child.name} was skipped: {exc}",
+                    root=root,
+                    path=child,
+                    component=f"skill:{child.name}",
+                )
+            )
+            continue
+        try:
             parsed = parse_skill_file(skill_manifest)
             errors = parsed.validate()
-        except ValueError as exc:
+            manifest_asset = next(
+                asset for asset in assets if asset.path == f"skills/{child.name}/SKILL.md"
+            )
+            with open_verified_asset(root, manifest_asset):
+                pass
+        except (AssetInventoryError, StopIteration, ValueError) as exc:
             errors = [str(exc)]
             parsed = None
         if errors or parsed is None:
@@ -456,6 +549,7 @@ def _discover_skills(
                 description=parsed.description,
                 root=child,
                 manifest=SourceProvenance(path=skill_manifest, json_pointer=""),
+                assets=assets,
             )
         )
     return tuple(skills), diagnostics
@@ -463,10 +557,22 @@ def _discover_skills(
 
 def _discover_mcp_servers(
     root: Path,
+    asset_inventory: AssetInventory,
 ) -> tuple[tuple[AgentPluginMcpServer, ...], list[AgentPluginDiagnostic]]:
     mcp_path = root / "mcp.json"
     if not _has_exact_entry(root, "mcp.json"):
         return (), []
+    if "mcp.json".casefold() in _case_ambiguous_names(root):
+        return (), [
+            _diagnostic(
+                code="mcp.location.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message="Agent Plugins root mcp.json is case-ambiguous",
+                root=root,
+                path=mcp_path,
+                component="mcp",
+            )
+        ]
     if mcp_path.is_symlink() or not mcp_path.is_file():
         return (), [
             _diagnostic(
@@ -522,33 +628,796 @@ def _discover_mcp_servers(
         for warning in sorted(validation.warnings)
     ]
     raw_servers = validation.normalized["mcpServers"]
-    servers = tuple(
-        _mcp_server_from_normalized(name, raw_servers[name], mcp_path)
-        for name in sorted(raw_servers)
-    )
-    return servers, diagnostics
+    servers: list[AgentPluginMcpServer] = []
+    for name in sorted(raw_servers):
+        server, executable_diagnostics = _mcp_server_from_normalized(
+            name,
+            raw_servers[name],
+            mcp_path,
+            root,
+            asset_inventory,
+        )
+        diagnostics.extend(executable_diagnostics)
+        if server is not None:
+            servers.append(server)
+    return tuple(servers), diagnostics
 
 
 def _mcp_server_from_normalized(
     name: str,
     config: dict[str, Any],
     mcp_path: Path,
-) -> AgentPluginMcpServer:
+    root: Path,
+    asset_inventory: AssetInventory,
+) -> tuple[AgentPluginMcpServer | None, list[AgentPluginDiagnostic]]:
     server_type = McpServerType(config["type"])
-    return AgentPluginMcpServer(
+    provenance = SourceProvenance(
+        path=mcp_path,
+        json_pointer=f"/mcpServers/{_escape_json_pointer(name)}",
+    )
+    executables, diagnostics = _declaration_executables(
+        root=root,
+        asset_inventory=asset_inventory,
+        declarations=(
+            (
+                config.get("command"),
+                f"{provenance.json_pointer}/command",
+                True,
+            ),
+            *(
+                (
+                    argument,
+                    f"{provenance.json_pointer}/args/{index}",
+                    False,
+                )
+                for index, argument in enumerate(config.get("args", ()))
+            ),
+        ),
+        source_path=mcp_path,
+        component=f"mcp:{name}",
+        diagnostic_code="mcp.server.executable.invalid",
+    )
+    if any(diagnostic.severity is DiagnosticSeverity.ERROR for diagnostic in diagnostics):
+        return None, diagnostics
+    return (
+        AgentPluginMcpServer(
+            name=name,
+            server_type=server_type,
+            command=config.get("command"),
+            args=tuple(config.get("args", ())),
+            env=tuple(sorted(config.get("env", {}).items())),
+            cwd=config.get("cwd"),
+            url=config.get("url"),
+            headers=tuple(sorted(config.get("headers", {}).items())),
+            provenance=provenance,
+            executables=executables,
+        ),
+        diagnostics,
+    )
+
+
+def _discover_apm_extension_components(
+    root: Path,
+    extension: ApmExtensionData | None,
+    asset_inventory: AssetInventory,
+) -> tuple[ApmExtensionComponents | None, list[AgentPluginDiagnostic]]:
+    namespace_root = root / COM_MICROSOFT_APM_NAMESPACE
+    if extension is None or extension.schema_version != COM_MICROSOFT_APM_SCHEMA_VERSION:
+        if _has_exact_entry(root, COM_MICROSOFT_APM_NAMESPACE):
+            return None, [
+                _diagnostic(
+                    code="apm.extension.undeclared",
+                    severity=DiagnosticSeverity.WARNING,
+                    message=(
+                        "com.microsoft.apm data was ignored because plugin.json does not "
+                        "declare extensions.com.microsoft.apm.schemaVersion '1'"
+                    ),
+                    root=root,
+                    path=namespace_root,
+                    component="apm-extension",
+                )
+            ]
+        return None, []
+
+    empty = ApmExtensionComponents(
+        agents=None,
+        commands=None,
+        instructions=None,
+        extensions=None,
+        hooks=None,
+        lsp=None,
+    )
+    if not _has_exact_entry(root, COM_MICROSOFT_APM_NAMESPACE):
+        return empty, []
+    if COM_MICROSOFT_APM_NAMESPACE.casefold() in _case_ambiguous_names(root):
+        return empty, [
+            _diagnostic(
+                code="apm.extension.location.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm is case-ambiguous and was ignored",
+                root=root,
+                path=namespace_root,
+                component="apm-extension",
+            )
+        ]
+    if namespace_root.is_symlink() or not namespace_root.is_dir():
+        return empty, [
+            _diagnostic(
+                code="apm.extension.location.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm must be an exact regular directory",
+                root=root,
+                path=namespace_root,
+                component="apm-extension",
+            )
+        ]
+
+    diagnostics: list[AgentPluginDiagnostic] = []
+    ambiguous_names = _case_ambiguous_names(namespace_root)
+    try:
+        namespace_entries = sorted(namespace_root.iterdir(), key=lambda entry: entry.name)
+    except OSError as exc:
+        return empty, [
+            _diagnostic(
+                code="apm.extension.location.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"com.microsoft.apm could not be inspected: {exc}",
+                root=root,
+                path=namespace_root,
+                component="apm-extension",
+            )
+        ]
+    for entry in namespace_entries:
+        if entry.name not in _APM_ALLOWED_ROOT_ENTRIES:
+            diagnostics.append(
+                _diagnostic(
+                    code="apm.extension.path.ignored",
+                    severity=DiagnosticSeverity.WARNING,
+                    message=f"Undeclared APM extension path {entry.name} was ignored",
+                    root=root,
+                    path=entry,
+                    component="apm-extension",
+                )
+            )
+
+    directory_components: dict[str, ApmExtensionFileComponent | None] = {}
+    for name in _APM_DIRECTORY_COMPONENTS:
+        directory_components[name] = _discover_apm_file_component(
+            root,
+            namespace_root,
+            name,
+            ambiguous_names,
+            asset_inventory,
+            diagnostics,
+        )
+    hooks = _discover_apm_hook_component(
+        root,
+        namespace_root,
+        ambiguous_names,
+        asset_inventory,
+        diagnostics,
+    )
+    lsp = _discover_apm_lsp_component(
+        root,
+        namespace_root,
+        ambiguous_names,
+        asset_inventory,
+        diagnostics,
+    )
+    return (
+        ApmExtensionComponents(
+            agents=directory_components["agents"],
+            commands=directory_components["commands"],
+            instructions=directory_components["instructions"],
+            extensions=directory_components["extensions"],
+            hooks=hooks,
+            lsp=lsp,
+        ),
+        diagnostics,
+    )
+
+
+def _discover_apm_file_component(
+    root: Path,
+    namespace_root: Path,
+    name: str,
+    ambiguous_names: set[str],
+    asset_inventory: AssetInventory,
+    diagnostics: list[AgentPluginDiagnostic],
+) -> ApmExtensionFileComponent | None:
+    component_root = namespace_root / name
+    if not _has_exact_entry(namespace_root, name):
+        return None
+    if name.casefold() in ambiguous_names:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.extension.path.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"APM extension component {name} is case-ambiguous and was ignored",
+                root=root,
+                path=component_root,
+                component=f"apm:{name}",
+            )
+        )
+        return None
+    if component_root.is_symlink() or not component_root.is_dir():
+        diagnostics.append(
+            _diagnostic(
+                code="apm.extension.component.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"APM extension component {name} must be a regular directory",
+                root=root,
+                path=component_root,
+                component=f"apm:{name}",
+            )
+        )
+        return None
+    try:
+        assets = asset_inventory.collect_component(component_root)
+    except (AssetInventoryError, OSError) as exc:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.extension.assets.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"APM extension component {name} was ignored: {exc}",
+                root=root,
+                path=component_root,
+                component=f"apm:{name}",
+            )
+        )
+        return None
+    return ApmExtensionFileComponent(
         name=name,
-        server_type=server_type,
-        command=config.get("command"),
+        root=component_root,
+        provenance=SourceProvenance(path=component_root, json_pointer=""),
+        assets=assets,
+    )
+
+
+def _discover_apm_lsp_component(
+    root: Path,
+    namespace_root: Path,
+    ambiguous_names: set[str],
+    asset_inventory: AssetInventory,
+    diagnostics: list[AgentPluginDiagnostic],
+) -> ApmExtensionLspComponent | None:
+    lsp_path = namespace_root / "lsp.json"
+    if not _has_exact_entry(namespace_root, "lsp.json"):
+        return None
+    if "lsp.json".casefold() in ambiguous_names:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.lsp.path.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm/lsp.json is case-ambiguous and was disabled",
+                root=root,
+                path=lsp_path,
+                component="apm:lsp",
+            )
+        )
+        return None
+    try:
+        document_asset, payload = asset_inventory.read_file(
+            lsp_path,
+            max_bytes=MAX_JSON_BYTES,
+        )
+        document = decode_json_document(payload, path=lsp_path)
+        validation = validate_lsp_extension_document(
+            document,
+            isolate_invalid_servers=True,
+            plugin_root=root,
+        )
+    except (AssetInventoryError, OSError, ValueError) as exc:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.lsp.document.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"com.microsoft.apm/lsp.json was disabled: {exc}",
+                root=root,
+                path=lsp_path,
+                component="apm:lsp",
+            )
+        )
+        return None
+    if validation.errors or validation.normalized is None:
+        for error in sorted(validation.errors):
+            diagnostics.append(
+                _diagnostic(
+                    code="apm.lsp.document.invalid",
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"com.microsoft.apm/lsp.json was disabled: {error}",
+                    root=root,
+                    path=lsp_path,
+                    component="apm:lsp",
+                )
+            )
+        return None
+    diagnostics.extend(
+        _diagnostic(
+            code="apm.lsp.server.invalid",
+            severity=DiagnosticSeverity.ERROR,
+            message=warning,
+            root=root,
+            path=lsp_path,
+            component="apm:lsp",
+        )
+        for warning in sorted(validation.warnings)
+    )
+    servers: list[ApmExtensionLspServer] = []
+    assets = [document_asset]
+    raw_servers = validation.normalized["lspServers"]
+    for name in sorted(raw_servers):
+        config = raw_servers[name]
+        provenance = SourceProvenance(
+            path=lsp_path,
+            json_pointer=f"/lspServers/{_escape_json_pointer(name)}",
+        )
+        executables, executable_diagnostics = _declaration_executables(
+            root=root,
+            asset_inventory=asset_inventory,
+            declarations=(
+                (config.get("command"), f"{provenance.json_pointer}/command", True),
+                *(
+                    (argument, f"{provenance.json_pointer}/args/{index}", False)
+                    for index, argument in enumerate(config.get("args", ()))
+                ),
+            ),
+            source_path=lsp_path,
+            component=f"apm:lsp:{name}",
+            diagnostic_code="apm.lsp.server.executable.invalid",
+        )
+        diagnostics.extend(executable_diagnostics)
+        if any(
+            diagnostic.severity is DiagnosticSeverity.ERROR for diagnostic in executable_diagnostics
+        ):
+            continue
+        for executable in executables:
+            if executable.asset is not None:
+                assets.append(executable.asset)
+        servers.append(_lsp_server_from_normalized(name, config, provenance, executables))
+    return ApmExtensionLspComponent(
+        provenance=SourceProvenance(path=lsp_path, json_pointer=""),
+        servers=tuple(servers),
+        assets=_deduplicate_assets(assets),
+    )
+
+
+def _lsp_server_from_normalized(
+    name: str,
+    config: dict[str, Any],
+    provenance: SourceProvenance,
+    executables: tuple[AgentPluginExecutable, ...],
+) -> ApmExtensionLspServer:
+    initialization_options = config.get("initializationOptions")
+    settings = config.get("settings")
+    return ApmExtensionLspServer(
+        name=name,
+        command=config["command"],
         args=tuple(config.get("args", ())),
         env=tuple(sorted(config.get("env", {}).items())),
-        cwd=config.get("cwd"),
-        url=config.get("url"),
-        headers=tuple(sorted(config.get("headers", {}).items())),
-        provenance=SourceProvenance(
-            path=mcp_path,
-            json_pointer=f"/mcpServers/{_escape_json_pointer(name)}",
+        extension_to_language=tuple(sorted(config.get("extensionToLanguage", {}).items())),
+        transport=config.get("transport"),
+        initialization_options=(
+            _freeze_json(initialization_options) if initialization_options is not None else None
         ),
+        settings=_freeze_json(settings) if settings is not None else None,
+        workspace_folder=config.get("workspaceFolder"),
+        startup_timeout=config.get("startupTimeout"),
+        shutdown_timeout=config.get("shutdownTimeout"),
+        restart_on_crash=config.get("restartOnCrash"),
+        max_restarts=config.get("maxRestarts"),
+        provenance=provenance,
+        executables=executables,
     )
+
+
+def _discover_apm_hook_component(
+    root: Path,
+    namespace_root: Path,
+    ambiguous_names: set[str],
+    asset_inventory: AssetInventory,
+    diagnostics: list[AgentPluginDiagnostic],
+) -> ApmExtensionHookComponent | None:
+    hooks_root = namespace_root / "hooks"
+    if not _has_exact_entry(namespace_root, "hooks"):
+        return None
+    if "hooks".casefold() in ambiguous_names or hooks_root.is_symlink() or not hooks_root.is_dir():
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.location.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm/hooks must be one exact regular directory",
+                root=root,
+                path=hooks_root,
+                component="apm:hooks",
+            )
+        )
+        return None
+    hook_ambiguous_names = _case_ambiguous_names(hooks_root)
+    hooks_path = hooks_root / "hooks.json"
+    try:
+        hook_entries = sorted(hooks_root.iterdir(), key=lambda entry: entry.name)
+    except OSError as exc:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.location.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"com.microsoft.apm/hooks could not be inspected: {exc}",
+                root=root,
+                path=hooks_root,
+                component="apm:hooks",
+            )
+        )
+        return None
+    for entry in hook_entries:
+        if entry.name != "hooks.json":
+            diagnostics.append(
+                _diagnostic(
+                    code="apm.hooks.path.ignored",
+                    severity=DiagnosticSeverity.WARNING,
+                    message=f"Undeclared APM hook path {entry.name} was ignored",
+                    root=root,
+                    path=entry,
+                    component="apm:hooks",
+                )
+            )
+    if not _has_exact_entry(hooks_root, "hooks.json"):
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.document.missing",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm/hooks has no exact hooks/hooks.json",
+                root=root,
+                path=hooks_root,
+                component="apm:hooks",
+            )
+        )
+        return None
+    if "hooks.json".casefold() in hook_ambiguous_names:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.path.ambiguous",
+                severity=DiagnosticSeverity.ERROR,
+                message="com.microsoft.apm/hooks/hooks.json is case-ambiguous and was disabled",
+                root=root,
+                path=hooks_path,
+                component="apm:hooks",
+            )
+        )
+        return None
+    try:
+        document_asset, payload = asset_inventory.read_file(
+            hooks_path,
+            max_bytes=MAX_JSON_BYTES,
+        )
+        document = decode_json_document(payload, path=hooks_path)
+    except (AssetInventoryError, OSError, ValueError) as exc:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.document.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"com.microsoft.apm/hooks/hooks.json was disabled: {exc}",
+                root=root,
+                path=hooks_path,
+                component="apm:hooks",
+            )
+        )
+        return None
+    normalized, hook_error = _validate_hook_snapshot(document)
+    if normalized is None:
+        diagnostics.append(
+            _diagnostic(
+                code="apm.hooks.document.invalid",
+                severity=DiagnosticSeverity.ERROR,
+                message=f"com.microsoft.apm/hooks/hooks.json was disabled: {hook_error}",
+                root=root,
+                path=hooks_path,
+                component="apm:hooks",
+            )
+        )
+        return None
+    executables, executable_diagnostics = _hook_executables(
+        root,
+        hooks_path,
+        normalized,
+        asset_inventory,
+    )
+    diagnostics.extend(executable_diagnostics)
+    if any(
+        diagnostic.severity is DiagnosticSeverity.ERROR for diagnostic in executable_diagnostics
+    ):
+        return None
+    assets = [
+        document_asset,
+        *(executable.asset for executable in executables if executable.asset is not None),
+    ]
+    return ApmExtensionHookComponent(
+        document=_freeze_object(document),
+        provenance=SourceProvenance(path=hooks_path, json_pointer=""),
+        executables=executables,
+        assets=_deduplicate_assets(assets),
+    )
+
+
+def _validate_hook_snapshot(document: object) -> tuple[dict[str, Any] | None, str | None]:
+    if not isinstance(document, dict):
+        return None, "document must be a JSON object"
+    if "hooks" in document:
+        normalized = document
+    elif all(isinstance(value, list) for value in document.values()):
+        normalized = {"hooks": document}
+    else:
+        return None, "document must be a wrapped or naked hook event mapping"
+    hooks = normalized.get("hooks")
+    if not isinstance(hooks, dict):
+        return None, "hooks must be a JSON object"
+
+    from ..integration.hook_integrator import HookIntegrator
+
+    for event, entries in hooks.items():
+        if not isinstance(event, str) or not isinstance(entries, list):
+            return None, "every hook event must have a string name and array value"
+        for entry in entries:
+            if not isinstance(entry, dict):
+                return None, f"hook event {event!r} entries must be objects"
+            nested = entry.get("hooks")
+            if nested is not None and (
+                not isinstance(nested, list)
+                or not all(isinstance(handler, dict) for handler in nested)
+            ):
+                return None, f"hook event {event!r} nested handlers must be objects"
+            for candidate in (entry, *(nested or ())):
+                for key in HookIntegrator.HOOK_COMMAND_KEYS:
+                    if key in candidate and not isinstance(candidate[key], str):
+                        return None, f"hook event {event!r} {key} command must be a string"
+    return normalized, None
+
+
+def _hook_executables(
+    root: Path,
+    hooks_path: Path,
+    normalized: dict[str, Any],
+    asset_inventory: AssetInventory,
+) -> tuple[tuple[AgentPluginExecutable, ...], list[AgentPluginDiagnostic]]:
+    executables: list[AgentPluginExecutable] = []
+    diagnostics: list[AgentPluginDiagnostic] = []
+    for event, command, pointer in _iter_hook_executable_entries(normalized):
+        references = _command_path_references(command)
+        if not references:
+            executables.append(
+                AgentPluginExecutable(
+                    declaration=command,
+                    plugin_relative_path=None,
+                    asset=None,
+                    provenance=SourceProvenance(path=hooks_path, json_pointer=pointer),
+                )
+            )
+            continue
+        declarations = tuple((reference, pointer, False) for reference in references)
+        resolved, errors = _declaration_executables(
+            root=root,
+            asset_inventory=asset_inventory,
+            declarations=declarations,
+            source_path=hooks_path,
+            component=f"apm:hooks:{event}",
+            diagnostic_code="apm.hooks.executable.invalid",
+            relative_base=hooks_path.parent,
+        )
+        executables.extend(resolved)
+        diagnostics.extend(errors)
+    return tuple(executables), diagnostics
+
+
+def _iter_hook_executable_entries(
+    normalized: dict[str, Any],
+) -> tuple[tuple[str, str, str], ...]:
+    from ..integration.hook_integrator import HookIntegrator
+
+    declarations: list[tuple[str, str, str]] = []
+    for event, entries in normalized["hooks"].items():
+        escaped_event = _escape_json_pointer(event)
+        for entry_index, entry in enumerate(entries):
+            entry_pointer = f"/hooks/{escaped_event}/{entry_index}"
+            for key in HookIntegrator.HOOK_COMMAND_KEYS:
+                command = entry.get(key)
+                if isinstance(command, str):
+                    declarations.append(
+                        (
+                            event,
+                            command,
+                            f"{entry_pointer}/{_escape_json_pointer(key)}",
+                        )
+                    )
+            for handler_index, handler in enumerate(entry.get("hooks", ())):
+                for key in HookIntegrator.HOOK_COMMAND_KEYS:
+                    command = handler.get(key)
+                    if isinstance(command, str):
+                        declarations.append(
+                            (
+                                event,
+                                command,
+                                f"{entry_pointer}/hooks/{handler_index}/"
+                                f"{_escape_json_pointer(key)}",
+                            )
+                        )
+    return tuple(declarations)
+
+
+def _command_path_references(command: str) -> tuple[str, ...]:
+    references = [
+        f"${{PLUGIN_ROOT}}/{match.group(1).replace(chr(92), '/')}"
+        for match in _PLUGIN_ROOT_REFERENCE_RE.finditer(command)
+    ]
+    references.extend(
+        f"./{match.group(1).replace(chr(92), '/')}"
+        for match in _RELATIVE_REFERENCE_RE.finditer(command)
+    )
+    return tuple(dict.fromkeys(references))
+
+
+def _declaration_executables(
+    *,
+    root: Path,
+    asset_inventory: AssetInventory,
+    declarations: tuple[tuple[object, str, bool], ...],
+    source_path: Path,
+    component: str,
+    diagnostic_code: str,
+    relative_base: Path | None = None,
+) -> tuple[tuple[AgentPluginExecutable, ...], list[AgentPluginDiagnostic]]:
+    executables: list[AgentPluginExecutable] = []
+    diagnostics: list[AgentPluginDiagnostic] = []
+    for declaration, json_pointer, include_external in declarations:
+        if not isinstance(declaration, str):
+            continue
+        relative = _plugin_relative_declaration_path(declaration)
+        if relative is None:
+            if include_external:
+                executables.append(
+                    AgentPluginExecutable(
+                        declaration=declaration,
+                        plugin_relative_path=None,
+                        asset=None,
+                        provenance=SourceProvenance(
+                            path=source_path,
+                            json_pointer=json_pointer,
+                        ),
+                    )
+                )
+            continue
+        relative_path = Path(*PurePosixPath(relative).parts)
+        candidate_bases = (
+            (relative_base, root)
+            if declaration.startswith("./") and relative_base is not None
+            else (root,)
+        )
+        candidates: list[Path] = []
+        for base in candidate_bases:
+            candidate = base / relative_path
+            try:
+                ensure_path_within(candidate, root)
+            except PathTraversalError:
+                continue
+            candidates.append(candidate)
+        candidate = next(
+            (path for path in candidates if path.exists() or path.is_symlink()),
+            candidates[-1] if candidates else root / relative_path,
+        )
+        try:
+            ensure_path_within(candidate, root)
+        except PathTraversalError as exc:
+            diagnostics.append(
+                _diagnostic(
+                    code=diagnostic_code,
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"Executable reference {declaration!r} was rejected: {exc}",
+                    root=root,
+                    path=source_path,
+                    component=component,
+                )
+            )
+            continue
+        relative = candidate.relative_to(root).as_posix()
+        if not candidate.exists() and not candidate.is_symlink():
+            executables.append(
+                AgentPluginExecutable(
+                    declaration=declaration,
+                    plugin_relative_path=relative,
+                    asset=None,
+                    provenance=SourceProvenance(
+                        path=source_path,
+                        json_pointer=json_pointer,
+                    ),
+                )
+            )
+            diagnostics.append(
+                _diagnostic(
+                    code=diagnostic_code.replace(".invalid", ".missing"),
+                    severity=DiagnosticSeverity.WARNING,
+                    message=f"Executable reference {declaration!r} has no package asset",
+                    root=root,
+                    path=source_path,
+                    component=component,
+                )
+            )
+            continue
+        try:
+            asset = asset_inventory.collect_file(candidate)
+        except (AssetInventoryError, OSError) as exc:
+            diagnostics.append(
+                _diagnostic(
+                    code=diagnostic_code,
+                    severity=DiagnosticSeverity.ERROR,
+                    message=f"Executable reference {declaration!r} was rejected: {exc}",
+                    root=root,
+                    path=source_path,
+                    component=component,
+                )
+            )
+            continue
+        executables.append(
+            AgentPluginExecutable(
+                declaration=declaration,
+                plugin_relative_path=relative,
+                asset=asset,
+                provenance=SourceProvenance(
+                    path=source_path,
+                    json_pointer=json_pointer,
+                ),
+            )
+        )
+    return tuple(executables), diagnostics
+
+
+def _plugin_relative_declaration_path(declaration: str) -> str | None:
+    if declaration.startswith("./"):
+        relative = declaration[2:]
+    elif declaration.startswith("${PLUGIN_ROOT}/"):
+        relative = declaration.removeprefix("${PLUGIN_ROOT}/")
+    else:
+        return None
+    portable = PurePosixPath(relative.replace("\\", "/"))
+    if portable.is_absolute() or any(part in ("", ".", "..") for part in portable.parts):
+        return relative
+    return portable.as_posix()
+
+
+def _deduplicate_assets(assets: list[AgentPluginAsset]) -> tuple[AgentPluginAsset, ...]:
+    return tuple(
+        {asset.path: asset for asset in assets}[path] for path in sorted({a.path for a in assets})
+    )
+
+
+def _ignored_portable_component_diagnostics(root: Path) -> list[AgentPluginDiagnostic]:
+    diagnostics: list[AgentPluginDiagnostic] = []
+    for name in _IGNORED_PORTABLE_COMPONENT_PATHS:
+        if not _has_exact_entry(root, name):
+            continue
+        diagnostics.append(
+            _diagnostic(
+                code="portable.component.ignored",
+                severity=DiagnosticSeverity.WARNING,
+                message=(
+                    f"Root {name} is not an Agent Plugins v1 portable component and was ignored; "
+                    f"declare APM-specific content under {COM_MICROSOFT_APM_NAMESPACE}/"
+                ),
+                root=root,
+                path=root / name,
+                component="portable",
+            )
+        )
+    return diagnostics
+
+
+def _case_ambiguous_names(directory: Path) -> set[str]:
+    grouped: dict[str, list[str]] = {}
+    try:
+        entries = directory.iterdir()
+        for entry in entries:
+            grouped.setdefault(entry.name.casefold(), []).append(entry.name)
+    except OSError:
+        return set()
+    return {key for key, names in grouped.items() if len(set(names)) > 1}
 
 
 def _freeze_json(value: object) -> FrozenJsonValue:

@@ -50,6 +50,20 @@ def read_json_document(path: Path, *, reject_duplicate_schema: bool = False) -> 
         os.close(descriptor)
     if len(payload) > MAX_JSON_BYTES:
         raise ValueError(f"JSON file {path} exceeds {MAX_JSON_BYTES}-byte cap")
+    return decode_json_document(
+        payload,
+        path=path,
+        reject_duplicate_schema=reject_duplicate_schema,
+    )
+
+
+def decode_json_document(
+    payload: bytes,
+    *,
+    path: Path,
+    reject_duplicate_schema: bool = False,
+) -> Any:
+    """Decode bounded JSON bytes already read from a trusted descriptor."""
     try:
         text = payload.decode("utf-8")
         return json.loads(

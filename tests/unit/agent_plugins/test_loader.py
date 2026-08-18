@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import FrozenInstanceError
@@ -15,11 +16,13 @@ from apm_cli.agent_plugins import (
     PLUGIN_SCHEMA_ID,
     AgentPluginLegacyBoundaryError,
     AgentPluginManifestAuthorityError,
+    AssetInventoryError,
     FrozenJsonArray,
     FrozenJsonObject,
     FrozenJsonValue,
     NotAgentPluginError,
     load_agent_plugin,
+    open_verified_asset,
     thaw_frozen_json,
 )
 from apm_cli.deps.plugin_parser import normalize_plugin_directory
@@ -61,6 +64,8 @@ def _write_mcp(root: Path, servers: dict[str, object]) -> None:
 def test_loader_returns_frozen_ir_with_component_provenance(tmp_path: Path) -> None:
     _write_manifest(tmp_path)
     _write_valid_skill(tmp_path, "deploy")
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "server").write_text("server", encoding="utf-8")
     _write_mcp(
         tmp_path,
         {
@@ -80,10 +85,258 @@ def test_loader_returns_frozen_ir_with_component_provenance(tmp_path: Path) -> N
     assert tuple(skill.directory_name for skill in plugin.components.skills) == ("deploy",)
     assert tuple(server.name for server in plugin.components.mcp_servers) == ("local",)
     assert plugin.components.mcp_servers[0].provenance.json_pointer == "/mcpServers/local"
+    executable = plugin.components.mcp_servers[0].executables[0]
+    assert executable.plugin_relative_path == "bin/server"
+    assert executable.asset is not None
+    assert executable.asset.sha256 == hashlib.sha256(b"server").hexdigest()
     assert plugin.apm_extension is not None
     assert plugin.apm_extension.schema_version == "1"
     with pytest.raises(FrozenInstanceError):
         plugin.identity.name = "mutated"  # type: ignore[misc]
+
+
+def test_apm_extension_components_are_exact_typed_and_bounded(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "portable")
+    skill_support = tmp_path / "skills" / "portable" / "reference.txt"
+    skill_support.write_text("reference", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    lsp_executable = bin_dir / "lsp"
+    lsp_executable.write_text("lsp", encoding="utf-8")
+    lsp_executable.chmod(0o755)
+    hook_executable = bin_dir / "hook.sh"
+    hook_executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    hook_executable.chmod(0o700)
+
+    extension_root = tmp_path / "com.microsoft.apm"
+    for component, filename in (
+        ("agents", "agent.md"),
+        ("commands", "command.md"),
+        ("instructions", "instruction.md"),
+        ("extensions", "extension.mjs"),
+    ):
+        directory = extension_root / component
+        directory.mkdir(parents=True)
+        (directory / filename).write_text(component, encoding="utf-8")
+    (extension_root / "lsp.json").write_text(
+        json.dumps(
+            {
+                "lspServers": {
+                    "good": {
+                        "command": "./bin/lsp",
+                        "args": ["--stdio"],
+                        "env": {"MODE": "safe"},
+                        "extensionToLanguage": {".py": "python"},
+                    },
+                    "bad": {
+                        "extensionToLanguage": {".bad": "bad"},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    hooks = extension_root / "hooks"
+    hooks.mkdir()
+    (hooks / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"command": "${PLUGIN_ROOT}/bin/hook.sh"}],
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.agents is not None
+    assert tuple(asset.path for asset in plugin.apm_components.agents.assets) == (
+        "com.microsoft.apm/agents/agent.md",
+    )
+    assert plugin.apm_components.commands is not None
+    assert plugin.apm_components.instructions is not None
+    assert plugin.apm_components.extensions is not None
+    assert plugin.apm_components.lsp is not None
+    assert tuple(server.name for server in plugin.apm_components.lsp.servers) == ("good",)
+    lsp = plugin.apm_components.lsp.servers[0]
+    assert lsp.extension_to_language == ((".py", "python"),)
+    assert lsp.executables[0].asset is not None
+    assert lsp.executables[0].asset.executable_mode == 0o111
+    assert plugin.apm_components.hooks is not None
+    hook = plugin.apm_components.hooks
+    assert hook.executables[0].plugin_relative_path == "bin/hook.sh"
+    assert hook.executables[0].provenance.json_pointer == ("/hooks/PreToolUse/0/hooks/0/command")
+    assert hook.executables[0].asset is not None
+    assert hook.executables[0].asset.executable_mode == 0o100
+    assert tuple(asset.path for asset in plugin.components.skills[0].assets) == (
+        "skills/portable/SKILL.md",
+        "skills/portable/reference.txt",
+    )
+    assert any(diagnostic.code == "apm.lsp.server.invalid" for diagnostic in plugin.diagnostics)
+
+
+def test_asset_digest_verification_rejects_post_load_mutation(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "digest")
+    plugin = load_agent_plugin(tmp_path)
+    asset = plugin.components.skills[0].assets[0]
+
+    with open_verified_asset(tmp_path, asset) as handle:
+        assert handle.read() == (tmp_path / asset.path).read_bytes()
+    (tmp_path / asset.path).write_text("changed", encoding="utf-8")
+
+    with pytest.raises(AssetInventoryError, match="no longer matches"):
+        with open_verified_asset(tmp_path, asset):
+            pass
+
+
+def test_verified_asset_descriptor_is_stable_after_path_replacement(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "stable")
+    plugin = load_agent_plugin(tmp_path)
+    asset = plugin.components.skills[0].assets[0]
+    asset_path = tmp_path / asset.path
+    moved = asset_path.with_name("original.md")
+
+    with open_verified_asset(tmp_path, asset) as handle:
+        asset_path.rename(moved)
+        asset_path.write_text("replacement", encoding="utf-8")
+        assert hashlib.sha256(handle.read()).hexdigest() == asset.sha256
+
+
+def test_collect_file_rejects_directory_instead_of_selecting_child(tmp_path: Path) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    directory = tmp_path / "bin"
+    directory.mkdir()
+    (directory / "child").write_text("child", encoding="utf-8")
+
+    with pytest.raises(AssetInventoryError, match="regular file"):
+        AssetInventory(tmp_path).collect_file(directory)
+
+
+def test_unreferenced_bin_is_not_promoted_but_mcp_reference_is_inventoried(
+    tmp_path: Path,
+) -> None:
+    _write_manifest(tmp_path)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "used").write_text("used", encoding="utf-8")
+    (bin_dir / "unused").write_text("unused", encoding="utf-8")
+    _write_mcp(
+        tmp_path,
+        {"tool": {"type": "stdio", "command": "./bin/used"}},
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+
+    server = plugin.components.mcp_servers[0]
+    assert tuple(
+        executable.asset.path for executable in server.executables if executable.asset is not None
+    ) == ("bin/used",)
+    all_paths = {asset.path for skill in plugin.components.skills for asset in skill.assets} | {
+        executable.asset.path for executable in server.executables if executable.asset is not None
+    }
+    assert "bin/unused" not in all_paths
+
+
+def test_symlinked_skill_asset_is_rejected_without_aborting_mcp(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "unsafe")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    (tmp_path / "skills" / "unsafe" / "linked.txt").symlink_to(outside)
+    _write_mcp(tmp_path, {"safe": {"type": "stdio", "command": "safe"}})
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.components.skills == ()
+    assert tuple(server.name for server in plugin.components.mcp_servers) == ("safe",)
+    assert any(diagnostic.code == "skill.assets.invalid" for diagnostic in plugin.diagnostics)
+
+
+def test_asset_budget_violation_rejects_only_affected_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "oversized-inventory")
+    _write_mcp(tmp_path, {"safe": {"type": "stdio", "command": "safe"}})
+    monkeypatch.setattr("apm_cli.agent_plugins.assets.MAX_COMPONENT_ASSET_ENTRIES", 1)
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.components.skills == ()
+    assert tuple(server.name for server in plugin.components.mcp_servers) == ("safe",)
+    assert any(
+        diagnostic.code == "skill.assets.invalid" and "entry package budget" in diagnostic.message
+        for diagnostic in plugin.diagnostics
+    )
+
+
+def test_undeclared_or_alternate_apm_paths_never_activate(tmp_path: Path) -> None:
+    _write_manifest(tmp_path, extensions={})
+    undeclared = tmp_path / "com.microsoft.apm" / "agents"
+    undeclared.mkdir(parents=True)
+    (undeclared / "agent.md").write_text("agent", encoding="utf-8")
+    alternate = tmp_path / ".apm" / "agents"
+    alternate.mkdir(parents=True)
+    (alternate / "alternate.md").write_text("alternate", encoding="utf-8")
+    raw = tmp_path / "agents"
+    raw.mkdir()
+    (raw / "raw.md").write_text("raw", encoding="utf-8")
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.apm_components is None
+    codes = {diagnostic.code for diagnostic in plugin.diagnostics}
+    assert "apm.extension.undeclared" in codes
+    assert "portable.component.ignored" in codes
+
+
+@pytest.mark.parametrize(
+    ("document", "disabled_component"),
+    [
+        ({"unexpected": {}}, "lsp"),
+        ({"hooks": []}, "hooks"),
+    ],
+)
+def test_invalid_apm_document_disables_only_its_component(
+    tmp_path: Path,
+    document: dict[str, object],
+    disabled_component: str,
+) -> None:
+    _write_manifest(tmp_path)
+    _write_valid_skill(tmp_path, "survivor")
+    _write_mcp(tmp_path, {"survivor": {"type": "stdio", "command": "survivor"}})
+    extension_root = tmp_path / "com.microsoft.apm"
+    extension_root.mkdir()
+    agents = extension_root / "agents"
+    agents.mkdir()
+    (agents / "agent.md").write_text("agent", encoding="utf-8")
+    if disabled_component == "lsp":
+        (extension_root / "lsp.json").write_text(json.dumps(document), encoding="utf-8")
+    else:
+        hooks = extension_root / "hooks"
+        hooks.mkdir()
+        (hooks / "hooks.json").write_text(json.dumps(document), encoding="utf-8")
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert tuple(skill.name for skill in plugin.components.skills) == ("survivor",)
+    assert tuple(server.name for server in plugin.components.mcp_servers) == ("survivor",)
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.agents is not None
+    assert getattr(plugin.apm_components, disabled_component) is None
 
 
 def test_root_manifest_name_is_case_sensitive(tmp_path: Path) -> None:

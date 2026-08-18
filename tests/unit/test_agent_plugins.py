@@ -487,6 +487,49 @@ class TestLspExtensionValidation:
         assert result.is_valid is False
         assert any("literal secret" in error for error in result.errors)
 
+    @pytest.mark.parametrize(
+        "invalid_config",
+        [
+            {"extensionToLanguage": {".bad": "bad"}},
+            {
+                "command": "bad",
+                "args": 1,
+                "extensionToLanguage": {".bad": "bad"},
+            },
+            {
+                "command": "bad",
+                "env": [],
+                "extensionToLanguage": {".bad": "bad"},
+            },
+            {
+                "command": "bad",
+                "startupTimeout": "slow",
+                "extensionToLanguage": {".bad": "bad"},
+            },
+        ],
+    )
+    def test_loader_mode_isolates_invalid_server(
+        self,
+        invalid_config: dict[str, object],
+    ) -> None:
+        result = validate_lsp_extension_document(
+            {
+                "lspServers": {
+                    "good": {
+                        "command": "pyright",
+                        "extensionToLanguage": {".py": "python"},
+                    },
+                    "bad": invalid_config,
+                }
+            },
+            isolate_invalid_servers=True,
+        )
+
+        assert result.is_valid is True
+        assert result.normalized is not None
+        assert tuple(result.normalized["lspServers"]) == ("good",)
+        assert any("bad" in warning for warning in result.warnings)
+
 
 class TestFileLoading:
     """File helpers use bounded local JSON reads."""

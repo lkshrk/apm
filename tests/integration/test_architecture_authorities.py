@@ -23,12 +23,15 @@ def test_agent_plugin_contract_has_single_owner() -> None:
     validation = (root / "src/apm_cli/models/validation.py").read_text(encoding="utf-8")
     resolver = (root / "src/apm_cli/deps/apm_resolver.py").read_text(encoding="utf-8")
     errors = (root / "src/apm_cli/agent_plugins/errors.py").read_text(encoding="utf-8")
+    assets = (root / "src/apm_cli/agent_plugins/assets.py").read_text(encoding="utf-8")
+    ir = (root / "src/apm_cli/agent_plugins/ir.py").read_text(encoding="utf-8")
     skill_integrator = (root / "src/apm_cli/integration/skill_integrator.py").read_text(
         encoding="utf-8"
     )
     detection = (root / "src/apm_cli/models/format_detection.py").read_text(encoding="utf-8")
     legacy = (root / "src/apm_cli/deps/plugin_parser.py").read_text(encoding="utf-8")
     guard = (root / "scripts/check_bundle_format_authority.sh").read_text(encoding="utf-8")
+    boundary_guard = (root / "scripts/lint-architecture-boundaries.sh").read_text(encoding="utf-8")
     architecture = (root / ".github/instructions/architecture.instructions.md").read_text(
         encoding="utf-8"
     )
@@ -56,6 +59,14 @@ def test_agent_plugin_contract_has_single_owner() -> None:
     assert "detect_agent_plugin(package_path)" in detection
     assert "admit_legacy_plugin_manifest(plugin_path)" in legacy
     assert "Agent Plugin classification must route through its loader" in guard
+    assert loader.count("def _discover_apm_extension_components(") == 1
+    assert loader.count("AssetInventory(root)") == 1
+    assert "class AgentPluginAsset:" in ir
+    assert "sha256: str" in ir
+    assert "class ApmExtensionComponents:" in ir
+    assert "hashlib.sha256()" in assets
+    assert "if stat.S_ISLNK" in assets
+    assert "Agent Plugin component IR must remain canonical and inventory-backed" in boundary_guard
     assert "| Agent Plugins v1 contract interpretation and component discovery |" in architecture
     assert "| Agent Plugin portable manifest authority |" in architecture
     assert "| APMPackage interpreted-manifest construction |" in architecture
@@ -63,6 +74,82 @@ def test_agent_plugin_contract_has_single_owner() -> None:
     assert architecture == (root / ".apm/instructions/architecture.instructions.md").read_text(
         encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "old", "new"),
+    [
+        (
+            "src/apm_cli/agent_plugins/projection.py",
+            "    data = _project_apm_configuration(plugin)",
+            '    list(plugin.root.rglob("*"))\n    data = _project_apm_configuration(plugin)',
+        ),
+        (
+            "src/apm_cli/agent_plugins/assets.py",
+            "stat.S_ISLNK",
+            "False and stat.S_ISLNK",
+        ),
+        (
+            "src/apm_cli/agent_plugins/ir.py",
+            "    sha256: str",
+            "    digest: str",
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")',
+            '_APM_DIRECTORY_COMPONENTS = (".apm/agents", "commands", "instructions", "extensions")',
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            "if extension is None or extension.schema_version !=",
+            "if False and extension is None or extension.schema_version !=",
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")',
+            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions", "bin")',
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            '    if not _has_exact_entry(namespace_root, "lsp.json"):\n        return None',
+            '    if not _has_exact_entry(namespace_root, "lsp.json"):\n'
+            '        raise AgentPluginManifestError("invalid LSP")',
+        ),
+    ],
+)
+def test_agent_plugin_component_ir_mutations_are_killed(
+    tmp_path: Path,
+    relative_path: str,
+    old: str,
+    new: str,
+) -> None:
+    """Static owner guard kills every load-bearing component-IR mutation."""
+    root = Path(__file__).parents[2]
+    sandbox = tmp_path / "repo"
+    paths = (
+        "src/apm_cli/agent_plugins/assets.py",
+        "src/apm_cli/agent_plugins/ir.py",
+        "src/apm_cli/agent_plugins/loader.py",
+        "src/apm_cli/agent_plugins/projection.py",
+    )
+    for relative in paths:
+        destination = sandbox / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / relative, destination)
+    mutation_path = sandbox / relative_path
+    source = mutation_path.read_text(encoding="utf-8")
+    assert old in source
+    mutation_path.write_text(source.replace(old, new), encoding="utf-8")
+
+    result = subprocess.run(
+        ("python3", "scripts/check_agent_plugin_component_ir.py", str(sandbox)),
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
 
 
 @pytest.mark.parametrize(

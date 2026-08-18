@@ -5,7 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from apm_cli.agent_plugins import MCP_SCHEMA_ID, PLUGIN_SCHEMA_ID
+from apm_cli.agent_plugins import (
+    MCP_SCHEMA_ID,
+    PLUGIN_SCHEMA_ID,
+    load_agent_plugin,
+    project_agent_plugin_package,
+)
 from apm_cli.deps.package_validator import PackageValidator, stamp_plugin_version
 from apm_cli.models.apm_package import APMPackage
 from apm_cli.models.validation import PackageType, validate_apm_package
@@ -35,6 +40,8 @@ def _write_skill(root: Path) -> None:
 
 
 def _write_mcp(root: Path) -> None:
+    (root / "bin").mkdir()
+    (root / "bin" / "bridge").write_text("bridge", encoding="utf-8")
     (root / "mcp.json").write_text(
         json.dumps(
             {
@@ -96,6 +103,25 @@ def test_native_validation_projects_ir_without_filesystem_mutation(tmp_path: Pat
         if path.is_file()
     }
     assert after == before
+
+
+def test_projection_never_rescans_component_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_plugin(tmp_path)
+    _write_skill(tmp_path)
+    plugin = load_agent_plugin(tmp_path)
+
+    def forbid_rescan(*_args, **_kwargs):
+        raise AssertionError("projection must consume canonical IR")
+
+    monkeypatch.setattr(Path, "rglob", forbid_rescan)
+    monkeypatch.setattr(Path, "iterdir", forbid_rescan)
+
+    package = project_agent_plugin_package(plugin)
+
+    assert package.agent_plugin is plugin
 
 
 def test_native_validation_preserves_explicit_dependency_source_anchor(tmp_path: Path) -> None:

@@ -96,6 +96,14 @@ if [ "$experimental_hint_definition_count" -ne 1 ] \
     [ -n "$experimental_hint_duplicate_hits" ] && echo "$experimental_hint_duplicate_hits"
     violations=$((violations + 1))
 fi
+agent_plugin_loader="src/apm_cli/agent_plugins/loader.py"
+agent_plugin_component_output=$(python3 scripts/check_agent_plugin_component_ir.py 2>&1)
+agent_plugin_component_status=$?
+if [ "$agent_plugin_component_status" -ne 0 ]; then
+    echo "[x] Agent Plugin component IR must remain canonical and inventory-backed"
+    echo "$agent_plugin_component_output"
+    violations=$((violations + 1))
+fi
 
 echo "[*] AC2: validate-before-mutate boundaries"
 compiled_write_hits=$(
