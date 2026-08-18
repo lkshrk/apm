@@ -41,7 +41,13 @@ ENFORCED_EXEC_TYPES = (
 )
 
 # All recognised exec-type keys (for manifest validation).
-ALL_EXEC_TYPES = (EXEC_TYPE_HOOKS, EXEC_TYPE_MCP, EXEC_TYPE_BIN, EXEC_TYPE_CANVAS, EXEC_TYPE_LSP)
+ALL_EXEC_TYPES = (
+    EXEC_TYPE_HOOKS,
+    EXEC_TYPE_MCP,
+    EXEC_TYPE_BIN,
+    EXEC_TYPE_CANVAS,
+    EXEC_TYPE_LSP,
+)
 
 
 @dataclass(frozen=True)
@@ -181,6 +187,7 @@ TRUST_DEPLOYED = "deployed"  # allowed and (will be) materialised
 TRUST_GATED = "gated_pending_approval"  # not yet approved; approvable
 TRUST_DENIED = "denied"  # an explicit deny rule forbids it
 TRUST_ABSENT = "absent"  # package not present at all (audit-only)
+TRUST_DECLARATIVE = "declarative"  # present, but does not launch local code
 
 # deciding_layer labels (which rung of the ladder decided).
 LAYER_GATE_DISABLED = "gate-disabled"
@@ -193,6 +200,24 @@ LAYER_PROJECT_ALLOW = "project-allow"
 LAYER_USER_ALLOW = "user-allow"
 LAYER_ORG_RECOMMEND = "org-recommend"
 LAYER_DEFAULT_DENY = "default-deny"
+LAYER_DECLARATIVE = "declarative"
+LAYER_EXPLICIT_CONSENT = "explicit-consent"
+LAYER_INVALID_PROVENANCE = "invalid-provenance"
+LAYER_INVALID_COMPONENT = "invalid-component"
+
+EXEC_CLASS_EXECUTABLE = "executable"
+EXEC_CLASS_DECLARATIVE = "declarative"
+EXEC_CLASS_UNKNOWN = "unknown"
+
+COMPONENT_KIND_SKILL = "skill"
+COMPONENT_KIND_MCP_STDIO = "mcp-stdio"
+COMPONENT_KIND_MCP_REMOTE = "mcp-remote"
+COMPONENT_KIND_MCP_UNKNOWN = "mcp-unknown"
+
+FAILURE_POLICY_DENIED = "policy-denied"
+FAILURE_APPROVAL_REQUIRED = "approval-required"
+FAILURE_INVALID_PROVENANCE = "invalid-provenance"
+FAILURE_INVALID_COMPONENT = "invalid-component"
 
 
 @dataclass(frozen=True)
@@ -237,6 +262,108 @@ class ExecTrustContext:
     project_deny: dict[str, dict[str, bool]]
     user_allow: dict[str, dict[str, bool]]
     user_deny: dict[str, dict[str, bool]]
+
+
+@dataclass(frozen=True, slots=True)
+class ExecSourceFacts:
+    """Canonical source and integrity facts independent of acquisition ingress.
+
+    ``canonical_source`` identifies the publisher-controlled source named by
+    resolution, not a cache path, archive basename, or temporary directory.
+    The optional revision, digest, and verification facts are carried through
+    unchanged so trust cannot be inferred merely from GitHub, a registry, or a
+    cache hit.
+    """
+
+    canonical_source: str
+    resolved_revision: str | None = None
+    content_digest: str | None = None
+    integrity_verified: bool | None = None
+    signature_verified: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutableComponent:
+    """One canonical executable or declarative Agent Plugin component."""
+
+    plugin_key: str
+    kind: str
+    name: str
+    classification: str
+    exec_type: str | None
+    command: str | None
+    args: tuple[str, ...]
+    cwd: str | None
+    provenance: str
+
+
+@dataclass(frozen=True, slots=True)
+class ExecComponentFailure:
+    """Typed component failure suitable for later transactional integration."""
+
+    plugin_key: str
+    component_kind: str
+    component_name: str
+    code: str
+    message: str
+    trust_state: str = TRUST_DENIED
+    deciding_layer: str = LAYER_INVALID_PROVENANCE
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPluginExecInventory:
+    """Complete executable/declarative inventory for one canonical plugin."""
+
+    components: tuple[ExecutableComponent, ...]
+    failures: tuple[ExecComponentFailure, ...]
+
+    @property
+    def executable_components(self) -> tuple[ExecutableComponent, ...]:
+        """Return only components that can launch or contain executable code."""
+        return tuple(
+            component
+            for component in self.components
+            if component.classification == EXEC_CLASS_EXECUTABLE
+        )
+
+    @property
+    def declarative_components(self) -> tuple[ExecutableComponent, ...]:
+        """Return components that do not launch local code."""
+        return tuple(
+            component
+            for component in self.components
+            if component.classification == EXEC_CLASS_DECLARATIVE
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExecTrustDecisionContext:
+    """Canonical decision input for one Agent Plugin component."""
+
+    policy: ExecTrustContext
+    source: ExecSourceFacts
+    plugin_name: str
+    plugin_version: str
+    component: ExecutableComponent
+    explicit_consent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ExecComponentTrustResult:
+    """Resolved decision and optional typed failure for one component."""
+
+    context: ExecTrustDecisionContext
+    decision: ExecDecision
+    failure: ExecComponentFailure | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentPluginExecTrustEvaluation:
+    """Side-effect-free trust evaluation consumed by later transaction wiring."""
+
+    inventory: AgentPluginExecInventory
+    results: tuple[ExecComponentTrustResult, ...]
+    failures: tuple[ExecComponentFailure, ...]
 
 
 def _strip_version(package_key: str) -> str:
@@ -403,6 +530,310 @@ def build_approval_key(package_name: str, version: str) -> str:
     if not version:
         return package_name
     return f"{package_name}#{version}"
+
+
+def inventory_agent_plugin_executables(plugin: Any) -> AgentPluginExecInventory:
+    """Classify executable-bearing surfaces represented by canonical plugin IR.
+
+    Agent Plugins v1 skills and remote MCP transports are declarative; stdio
+    MCP servers are executable. Extension and safe-file facts that are not yet
+    represented by the canonical IR are deliberately not rediscovered from
+    filesystem ingress here.
+    """
+    identity = getattr(plugin, "identity", None)
+    plugin_name = str(getattr(identity, "name", "") or "")
+    plugin_version = str(getattr(identity, "version", "") or "")
+    plugin_key = build_approval_key(plugin_name, plugin_version)
+    components: list[ExecutableComponent] = []
+    failures: list[ExecComponentFailure] = []
+
+    for skill in getattr(getattr(plugin, "components", None), "skills", ()):
+        directory_name = str(getattr(skill, "directory_name", "") or "")
+        components.append(
+            ExecutableComponent(
+                plugin_key=plugin_key,
+                kind=COMPONENT_KIND_SKILL,
+                name=str(getattr(skill, "name", "") or ""),
+                classification=EXEC_CLASS_DECLARATIVE,
+                exec_type=None,
+                command=None,
+                args=(),
+                cwd=None,
+                provenance=f"skills/{directory_name}/SKILL.md" if directory_name else "",
+            )
+        )
+
+    for server in getattr(getattr(plugin, "components", None), "mcp_servers", ()):
+        server_type = str(getattr(getattr(server, "server_type", None), "value", "") or "")
+        executable = server_type == "stdio"
+        declarative = server_type in {"streamable-http", "sse"}
+        pointer = str(getattr(getattr(server, "provenance", None), "json_pointer", "") or "")
+        components.append(
+            ExecutableComponent(
+                plugin_key=plugin_key,
+                kind=(
+                    COMPONENT_KIND_MCP_STDIO
+                    if executable
+                    else COMPONENT_KIND_MCP_REMOTE
+                    if declarative
+                    else COMPONENT_KIND_MCP_UNKNOWN
+                ),
+                name=str(getattr(server, "name", "") or ""),
+                classification=(
+                    EXEC_CLASS_EXECUTABLE
+                    if executable
+                    else EXEC_CLASS_DECLARATIVE
+                    if declarative
+                    else EXEC_CLASS_UNKNOWN
+                ),
+                exec_type=EXEC_TYPE_MCP if executable else None,
+                command=getattr(server, "command", None),
+                args=tuple(getattr(server, "args", ()) or ()),
+                cwd=getattr(server, "cwd", None),
+                provenance=f"mcp.json#{pointer}" if pointer else "",
+            )
+        )
+
+    return AgentPluginExecInventory(
+        components=tuple(
+            sorted(
+                components,
+                key=lambda item: (
+                    item.provenance,
+                    item.kind,
+                    item.name,
+                    item.command or "",
+                    item.args,
+                ),
+            )
+        ),
+        failures=tuple(
+            sorted(
+                failures,
+                key=lambda item: (
+                    item.component_kind,
+                    item.component_name,
+                    item.code,
+                    item.message,
+                ),
+            )
+        ),
+    )
+
+
+def _component_failure(
+    plugin_key: str,
+    component_kind: str,
+    component_name: str,
+    code: str,
+    message: str,
+    *,
+    deciding_layer: str | None = None,
+    trust_state: str = TRUST_DENIED,
+) -> ExecComponentFailure:
+    """Build one typed failure with the shared fail-closed vocabulary."""
+    if deciding_layer is None:
+        deciding_layer = (
+            LAYER_INVALID_COMPONENT
+            if code == FAILURE_INVALID_COMPONENT
+            else LAYER_INVALID_PROVENANCE
+        )
+    return ExecComponentFailure(
+        plugin_key=plugin_key,
+        component_kind=component_kind,
+        component_name=component_name,
+        code=code,
+        message=message,
+        trust_state=trust_state,
+        deciding_layer=deciding_layer,
+    )
+
+
+def assemble_agent_plugin_exec_trust_context(
+    policy: ExecTrustContext,
+    *,
+    plugin: Any,
+    component: ExecutableComponent,
+    source: ExecSourceFacts,
+    explicit_consent: bool = False,
+) -> ExecTrustDecisionContext:
+    """Assemble the sole canonical trust input for one Agent Plugin component."""
+    identity = getattr(plugin, "identity", None)
+    plugin_name = str(getattr(identity, "name", "") or "")
+    plugin_version = str(getattr(identity, "version", "") or "")
+    normalized_source = ExecSourceFacts(
+        canonical_source=(
+            source.canonical_source.strip()
+            if isinstance(source.canonical_source, str)
+            else source.canonical_source
+        ),
+        resolved_revision=(
+            source.resolved_revision.strip()
+            if isinstance(source.resolved_revision, str)
+            else source.resolved_revision
+        ),
+        content_digest=(
+            source.content_digest.strip()
+            if isinstance(source.content_digest, str)
+            else source.content_digest
+        ),
+        integrity_verified=source.integrity_verified,
+        signature_verified=source.signature_verified,
+    )
+    return ExecTrustDecisionContext(
+        policy=policy,
+        source=normalized_source,
+        plugin_name=plugin_name,
+        plugin_version=plugin_version,
+        component=component,
+        explicit_consent=explicit_consent,
+    )
+
+
+def resolve_agent_plugin_exec_decision(
+    context: ExecTrustDecisionContext,
+) -> ExecComponentTrustResult:
+    """Resolve one component without ingress trust or source-shaped defaults."""
+    component = context.component
+    invalid = _validate_exec_decision_context(context)
+    if invalid is not None:
+        return ExecComponentTrustResult(
+            context=context,
+            decision=ExecDecision(False, invalid.deciding_layer, invalid.trust_state),
+            failure=invalid,
+        )
+    if component.classification == EXEC_CLASS_DECLARATIVE:
+        return ExecComponentTrustResult(
+            context=context,
+            decision=ExecDecision(True, LAYER_DECLARATIVE, TRUST_DECLARATIVE),
+        )
+
+    decision = resolve_exec_decision(
+        context.policy,
+        component.plugin_key,
+        component.exec_type or "",
+    )
+    if decision.deciding_layer == LAYER_GATE_DISABLED:
+        decision = ExecDecision(False, LAYER_DEFAULT_DENY, TRUST_GATED)
+    if (
+        context.explicit_consent
+        and not decision.allowed
+        and decision.deciding_layer == LAYER_DEFAULT_DENY
+    ):
+        decision = ExecDecision(True, LAYER_EXPLICIT_CONSENT, TRUST_DEPLOYED)
+    if decision.allowed:
+        return ExecComponentTrustResult(context=context, decision=decision)
+
+    failure_code = (
+        FAILURE_APPROVAL_REQUIRED if decision.trust_state == TRUST_GATED else FAILURE_POLICY_DENIED
+    )
+    return ExecComponentTrustResult(
+        context=context,
+        decision=decision,
+        failure=_component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            failure_code,
+            f"Executable component {component.kind}:{component.name} was not trusted",
+            deciding_layer=decision.deciding_layer,
+            trust_state=decision.trust_state,
+        ),
+    )
+
+
+def _validate_exec_decision_context(
+    context: ExecTrustDecisionContext,
+) -> ExecComponentFailure | None:
+    """Return a typed failure when canonical identity or provenance is malformed."""
+    component = context.component
+    source = context.source
+    canonical_plugin_key = build_approval_key(context.plugin_name, context.plugin_version)
+    if not isinstance(context.explicit_consent, bool):
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_COMPONENT,
+            "Explicit executable consent must be a boolean",
+        )
+    if (
+        not context.plugin_name
+        or not context.plugin_version
+        or not component.plugin_key
+        or component.plugin_key != canonical_plugin_key
+        or not component.name
+        or not component.kind
+        or not component.provenance
+        or component.provenance == "<outside-plugin-root>"
+    ):
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_COMPONENT,
+            "Executable trust requires canonical plugin identity, version, component identity, and provenance",
+        )
+    if component.classification not in {
+        EXEC_CLASS_EXECUTABLE,
+        EXEC_CLASS_DECLARATIVE,
+    }:
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_COMPONENT,
+            "Unknown executable classification fails closed",
+        )
+    if component.classification == EXEC_CLASS_EXECUTABLE:
+        if (
+            component.exec_type not in ALL_EXEC_TYPES
+            or not component.command
+            or not all(isinstance(argument, str) for argument in component.args)
+            or (component.cwd is not None and not isinstance(component.cwd, str))
+        ):
+            return _component_failure(
+                component.plugin_key,
+                component.kind,
+                component.name,
+                FAILURE_INVALID_COMPONENT,
+                "Executable components require a recognized type, command, args, and cwd",
+            )
+    if not isinstance(source.canonical_source, str) or not source.canonical_source.strip():
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Canonical source provenance is required",
+        )
+    for value in (source.resolved_revision, source.content_digest):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            return _component_failure(
+                component.plugin_key,
+                component.kind,
+                component.name,
+                FAILURE_INVALID_PROVENANCE,
+                "Source revision and digest facts must be non-empty when present",
+            )
+    for verification in (source.integrity_verified, source.signature_verified):
+        if verification is not None and not isinstance(verification, bool):
+            return _component_failure(
+                component.plugin_key,
+                component.kind,
+                component.name,
+                FAILURE_INVALID_PROVENANCE,
+                "Integrity and signature verification facts must be booleans when present",
+            )
+    if source.integrity_verified is False or source.signature_verified is False:
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Failed integrity or signature verification cannot be bypassed",
+        )
+    return None
 
 
 # -------------------------------------------------------------------
