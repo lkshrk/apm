@@ -158,6 +158,11 @@ def test_agent_plugin_contract_has_single_owner() -> None:
             r'''    r"never|"''',
         ),
         (
+            "src/apm_cli/agent_plugins/loader.py",
+            "primary.disposition is _CandidateDisposition.ABSENT",
+            "primary.disposition is _CandidateDisposition.REJECTED",
+        ),
+        (
             "src/apm_cli/integration/hook_ir.py",
             "from apm_cli.hook_contract import HookBinding, HookDocument, HookHandler\n",
             "from apm_cli.hook_contract import HookBinding, HookDocument, HookHandler\n\n"

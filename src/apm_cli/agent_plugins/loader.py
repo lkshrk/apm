@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -114,6 +115,19 @@ _PATH_REFERENCE_RE = re.compile(
 class _AdmissibleRootManifest:
     path: Path
     document: Mapping[str, Any]
+
+
+class _CandidateDisposition(Enum):
+    ABSENT = "absent"
+    SAFE = "safe"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class _CandidateResolution:
+    path: Path
+    disposition: _CandidateDisposition
+    rejection: str | None = None
 
 
 def detect_agent_plugin(package_root: Path) -> AgentPluginDetection | None:
@@ -1311,39 +1325,32 @@ def _declaration_executables(
             )
             continue
         relative_path = Path(*PurePosixPath(relative).parts)
-        candidate_bases = (
-            (relative_base, root)
-            if declaration.startswith("./") and relative_base is not None
-            else (root,)
-        )
-        candidates: list[Path] = []
-        for base in candidate_bases:
-            candidate = base / relative_path
-            try:
-                ensure_path_within(candidate, root)
-            except PathTraversalError:
-                continue
-            candidates.append(candidate)
-        candidate = next(
-            (path for path in candidates if path.exists() or path.is_symlink()),
-            candidates[-1] if candidates else root / relative_path,
-        )
-        try:
-            ensure_path_within(candidate, root)
-        except PathTraversalError as exc:
+        if declaration.replace("\\", "/").startswith("./") and relative_base is not None:
+            primary = _resolve_executable_candidate(relative_base / relative_path, root)
+            resolution = (
+                _resolve_executable_candidate(root / relative_path, root)
+                if primary.disposition is _CandidateDisposition.ABSENT
+                else primary
+            )
+        else:
+            resolution = _resolve_executable_candidate(root / relative_path, root)
+        if resolution.disposition is _CandidateDisposition.REJECTED:
             diagnostics.append(
                 _diagnostic(
                     code=diagnostic_code,
                     severity=DiagnosticSeverity.ERROR,
-                    message=f"Executable reference {declaration!r} was rejected: {exc}",
+                    message=(
+                        f"Executable reference {declaration!r} was rejected: {resolution.rejection}"
+                    ),
                     root=root,
                     path=source_path,
                     component=component,
                 )
             )
             continue
+        candidate = resolution.path
         relative = candidate.relative_to(root).as_posix()
-        if not candidate.exists() and not candidate.is_symlink():
+        if resolution.disposition is _CandidateDisposition.ABSENT:
             executables.append(
                 AgentPluginExecutable(
                     declaration=declaration,
@@ -1394,16 +1401,40 @@ def _declaration_executables(
     return tuple(executables), diagnostics
 
 
+def _resolve_executable_candidate(path: Path, root: Path) -> _CandidateResolution:
+    """Classify one literal candidate without conflating absence and rejection."""
+    try:
+        ensure_path_within(path, root)
+    except (OSError, PathTraversalError, RuntimeError) as exc:
+        return _CandidateResolution(
+            path=path,
+            disposition=_CandidateDisposition.REJECTED,
+            rejection=str(exc),
+        )
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return _CandidateResolution(path=path, disposition=_CandidateDisposition.ABSENT)
+    except OSError as exc:
+        return _CandidateResolution(
+            path=path,
+            disposition=_CandidateDisposition.REJECTED,
+            rejection=f"asset metadata is unreadable: {exc}",
+        )
+    return _CandidateResolution(path=path, disposition=_CandidateDisposition.SAFE)
+
+
 def _plugin_relative_declaration_path(declaration: str) -> str | None:
-    if declaration.startswith("./"):
-        relative = declaration[2:]
-    elif declaration.startswith("${PLUGIN_ROOT}/"):
-        relative = declaration.removeprefix("${PLUGIN_ROOT}/")
-    elif declaration.startswith("../"):
-        relative = declaration
+    portable_declaration = declaration.replace("\\", "/")
+    if portable_declaration.startswith("./"):
+        relative = portable_declaration[2:]
+    elif portable_declaration.startswith("${PLUGIN_ROOT}/"):
+        relative = portable_declaration.removeprefix("${PLUGIN_ROOT}/")
+    elif portable_declaration.startswith("../"):
+        relative = portable_declaration
     else:
         return None
-    portable = PurePosixPath(relative.replace("\\", "/"))
+    portable = PurePosixPath(relative)
     if portable.is_absolute() or any(part in ("", ".", "..") for part in portable.parts):
         return relative
     return portable.as_posix()

@@ -124,6 +124,11 @@ def check(root: Path) -> list[str]:
         failures.append("Agent Plugin hooks bypass the neutral hook grammar owner")
     if "(?:\\.\\.[/\\\\])+" not in loader_source:
         failures.append("parent-relative executable references may evade rejection")
+    if (
+        "primary.disposition is _CandidateDisposition.ABSENT" not in loader_source
+        or "disposition=_CandidateDisposition.REJECTED" not in loader_source
+    ):
+        failures.append("rejected hook-relative candidates may fall through to root fallback")
     for name in ("_discover_apm_lsp_component", "_discover_apm_hook_component"):
         if any(isinstance(node, ast.Raise) for node in ast.walk(_function(loader_tree, name))):
             failures.append(f"{name} may abort unrelated components")

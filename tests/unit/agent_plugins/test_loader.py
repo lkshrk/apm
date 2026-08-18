@@ -471,7 +471,15 @@ def test_invalid_apm_document_disables_only_its_component(
     assert getattr(plugin.apm_components, disabled_component) is None
 
 
-@pytest.mark.parametrize("escape", ["../evil.sh", "../../evil.sh"])
+@pytest.mark.parametrize(
+    "escape",
+    [
+        "../evil.sh",
+        "../../evil.sh",
+        "${PLUGIN_ROOT}/../evil.sh",
+        r"${PLUGIN_ROOT}\..\evil.sh",
+    ],
+)
 @pytest.mark.parametrize("component", ["hook", "mcp-arg", "lsp-arg"])
 def test_executable_parent_escapes_are_rejected_without_decoy_matching(
     tmp_path: Path,
@@ -527,6 +535,88 @@ def test_executable_parent_escapes_are_rejected_without_decoy_matching(
         assert plugin.apm_components is not None
         assert plugin.apm_components.lsp is not None
         assert plugin.apm_components.lsp.servers == ()
+
+
+@pytest.mark.parametrize("with_root_decoy", [False, True])
+def test_unsafe_primary_hook_reference_never_falls_back(
+    tmp_path: Path,
+    with_root_decoy: bool,
+) -> None:
+    _write_manifest(tmp_path)
+    hooks = tmp_path / "com.microsoft.apm" / "hooks"
+    hooks.mkdir(parents=True)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.sh"
+    outside.write_text("outside", encoding="utf-8")
+    link = hooks / "link.sh"
+    link.symlink_to(outside)
+    if with_root_decoy:
+        (tmp_path / "link.sh").write_text("benign decoy", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"command": "./link.sh"}]}}),
+        encoding="utf-8",
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+    diagnostic = next(
+        item for item in plugin.diagnostics if item.code == "apm.hooks.executable.invalid"
+    )
+
+    root = tmp_path.resolve()
+    literal_link = root / "com.microsoft.apm" / "hooks" / "link.sh"
+    assert diagnostic.message == (
+        "Executable reference './link.sh' was rejected: "
+        f"Cannot verify containment of '{literal_link}' within '{root}': "
+        f"Path '{literal_link}' resolves to '{outside.resolve()}' which is outside "
+        f"the allowed base directory '{root}'"
+    )
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.hooks is None
+    assert not any(
+        item.code in {"apm.hooks.executable.missing", "apm.hooks.path.ignored"}
+        and item.path.endswith("link.sh")
+        for item in plugin.diagnostics
+    )
+
+
+def test_safe_primary_hook_reference_wins_over_root_decoy(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    hooks = tmp_path / "com.microsoft.apm" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "run.sh").write_text("primary", encoding="utf-8")
+    (tmp_path / "run.sh").write_text("decoy", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
+        encoding="utf-8",
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.hooks is not None
+    executable = plugin.apm_components.hooks.executables[0]
+    assert executable.plugin_relative_path == "com.microsoft.apm/hooks/run.sh"
+    assert executable.asset is not None
+    assert executable.asset.sha256 == hashlib.sha256(b"primary").hexdigest()
+
+
+def test_absent_primary_hook_reference_uses_root_fallback(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    hooks = tmp_path / "com.microsoft.apm" / "hooks"
+    hooks.mkdir(parents=True)
+    (tmp_path / "run.sh").write_text("fallback", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
+        encoding="utf-8",
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.hooks is not None
+    executable = plugin.apm_components.hooks.executables[0]
+    assert executable.plugin_relative_path == "run.sh"
+    assert executable.asset is not None
+    assert executable.asset.sha256 == hashlib.sha256(b"fallback").hexdigest()
 
 
 def test_referenced_hook_asset_is_not_reported_as_ignored(tmp_path: Path) -> None:
