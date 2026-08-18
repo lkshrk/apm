@@ -11,7 +11,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
-from ..utils.path_security import PathTraversalError, ensure_path_within
+from ..utils.path_security import (
+    PathTraversalError,
+    ensure_path_within_resolved,
+)
 from .constants import MAX_COMPONENT_ASSET_BYTES, MAX_COMPONENT_ASSET_ENTRIES
 from .ir import AgentPluginAsset, SourceProvenance
 
@@ -23,33 +26,34 @@ class AssetInventoryError(ValueError):
 
 
 class AssetInventory:
-    """Collect immutable asset facts under one package-wide budget."""
+    """Collect immutable asset facts under one irreversible work budget."""
 
     def __init__(self, plugin_root: Path) -> None:
         self._root = plugin_root.resolve()
         self._entry_count = 0
         self._byte_count = 0
         self._assets: dict[str, AgentPluginAsset] = {}
+        self._payloads: dict[str, bytes] = {}
+        self._normalized_paths: dict[str, str] = {}
 
     def collect_component(self, component_root: Path) -> tuple[AgentPluginAsset, ...]:
-        """Inventory every regular file in one exact component directory or file."""
-        entry_count = self._entry_count
-        byte_count = self._byte_count
-        cached_paths = set(self._assets)
-        try:
-            assets = self._collect(component_root)
-        except Exception:
-            self._entry_count = entry_count
-            self._byte_count = byte_count
-            for path in set(self._assets) - cached_paths:
-                del self._assets[path]
-            raise
-        return assets
+        """Inventory one component without refunding attempted package work."""
+        return self._collect(component_root)
+
+    def list_component_candidates(self, directory: Path) -> tuple[Path, ...]:
+        """Return deterministic direct children charged to the package work budget."""
+        self._ensure_contained(directory)
+        return self._bounded_directory_entries(directory)
 
     def collect_file(self, path: Path) -> AgentPluginAsset:
         """Inventory one declaration-referenced regular file."""
         self._ensure_contained(path)
+        relative = self._relative_path(path)
+        cached = self._assets.get(relative)
+        if cached is not None:
+            return cached
         self._assert_case_unambiguous(path)
+        self._reserve_entry()
         try:
             initial = path.lstat()
         except OSError as exc:
@@ -58,7 +62,9 @@ class AssetInventory:
             raise AssetInventoryError("symlinks are not accepted")
         if not stat.S_ISREG(initial.st_mode):
             raise AssetInventoryError("asset must be a regular file")
-        return self.collect_component(path)[0]
+        self._record_normalized_path(relative)
+        asset, _ = self._inventory_regular_file(path, initial)
+        return asset
 
     def read_file(
         self,
@@ -67,9 +73,18 @@ class AssetInventory:
         max_bytes: int,
     ) -> tuple[AgentPluginAsset, bytes]:
         """Read and inventory one bounded regular file from the same descriptor."""
-        self._reserve_entry()
         self._ensure_contained(path)
-        self._assert_case_unambiguous(path)
+        relative = self._relative_path(path)
+        cached = self._assets.get(relative)
+        cached_payload = self._payloads.get(relative)
+        if cached is not None and cached_payload is not None:
+            if len(cached_payload) > max_bytes:
+                raise AssetInventoryError(f"asset exceeds the {max_bytes}-byte read limit")
+            return cached, cached_payload
+        if cached is None:
+            self._reserve_entry()
+            self._record_normalized_path(relative)
+            self._assert_case_unambiguous(path)
         try:
             initial = path.lstat()
         except OSError as exc:
@@ -80,11 +95,14 @@ class AssetInventory:
             raise AssetInventoryError("asset must be a regular file")
         if initial.st_size > max_bytes:
             raise AssetInventoryError(f"asset exceeds the {max_bytes}-byte read limit")
-        return self._inventory_regular_file(path, initial, capture=True)
+        asset, payload = self._inventory_regular_file(path, initial, capture=True)
+        self._payloads[relative] = payload
+        return asset, payload
 
     def _collect(self, component_root: Path) -> tuple[AgentPluginAsset, ...]:
         self._reserve_entry()
         self._ensure_contained(component_root)
+        self._record_normalized_path(self._relative_path(component_root))
         try:
             root_stat = component_root.lstat()
         except OSError as exc:
@@ -99,28 +117,16 @@ class AssetInventory:
 
         files: list[tuple[Path, os.stat_result]] = []
         pending = [component_root]
-        normalized_paths: dict[str, str] = {}
         while pending:
             directory = pending.pop()
-            try:
-                entries = sorted(directory.iterdir(), key=lambda entry: entry.name)
-            except OSError as exc:
-                raise AssetInventoryError(f"component directory is unreadable: {exc}") from exc
-            for entry in entries:
-                self._reserve_entry()
+            for entry in self._bounded_directory_entries(directory):
                 self._ensure_contained(entry)
                 try:
                     entry_stat = entry.lstat()
                 except OSError as exc:
                     raise AssetInventoryError(f"asset metadata is unreadable: {exc}") from exc
                 relative = self._relative_path(entry)
-                normalized = unicodedata.normalize("NFC", relative).casefold()
-                previous = normalized_paths.get(normalized)
-                if previous is not None and previous != relative:
-                    raise AssetInventoryError(
-                        f"case-ambiguous or duplicate normalized paths: {previous}, {relative}"
-                    )
-                normalized_paths[normalized] = relative
+                self._record_normalized_path(relative)
                 if stat.S_ISLNK(entry_stat.st_mode):
                     raise AssetInventoryError(f"asset {relative} is a symlink")
                 if stat.S_ISDIR(entry_stat.st_mode):
@@ -135,6 +141,16 @@ class AssetInventory:
             asset, _ = self._inventory_regular_file(path, initial)
             assets.append(asset)
         return tuple(assets)
+
+    def _bounded_directory_entries(self, directory: Path) -> tuple[Path, ...]:
+        entries: list[Path] = []
+        try:
+            for entry in directory.iterdir():
+                self._reserve_entry()
+                entries.append(entry)
+        except OSError as exc:
+            raise AssetInventoryError(f"component directory is unreadable: {exc}") from exc
+        return tuple(sorted(entries, key=lambda entry: entry.name))
 
     def _inventory_regular_file(
         self,
@@ -151,7 +167,8 @@ class AssetInventory:
             raise AssetInventoryError(
                 f"asset {relative} exceeds the {MAX_COMPONENT_ASSET_BYTES}-byte package budget"
             )
-        if self._byte_count + initial.st_size > MAX_COMPONENT_ASSET_BYTES:
+        already_counted = cached.size if cached is not None else 0
+        if self._byte_count - already_counted + initial.st_size > MAX_COMPONENT_ASSET_BYTES:
             raise AssetInventoryError(
                 f"component assets exceed the {MAX_COMPONENT_ASSET_BYTES}-byte package budget"
             )
@@ -183,6 +200,8 @@ class AssetInventory:
                 bytes_read += len(chunk)
                 if bytes_read > initial.st_size:
                     raise AssetInventoryError(f"asset {relative} changed during inventory")
+                if cached is None:
+                    self._reserve_bytes(len(chunk))
                 digest.update(chunk)
                 if capture:
                     payload.extend(chunk)
@@ -211,7 +230,6 @@ class AssetInventory:
             if _asset_identity(asset) != _asset_identity(cached):
                 raise AssetInventoryError(f"asset {relative} changed during inventory")
             return cached, bytes(payload)
-        self._byte_count += bytes_read
         self._assets[relative] = asset
         return asset, bytes(payload)
 
@@ -222,9 +240,16 @@ class AssetInventory:
                 f"component assets exceed the {MAX_COMPONENT_ASSET_ENTRIES}-entry package budget"
             )
 
+    def _reserve_bytes(self, size: int) -> None:
+        self._byte_count += size
+        if self._byte_count > MAX_COMPONENT_ASSET_BYTES:
+            raise AssetInventoryError(
+                f"component assets exceed the {MAX_COMPONENT_ASSET_BYTES}-byte package budget"
+            )
+
     def _ensure_contained(self, path: Path) -> None:
         try:
-            ensure_path_within(path, self._root)
+            ensure_path_within_resolved(path, self._root)
         except PathTraversalError as exc:
             raise AssetInventoryError(f"asset path escapes the plugin root: {path}") from exc
 
@@ -241,19 +266,34 @@ class AssetInventory:
             raise AssetInventoryError(f"asset path escapes the plugin root: {path}") from exc
         parent = self._root
         for part in relative_parts:
-            normalized = unicodedata.normalize("NFC", part).casefold()
+            normalized = normalized_path_key(part)
             matches: list[str] = []
             try:
                 for index, sibling in enumerate(parent.iterdir(), start=1):
                     if index > MAX_COMPONENT_ASSET_ENTRIES:
                         raise AssetInventoryError("asset parent exceeds the package entry budget")
-                    if unicodedata.normalize("NFC", sibling.name).casefold() == normalized:
+                    if normalized_path_key(sibling.name) == normalized:
                         matches.append(sibling.name)
             except OSError as exc:
                 raise AssetInventoryError(f"asset parent is unreadable: {exc}") from exc
             if len(set(matches)) != 1:
                 raise AssetInventoryError(f"asset path is case-ambiguous at {parent / part}")
             parent /= part
+
+    def _record_normalized_path(self, relative: str) -> None:
+        normalized = normalized_path_key(relative)
+        previous = self._normalized_paths.get(normalized)
+        if previous is not None and previous != relative:
+            raise AssetInventoryError(
+                f"case-ambiguous or duplicate normalized paths: {previous}, {relative}"
+            )
+        self._normalized_paths[normalized] = relative
+
+    @contextmanager
+    def open_verified_asset(self, expected: AgentPluginAsset) -> Iterator[BinaryIO]:
+        """Yield a verified descriptor using the inventory's resolved root."""
+        with _open_verified_asset(self._root, expected) as file_handle:
+            yield file_handle
 
 
 @contextmanager
@@ -263,9 +303,19 @@ def open_verified_asset(
 ) -> Iterator[BinaryIO]:
     """Yield one verified descriptor so consumers never copy from a reopened path."""
     root = plugin_root.resolve()
+    with _open_verified_asset(root, expected) as file_handle:
+        yield file_handle
+
+
+@contextmanager
+def _open_verified_asset(
+    root: Path,
+    expected: AgentPluginAsset,
+) -> Iterator[BinaryIO]:
+    """Yield one verified descriptor relative to an already-resolved root."""
     path = root / Path(*expected.path.split("/"))
     try:
-        ensure_path_within(path, root)
+        ensure_path_within_resolved(path, root)
         initial = path.lstat()
     except (OSError, PathTraversalError) as exc:
         raise AssetInventoryError(f"asset {expected.path} cannot be verified: {exc}") from exc
@@ -301,3 +351,8 @@ def open_verified_asset(
 
 def _asset_identity(asset: AgentPluginAsset) -> tuple[str, str, int, int]:
     return asset.path, asset.sha256, asset.size, asset.executable_mode
+
+
+def normalized_path_key(value: str) -> str:
+    """Return the canonical NFC and case-insensitive path identity."""
+    return unicodedata.normalize("NFC", value).casefold()

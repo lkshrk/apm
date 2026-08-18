@@ -71,6 +71,8 @@ def test_agent_plugin_contract_has_single_owner() -> None:
     assert "| Agent Plugin portable manifest authority |" in architecture
     assert "| APMPackage interpreted-manifest construction |" in architecture
     assert "| Agent Plugin compatibility package projection |" in architecture
+    assert "| Neutral hook source grammar and shape -> per-target native |" in architecture
+    assert "src/apm_cli/hook_contract.py" in architecture
     assert architecture == (root / ".apm/instructions/architecture.instructions.md").read_text(
         encoding="utf-8"
     )
@@ -111,9 +113,65 @@ def test_agent_plugin_contract_has_single_owner() -> None:
         ),
         (
             "src/apm_cli/agent_plugins/loader.py",
-            '    if not _has_exact_entry(namespace_root, "lsp.json"):\n        return None',
-            '    if not _has_exact_entry(namespace_root, "lsp.json"):\n'
+            '    if not _has_exact_entry(namespace_entries, "lsp.json"):\n        return None',
+            '    if not _has_exact_entry(namespace_entries, "lsp.json"):\n'
             '        raise AgentPluginManifestError("invalid LSP")',
+        ),
+        (
+            "src/apm_cli/agent_plugins/assets.py",
+            "                    self._reserve_bytes(len(chunk))",
+            "                    pass",
+        ),
+        (
+            "src/apm_cli/agent_plugins/assets.py",
+            "        return self._collect(component_root)\n\n    def list_component_candidates",
+            "        entry_count = self._entry_count\n"
+            "        try:\n"
+            "            return self._collect(component_root)\n"
+            "        finally:\n"
+            "            self._entry_count = entry_count\n\n"
+            "    def list_component_candidates",
+        ),
+        (
+            "src/apm_cli/agent_plugins/assets.py",
+            "ensure_path_within_resolved(path, self._root)",
+            "ensure_path_within(path, self._root)",
+        ),
+        (
+            "src/apm_cli/agent_plugins/assets.py",
+            "ensure_path_within_resolved(path, root)",
+            "ensure_path_within(path, root)",
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            "    return any(entry.name == name for entry in entries)",
+            '    return any(entry.name == name for entry in Path(".").iterdir())',
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            "from ..hook_contract import HookContractError, HookSourceDocument, parse_hook_source",
+            "from ..integration.hook_integrator import HookIntegrator",
+        ),
+        (
+            "src/apm_cli/agent_plugins/loader.py",
+            r'''    r"(?:\.\.[/\\])+[^\s\"']+|"''',
+            r'''    r"never|"''',
+        ),
+        (
+            "src/apm_cli/integration/hook_ir.py",
+            "from apm_cli.hook_contract import HookBinding, HookDocument, HookHandler\n",
+            "from apm_cli.hook_contract import HookBinding, HookDocument, HookHandler\n\n"
+            'HOOK_COMMAND_KEYS: tuple[str, ...] = ("command",)\n',
+        ),
+        (
+            "src/apm_cli/install/sources.py",
+            "                agent_plugin_detection=native_detection,\n",
+            "",
+        ),
+        (
+            "src/apm_cli/models/validation.py",
+            "agent_plugin_detection.manifest_path.parent.resolve() != package_root",
+            "False",
         ),
     ],
 )
@@ -131,6 +189,10 @@ def test_agent_plugin_component_ir_mutations_are_killed(
         "src/apm_cli/agent_plugins/ir.py",
         "src/apm_cli/agent_plugins/loader.py",
         "src/apm_cli/agent_plugins/projection.py",
+        "src/apm_cli/hook_contract.py",
+        "src/apm_cli/integration/hook_ir.py",
+        "src/apm_cli/models/validation.py",
+        "src/apm_cli/install/sources.py",
     )
     for relative in paths:
         destination = sandbox / relative

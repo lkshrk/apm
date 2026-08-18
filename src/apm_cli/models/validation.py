@@ -9,11 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..agent_plugins.errors import AgentPluginError
-from ..agent_plugins.loader import load_agent_plugin
+from ..agent_plugins.loader import detect_agent_plugin
 from ..constants import APM_DIR, APM_YML_FILENAME, SKILL_MD_FILENAME
 
 if TYPE_CHECKING:
-    from ..agent_plugins import AgentPlugin
+    from ..agent_plugins import AgentPlugin, AgentPluginDetection
     from .apm_package import APMPackage
 
 
@@ -330,6 +330,7 @@ def validate_apm_package(
     package_path: Path,
     *,
     source_path: Path | None = None,
+    agent_plugin_detection: AgentPluginDetection | None = None,
 ) -> ValidationResult:
     """Validate that a directory contains a valid APM package or Claude Skill.
 
@@ -359,17 +360,29 @@ def validate_apm_package(
         result.add_error(f"Package path is not a directory: {package_path}")
         return result
 
-    # Detect package type
-    pkg_type, plugin_json_path = detect_package_type(package_path)
+    package_root = package_path.resolve()
+    if agent_plugin_detection is not None and (
+        agent_plugin_detection.manifest_path.parent.resolve() != package_root
+    ):
+        result.add_error("Agent Plugin detection root does not match package path")
+        return result
+
+    native_detection = agent_plugin_detection
+    if native_detection is None:
+        native_detection = detect_agent_plugin(package_path)
+    if native_detection is not None:
+        pkg_type = (
+            PackageType.AGENT_PLUGIN if native_detection.error is None else PackageType.INVALID
+        )
+        plugin_json_path = native_detection.manifest_path
+    else:
+        pkg_type, plugin_json_path = detect_package_type(package_path)
     result.package_type = pkg_type
 
     if pkg_type == PackageType.INVALID:
-        if plugin_json_path is not None:
-            try:
-                load_agent_plugin(package_path)
-            except AgentPluginError as exc:
-                result.add_error(f"Failed to process Agent Plugin: {exc}")
-                return result
+        if native_detection is not None and native_detection.error is not None:
+            result.add_error(f"Failed to process Agent Plugin: {native_detection.error}")
+            return result
         # Two sub-cases of INVALID:
         # 1. apm.yml present but no .apm/ directory (or .apm is a file)
         # 2. Nothing recognizable at all
@@ -407,6 +420,7 @@ def validate_apm_package(
             plugin_json_path,
             result,
             source_path=source_path,
+            detection=native_detection,
         )
 
     # Handle Claude Skills (no apm.yml) - auto-generate minimal apm.yml
@@ -450,14 +464,18 @@ def _validate_agent_plugin(
     result: ValidationResult,
     *,
     source_path: Path | None = None,
+    detection: AgentPluginDetection | None = None,
 ) -> ValidationResult:
     """Validate an Agent Plugin without entering Claude normalization."""
     if plugin_json_path is None:
         result.add_error("Agent Plugin package is missing plugin.json")
         return result
+    if detection is None or detection.plugin is None:
+        result.add_error("Agent Plugin detection did not produce a canonical plugin")
+        return result
 
     try:
-        plugin = load_agent_plugin(package_path)
+        plugin = detection.plugin
         from ..agent_plugins.projection import project_agent_plugin_package
 
         package = project_agent_plugin_package(plugin)

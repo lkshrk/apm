@@ -58,6 +58,10 @@ def check(root: Path) -> list[str]:
     ir_source, ir_tree = _module(root, "src/apm_cli/agent_plugins/ir.py")
     loader_source, loader_tree = _module(root, "src/apm_cli/agent_plugins/loader.py")
     assets_source, assets_tree = _module(root, "src/apm_cli/agent_plugins/assets.py")
+    validation_source, _validation_tree = _module(root, "src/apm_cli/models/validation.py")
+    sources_source, _sources_tree = _module(root, "src/apm_cli/install/sources.py")
+    hook_contract_source, _hook_contract_tree = _module(root, "src/apm_cli/hook_contract.py")
+    hook_ir_source, _hook_ir_tree = _module(root, "src/apm_cli/integration/hook_ir.py")
     _projection_source, projection_tree = _module(
         root,
         "src/apm_cli/agent_plugins/projection.py",
@@ -88,6 +92,38 @@ def check(root: Path) -> list[str]:
         failures.append("asset symlink or digest enforcement changed")
     if "ensure_path_within" not in assets_source:
         failures.append("asset containment enforcement changed")
+    if (
+        "entry_count = self._entry_count" in assets_source
+        or "set(self._assets)" in assets_source
+        or "self._reserve_bytes(len(chunk))" not in assets_source
+        or "for entry in directory.iterdir():" not in assets_source
+        or "self._reserve_entry()\n                entries.append(entry)" not in assets_source
+        or "sorted(directory.iterdir()" in assets_source
+    ):
+        failures.append("attempted inventory work may be refunded or scale quadratically")
+    if "root_entries = asset_inventory.list_component_candidates(root)" not in loader_source or any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "iterdir"
+        for node in ast.walk(_function(loader_tree, "_has_exact_entry"))
+    ):
+        failures.append("component candidates may be rescanned outside the package work budget")
+    if (
+        "cached = self._assets.get(relative)" not in assets_source
+        or "ensure_path_within_resolved(path, self._root)" not in assets_source
+        or "ensure_path_within_resolved(path, root)" not in assets_source
+        or "cached_payload = self._payloads.get(relative)" not in assets_source
+    ):
+        failures.append("asset cache or pre-resolved containment fast path changed")
+    if (
+        "parse_hook_source(document)" not in loader_source
+        or "integration.hook_integrator" in loader_source
+        or "HOOK_COMMAND_KEYS: tuple[str, ...]" not in hook_contract_source
+        or "HOOK_COMMAND_KEYS: tuple[str, ...]" in hook_ir_source
+    ):
+        failures.append("Agent Plugin hooks bypass the neutral hook grammar owner")
+    if "(?:\\.\\.[/\\\\])+" not in loader_source:
+        failures.append("parent-relative executable references may evade rejection")
     for name in ("_discover_apm_lsp_component", "_discover_apm_hook_component"):
         if any(isinstance(node, ast.Raise) for node in ast.walk(_function(loader_tree, name))):
             failures.append(f"{name} may abort unrelated components")
@@ -103,6 +139,13 @@ def check(root: Path) -> list[str]:
         "bin" in _assigned_literal(loader_tree, "_APM_DIRECTORY_COMPONENTS")
     ):
         failures.append("root bin was promoted to a component")
+    if (
+        "agent_plugin_detection: AgentPluginDetection | None = None" not in validation_source
+        or "result.agent_plugin = plugin" not in validation_source
+        or "agent_plugin_detection=native_detection" not in sources_source
+        or "detection.manifest_path.parent.resolve() != package_root" not in validation_source
+    ):
+        failures.append("same-root detection reuse or cross-root rejection changed")
     return failures
 
 

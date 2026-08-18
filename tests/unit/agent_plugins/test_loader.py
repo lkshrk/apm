@@ -271,7 +271,7 @@ def test_asset_budget_violation_rejects_only_affected_component(
     _write_manifest(tmp_path)
     _write_valid_skill(tmp_path, "oversized-inventory")
     _write_mcp(tmp_path, {"safe": {"type": "stdio", "command": "safe"}})
-    monkeypatch.setattr("apm_cli.agent_plugins.assets.MAX_COMPONENT_ASSET_ENTRIES", 1)
+    monkeypatch.setattr("apm_cli.agent_plugins.assets.MAX_COMPONENT_ASSET_ENTRIES", 5)
 
     plugin = load_agent_plugin(tmp_path)
 
@@ -281,6 +281,138 @@ def test_asset_budget_violation_rejects_only_affected_component(
         diagnostic.code == "skill.assets.invalid" and "entry package budget" in diagnostic.message
         for diagnostic in plugin.diagnostics
     )
+
+
+def test_many_failing_components_consume_one_irreversible_work_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    inventory = AssetInventory(tmp_path)
+    attempts = 12
+    hashed = 0
+    original_inventory = AssetInventory._inventory_regular_file
+
+    def count_hashes(self, *args, **kwargs):
+        nonlocal hashed
+        hashed += 1
+        result = original_inventory(self, *args, **kwargs)
+        if args[0].name == "z.txt":
+            raise AssetInventoryError("adversarial late component failure")
+        return result
+
+    monkeypatch.setattr("apm_cli.agent_plugins.assets.MAX_COMPONENT_ASSET_ENTRIES", 7)
+    monkeypatch.setattr(AssetInventory, "_inventory_regular_file", count_hashes)
+    for index in range(attempts):
+        component = tmp_path / f"component-{index:02d}"
+        component.mkdir()
+        (component / "a.txt").write_text("accepted", encoding="utf-8")
+        (component / "z.txt").write_text("late failure", encoding="utf-8")
+        with pytest.raises(AssetInventoryError):
+            inventory.collect_component(component)
+
+    assert hashed == 4
+    assert inventory._entry_count == attempts + 5
+
+
+def test_candidate_enumeration_stops_before_materializing_unbounded_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    candidates = tmp_path / "skills"
+    candidates.mkdir()
+    for index in range(20):
+        (candidates / f"skill-{index:02d}").mkdir()
+    yielded = 0
+    original_iterdir = Path.iterdir
+
+    def count_candidates(path):
+        nonlocal yielded
+        for entry in original_iterdir(path):
+            if path == candidates:
+                yielded += 1
+            yield entry
+
+    monkeypatch.setattr("apm_cli.agent_plugins.assets.MAX_COMPONENT_ASSET_ENTRIES", 5)
+    monkeypatch.setattr(Path, "iterdir", count_candidates)
+
+    with pytest.raises(AssetInventoryError, match="entry package budget"):
+        AssetInventory(tmp_path).list_component_candidates(candidates)
+
+    assert yielded == 6
+
+
+def test_repeated_asset_reference_skips_case_walk_and_work_reservation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    executable = tmp_path / "bin" / "tool"
+    executable.parent.mkdir()
+    executable.write_text("tool", encoding="utf-8")
+    inventory = AssetInventory(tmp_path)
+    case_walks = 0
+    original_case_walk = AssetInventory._assert_case_unambiguous
+
+    def count_case_walks(self, path):
+        nonlocal case_walks
+        case_walks += 1
+        return original_case_walk(self, path)
+
+    monkeypatch.setattr(AssetInventory, "_assert_case_unambiguous", count_case_walks)
+    assets = tuple(inventory.collect_file(executable) for _ in range(1_000))
+
+    assert len({id(asset) for asset in assets}) == 1
+    assert inventory._entry_count == 1
+    assert case_walks == 1
+
+
+def test_repeated_read_file_does_not_double_reserve_asset_budget(tmp_path: Path) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    declaration = tmp_path / "hooks.json"
+    declaration.write_bytes(b'{"hooks":{}}')
+    inventory = AssetInventory(tmp_path)
+
+    first, first_payload = inventory.read_file(declaration, max_bytes=1_024)
+    entry_count = inventory._entry_count
+    byte_count = inventory._byte_count
+    second, second_payload = inventory.read_file(declaration, max_bytes=1_024)
+
+    assert second is first
+    assert second_payload == first_payload
+    assert inventory._entry_count == entry_count
+    assert inventory._byte_count == byte_count
+
+
+def test_inventory_resolves_plugin_root_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    executable = tmp_path / "bin" / "tool"
+    executable.parent.mkdir()
+    executable.write_text("tool", encoding="utf-8")
+    root_resolves = 0
+    original_resolve = Path.resolve
+
+    def count_resolves(path, *args, **kwargs):
+        nonlocal root_resolves
+        if path == tmp_path:
+            root_resolves += 1
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", count_resolves)
+    inventory = AssetInventory(tmp_path)
+    for _ in range(100):
+        inventory.collect_file(executable)
+
+    assert root_resolves == 1
 
 
 def test_undeclared_or_alternate_apm_paths_never_activate(tmp_path: Path) -> None:
@@ -337,6 +469,219 @@ def test_invalid_apm_document_disables_only_its_component(
     assert plugin.apm_components is not None
     assert plugin.apm_components.agents is not None
     assert getattr(plugin.apm_components, disabled_component) is None
+
+
+@pytest.mark.parametrize("escape", ["../evil.sh", "../../evil.sh"])
+@pytest.mark.parametrize("component", ["hook", "mcp-arg", "lsp-arg"])
+def test_executable_parent_escapes_are_rejected_without_decoy_matching(
+    tmp_path: Path,
+    escape: str,
+    component: str,
+) -> None:
+    _write_manifest(tmp_path)
+    (tmp_path / "evil.sh").write_text("decoy", encoding="utf-8")
+    extension_root = tmp_path / "com.microsoft.apm"
+    extension_root.mkdir()
+    if component == "hook":
+        hooks = extension_root / "hooks"
+        hooks.mkdir()
+        (hooks / "evil.sh").write_text("in-root decoy", encoding="utf-8")
+        (hooks / "hooks.json").write_text(
+            json.dumps({"hooks": {"PreToolUse": [{"bash": f"bash {escape}"}]}}),
+            encoding="utf-8",
+        )
+        diagnostic_code = "apm.hooks.executable.invalid"
+    elif component == "mcp-arg":
+        _write_mcp(
+            tmp_path,
+            {"unsafe": {"type": "stdio", "command": "bash", "args": [escape]}},
+        )
+        diagnostic_code = "mcp.server.executable.invalid"
+    else:
+        (extension_root / "lsp.json").write_text(
+            json.dumps(
+                {
+                    "lspServers": {
+                        "unsafe": {
+                            "command": "server",
+                            "args": [escape],
+                            "extensionToLanguage": {".py": "python"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        diagnostic_code = "apm.lsp.server.executable.invalid"
+
+    plugin = load_agent_plugin(tmp_path)
+    diagnostic = next(item for item in plugin.diagnostics if item.code == diagnostic_code)
+
+    assert "segment '..' is a traversal sequence" in diagnostic.message
+    if component == "hook":
+        assert plugin.apm_components is not None
+        assert plugin.apm_components.hooks is None
+    elif component == "mcp-arg":
+        assert plugin.components.mcp_servers == ()
+    else:
+        assert plugin.apm_components is not None
+        assert plugin.apm_components.lsp is not None
+        assert plugin.apm_components.lsp.servers == ()
+
+
+def test_referenced_hook_asset_is_not_reported_as_ignored(tmp_path: Path) -> None:
+    _write_manifest(tmp_path)
+    hooks = tmp_path / "com.microsoft.apm" / "hooks"
+    hooks.mkdir(parents=True)
+    (hooks / "run.sh").write_text("run", encoding="utf-8")
+    (hooks / "extra.txt").write_text("extra", encoding="utf-8")
+    (hooks / "hooks.json").write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
+        encoding="utf-8",
+    )
+
+    plugin = load_agent_plugin(tmp_path)
+    ignored_paths = {
+        diagnostic.path
+        for diagnostic in plugin.diagnostics
+        if diagnostic.code == "apm.hooks.path.ignored"
+    }
+
+    assert plugin.apm_components is not None
+    assert plugin.apm_components.hooks is not None
+    assert plugin.apm_components.hooks.executables[0].plugin_relative_path == (
+        "com.microsoft.apm/hooks/run.sh"
+    )
+    assert ignored_paths == {"com.microsoft.apm/hooks/extra.txt"}
+
+
+@pytest.mark.parametrize(
+    ("component", "diagnostic_code"),
+    [
+        ("mcp", "mcp.server.executable.missing"),
+        ("lsp", "apm.lsp.server.executable.missing"),
+        ("hook", "apm.hooks.executable.missing"),
+    ],
+)
+def test_missing_referenced_executable_has_typed_fact_and_diagnostic(
+    tmp_path: Path,
+    component: str,
+    diagnostic_code: str,
+) -> None:
+    _write_manifest(tmp_path)
+    extension_root = tmp_path / "com.microsoft.apm"
+    extension_root.mkdir()
+    if component == "mcp":
+        _write_mcp(tmp_path, {"missing": {"type": "stdio", "command": "./bin/missing"}})
+    elif component == "lsp":
+        (extension_root / "lsp.json").write_text(
+            json.dumps(
+                {
+                    "lspServers": {
+                        "missing": {
+                            "command": "./bin/missing",
+                            "extensionToLanguage": {".py": "python"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+    else:
+        hooks = extension_root / "hooks"
+        hooks.mkdir()
+        (hooks / "hooks.json").write_text(
+            json.dumps({"hooks": {"PreToolUse": [{"command": "./missing.sh"}]}}),
+            encoding="utf-8",
+        )
+
+    plugin = load_agent_plugin(tmp_path)
+
+    assert any(item.code == diagnostic_code for item in plugin.diagnostics)
+    if component == "mcp":
+        executable = plugin.components.mcp_servers[0].executables[0]
+    elif component == "lsp":
+        assert plugin.apm_components is not None
+        assert plugin.apm_components.lsp is not None
+        executable = plugin.apm_components.lsp.servers[0].executables[0]
+    else:
+        assert plugin.apm_components is not None
+        assert plugin.apm_components.hooks is not None
+        executable = plugin.apm_components.hooks.executables[0]
+    assert executable.plugin_relative_path is not None
+    assert executable.asset is None
+
+
+@pytest.mark.parametrize("surface", ["skills-root", "apm-agents"])
+def test_component_root_nfc_case_ambiguity_has_surface_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+) -> None:
+    _write_manifest(tmp_path)
+    if surface == "skills-root":
+        _write_valid_skill(tmp_path, "valid")
+        directory = tmp_path
+        alias = tmp_path / "Skills"
+        expected_code = "skills.location.ambiguous"
+    else:
+        agents = tmp_path / "com.microsoft.apm" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "agent.md").write_text("agent", encoding="utf-8")
+        directory = agents.parent
+        alias = agents.parent / "Agents"
+        expected_code = "apm.extension.path.ambiguous"
+    original_iterdir = Path.iterdir
+
+    def ambiguous_iterdir(path):
+        entries = list(original_iterdir(path))
+        if path == directory:
+            entries.append(alias)
+        return iter(entries)
+
+    monkeypatch.setattr(Path, "iterdir", ambiguous_iterdir)
+    plugin = load_agent_plugin(tmp_path)
+
+    assert any(item.code == expected_code for item in plugin.diagnostics)
+
+
+@pytest.mark.parametrize("surface", ["skill", "extension"])
+def test_nested_asset_nfc_ambiguity_rejects_only_component(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+) -> None:
+    _write_manifest(tmp_path)
+    if surface == "skill":
+        _write_valid_skill(tmp_path, "ambiguous")
+        component_root = tmp_path / "skills" / "ambiguous"
+        expected_code = "skill.assets.invalid"
+    else:
+        component_root = tmp_path / "com.microsoft.apm" / "agents"
+        component_root.mkdir(parents=True)
+        expected_code = "apm.extension.assets.invalid"
+    canonical = component_root / "\u00e9.txt"
+    alias = component_root / "e\u0301.txt"
+    canonical.write_text("content", encoding="utf-8")
+    original_iterdir = Path.iterdir
+    original_lstat = Path.lstat
+
+    def ambiguous_iterdir(path):
+        entries = list(original_iterdir(path))
+        if path == component_root:
+            entries.append(alias)
+        return iter(entries)
+
+    def alias_lstat(path):
+        if path == alias:
+            return original_lstat(canonical)
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "iterdir", ambiguous_iterdir)
+    monkeypatch.setattr(Path, "lstat", alias_lstat)
+    plugin = load_agent_plugin(tmp_path)
+
+    assert any(item.code == expected_code for item in plugin.diagnostics)
 
 
 def test_root_manifest_name_is_case_sensitive(tmp_path: Path) -> None:

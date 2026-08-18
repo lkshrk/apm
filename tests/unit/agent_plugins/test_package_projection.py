@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from apm_cli.agent_plugins import (
@@ -11,6 +12,7 @@ from apm_cli.agent_plugins import (
     load_agent_plugin,
     project_agent_plugin_package,
 )
+from apm_cli.agent_plugins.loader import detect_agent_plugin
 from apm_cli.deps.package_validator import PackageValidator, stamp_plugin_version
 from apm_cli.models.apm_package import APMPackage
 from apm_cli.models.validation import PackageType, validate_apm_package
@@ -122,6 +124,74 @@ def test_projection_never_rescans_component_files(
     package = project_agent_plugin_package(plugin)
 
     assert package.agent_plugin is plugin
+
+
+def test_native_validation_loads_same_root_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    _write_plugin(tmp_path)
+    calls = 0
+    original_init = AssetInventory.__init__
+
+    def count_loads(self, root):
+        nonlocal calls
+        calls += 1
+        original_init(self, root)
+
+    monkeypatch.setattr(AssetInventory, "__init__", count_loads)
+
+    result = validate_apm_package(tmp_path)
+
+    assert result.is_valid
+    assert calls == 1
+
+
+def test_validation_reuses_explicit_same_root_detection_without_reload(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from apm_cli.agent_plugins.assets import AssetInventory
+
+    _write_plugin(tmp_path)
+    detection = detect_agent_plugin(tmp_path)
+    assert detection is not None
+
+    def forbid_reload(_self, _root):
+        raise AssertionError("same-root detection must be reused")
+
+    monkeypatch.setattr(AssetInventory, "__init__", forbid_reload)
+    result = validate_apm_package(
+        tmp_path,
+        agent_plugin_detection=detection,
+    )
+
+    assert result.is_valid
+    assert result.agent_plugin is detection.plugin
+
+
+def test_detection_cannot_cross_roots_and_copied_root_is_revalidated(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    copied = tmp_path / "copied"
+    source.mkdir()
+    _write_plugin(source)
+    detection = detect_agent_plugin(source)
+    assert detection is not None
+    shutil.copytree(source, copied)
+    copied_manifest = json.loads((copied / "plugin.json").read_text(encoding="utf-8"))
+    copied_manifest["name"] = "copied.plugin"
+    (copied / "plugin.json").write_text(json.dumps(copied_manifest), encoding="utf-8")
+
+    stale = validate_apm_package(copied, agent_plugin_detection=detection)
+    refreshed = validate_apm_package(copied)
+
+    assert stale.is_valid is False
+    assert stale.errors == ["Agent Plugin detection root does not match package path"]
+    assert refreshed.is_valid
+    assert refreshed.agent_plugin is not None
+    assert refreshed.agent_plugin.identity.name == "copied.plugin"
 
 
 def test_native_validation_preserves_explicit_dependency_source_anchor(tmp_path: Path) -> None:

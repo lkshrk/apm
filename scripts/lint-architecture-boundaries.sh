@@ -666,9 +666,16 @@ check_pattern \
 
 echo "[*] AC6: neutral IR and schema contracts"
 check_pattern \
-    "Neutral hook IR must not contain native harness vocabulary" \
-    'copilot|gemini|antigravity|timeoutSec|powershell|_apm_source|["'\'']hooks["'\'']' \
-    src/apm_cli/integration/hook_ir.py
+    "Neutral hook IR must not contain target-renderer vocabulary" \
+    'copilot|gemini|antigravity' \
+    src/apm_cli/hook_contract.py
+hook_command_key_owners=$(grep -rEl '^HOOK_COMMAND_KEYS: tuple' src/apm_cli --include='*.py' | wc -l | tr -d ' ')
+if [ "$hook_command_key_owners" -ne 1 ] \
+    || ! grep -q '^HOOK_COMMAND_KEYS: tuple' src/apm_cli/hook_contract.py \
+    || grep -q 'integration.hook_integrator' src/apm_cli/agent_plugins/loader.py; then
+    echo "[x] Neutral hook source grammar must route through hook_contract.py"
+    violations=$((violations + 1))
+fi
 hook_routing_gate_hits=$(python3 scripts/check_hook_file_routing_owner.py 2>&1)
 hook_routing_gate_status=$?
 if [ "$hook_routing_gate_status" -ne 0 ]; then

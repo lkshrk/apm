@@ -60,6 +60,12 @@ from apm_cli.core.deployment_state import (
     NativePayloadValidation,
 )
 from apm_cli.core.scope import InstallScope
+from apm_cli.hook_contract import (
+    HOOK_COMMAND_KEYS as _HOOK_COMMAND_KEYS,
+)
+from apm_cli.hook_contract import (
+    walk_hook_commands,
+)
 from apm_cli.integration.base_integrator import BaseIntegrator, IntegrationResult
 from apm_cli.integration.hook_bundle import copy_deployed_hook_bundle
 from apm_cli.integration.hook_file_routing import filter_hook_files_for_target
@@ -405,14 +411,7 @@ class HookIntegrator(BaseIntegrator):
     #   GH Copilot Agent: https://docs.github.com/en/copilot/concepts/agents/coding-agent/about-hooks
     #   VS Code:          https://code.visualstudio.com/docs/copilot/customization/hooks
     #   Claude Code:      https://code.claude.com/docs/en/hooks
-    HOOK_COMMAND_KEYS: tuple[str, ...] = (
-        "command",
-        "bash",
-        "powershell",
-        "windows",
-        "linux",
-        "osx",
-    )
+    HOOK_COMMAND_KEYS: tuple[str, ...] = _HOOK_COMMAND_KEYS
 
     def __init__(self) -> None:
         """Initialize per-install hook integration state."""
@@ -422,31 +421,10 @@ class HookIntegrator(BaseIntegrator):
     @staticmethod
     def _iter_hook_entries(payload: dict) -> list[tuple[str, dict]]:
         """Flatten hook payloads into (event_name, entry_dict) pairs."""
-        entries: list[tuple[str, dict]] = []
-        hooks = payload.get("hooks", {})
-        if not isinstance(hooks, dict):
-            return entries
-        for event_name, matchers in hooks.items():
-            if not isinstance(matchers, list):
-                continue
-            for matcher in matchers:
-                if not isinstance(matcher, dict):
-                    continue
-                for key in HookIntegrator.HOOK_COMMAND_KEYS:
-                    value = matcher.get(key)
-                    if isinstance(value, str):
-                        entries.append((event_name, {key: value}))
-                nested_hooks = matcher.get("hooks", [])
-                if not isinstance(nested_hooks, list):
-                    continue
-                for hook in nested_hooks:
-                    if not isinstance(hook, dict):
-                        continue
-                    for key in HookIntegrator.HOOK_COMMAND_KEYS:
-                        value = hook.get(key)
-                        if isinstance(value, str):
-                            entries.append((event_name, {key: value}))
-        return entries
+        return [
+            (declaration.event, {declaration.key: declaration.command})
+            for declaration in walk_hook_commands(payload)
+        ]
 
     @staticmethod
     def _summarize_command(entry: dict) -> str:

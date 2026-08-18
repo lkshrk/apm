@@ -236,7 +236,10 @@ class LocalDependencySource(DependencySource):
         except AgentPluginError as exc:
             raise DirectDependencyError(f"Local Agent Plugin is invalid: {exc}") from exc
         if native_detection is not None:
-            native_gate = validate_apm_package(original_src)
+            native_gate = validate_apm_package(
+                original_src,
+                agent_plugin_detection=native_detection,
+            )
             if not native_gate.is_valid or native_gate.package is None:
                 details = "; ".join(native_gate.errors) or "validator returned no package"
                 raise DirectDependencyError(f"Local Agent Plugin is invalid: {details}")
@@ -463,6 +466,7 @@ class CachedDependencySource(DependencySource):
             native_validation = validate_apm_package(
                 install_path,
                 source_path=install_path,
+                agent_plugin_detection=native_detection,
             )
             if not native_validation.is_valid or native_validation.package is None:
                 details = "; ".join(native_validation.errors) or "validator returned no package"
