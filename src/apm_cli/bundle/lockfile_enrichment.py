@@ -186,6 +186,7 @@ def enrich_lockfile_for_pack(
     target: str | list[str],
     *,
     bundle_files: dict[str, str] | None = None,
+    packed_at: str | None = None,
 ) -> str:
     """Create an enriched copy of the lockfile YAML with a ``pack:`` section.
 
@@ -207,6 +208,7 @@ def enrich_lockfile_for_pack(
             bundles whose flat layout differs from the project-relative
             ``deployed_files`` paths and so requires a separate manifest
             for integrity verification at install time (see issue #1098).
+        packed_at: Optional stable pack timestamp. Defaults to the current time.
 
     Returns:
         A YAML string with the ``pack:`` block followed by the original
@@ -246,7 +248,9 @@ def enrich_lockfile_for_pack(
     pack_meta: dict = {
         "format": bundle_format.lock_value,
         "target": target_str,
-        "packed_at": datetime.now(timezone.utc).isoformat(),
+        "packed_at": (
+            packed_at if packed_at is not None else datetime.now(timezone.utc).isoformat()
+        ),
     }
     if all_mappings:
         # Record the source prefixes that were remapped so consumers know the

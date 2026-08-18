@@ -618,13 +618,14 @@ def _validate_plugin_name(name):
     return _is_valid_agent_plugin_name(name)
 
 
-def _create_plugin_json(config, mode: str = "agent"):
+def _create_plugin_json(config, mode: str = "agent", target_path: Path | None = None):
     """Create plugin.json file with package metadata.
 
     Args:
         config: dict with name, version, description, author keys.
         mode: "agent" to emit Agent Plugins v1 scaffold, or "claude" to
               preserve the legacy Claude-compatible scaffold.
+        target_path: Optional output path. Defaults to ``plugin.json``.
     """
     import json
 
@@ -657,8 +658,8 @@ def _create_plugin_json(config, mode: str = "agent"):
             },
         }
 
-    with open("plugin.json", "w", encoding="utf-8") as f:
-        f.write(json.dumps(plugin_data, indent=2) + "\n")
+    output_path = target_path or Path("plugin.json")
+    output_path.write_text(json.dumps(plugin_data, indent=2) + "\n", encoding="utf-8")
 
 
 def _create_minimal_apm_yml(config, plugin=False, target_path=None):

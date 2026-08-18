@@ -72,20 +72,20 @@ class TestPluginInitCommand:
         assert "init" in result.output
         assert "plugin" in result.output.lower()
 
-    def test_plugin_init_defaults_to_agent_plugin_scaffold(self):
-        """Default `apm plugin init` scaffolds the Agent Plugins v1 manifest."""
+    def test_plugin_init_defaults_to_legacy_claude_scaffold(self):
+        """No selector preserves the shipped legacy Claude scaffold."""
         with tempfile.TemporaryDirectory() as tmp:
             os.chdir(tmp)
             try:
                 result = self.runner.invoke(cli, ["plugin", "init", "demo", "--yes"])
                 assert result.exit_code == 0, result.output
                 assert Path("plugin.json").exists()
-                # Agent plugin scaffold must include extensions.com.microsoft.apm.schemaVersion == '1'
                 import json
 
                 pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
-                assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
-                assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
+                assert "$schema" not in pj
+                assert "extensions" not in pj
+                assert not Path("mcp.json").exists()
             finally:
                 os.chdir(self.original_dir)
 
@@ -101,6 +101,13 @@ class TestPluginInitCommand:
                 pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
                 assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
                 assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
+                assert Path("mcp.json").is_file()
+                from apm_cli.agent_plugins import load_agent_plugin
+
+                loaded = load_agent_plugin(Path.cwd())
+                assert loaded.identity.name == "demo"
+                assert loaded.identity.version == "0.1.0"
+                assert loaded.components.mcp_servers == ()
             finally:
                 os.chdir(self.original_dir)
 
@@ -132,6 +139,47 @@ class TestPluginInitCommand:
                 )
                 assert result.exit_code == 2
                 assert "mutually exclusive" in result.output.lower()
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_native_loader_failure_prevents_success(self, monkeypatch):
+        """Explicit native scaffold cannot report success when canonical reload fails."""
+
+        def _reject(_root):
+            raise ValueError("canonical scaffold rejection")
+
+        monkeypatch.setattr("apm_cli.agent_plugins.load_agent_plugin", _reject)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                result = self.runner.invoke(
+                    cli,
+                    ["plugin", "init", "demo", "--plugin", "--yes"],
+                )
+                assert result.exit_code == 1
+                assert "canonical scaffold rejection" in result.output
+                assert "initialized successfully" not in result.output
+                assert not Path("plugin.json").exists()
+                assert not Path("mcp.json").exists()
+            finally:
+                os.chdir(self.original_dir)
+
+    def test_plugin_init_native_refuses_existing_outputs_without_confirmation(self):
+        """Native scaffold files are not overwritten when confirmation is declined."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.chdir(tmp)
+            try:
+                Path("mcp.json").write_text("sentinel\n", encoding="utf-8")
+                result = self.runner.invoke(
+                    cli,
+                    ["plugin", "init", ".", "--plugin"],
+                    input="n\n",
+                )
+                assert result.exit_code == 0, result.output
+                assert "mcp.json" in result.output
+                assert Path("mcp.json").read_text(encoding="utf-8") == "sentinel\n"
+                assert not Path("plugin.json").exists()
+                assert not Path("apm.yml").exists()
             finally:
                 os.chdir(self.original_dir)
 
@@ -167,12 +215,12 @@ class TestInitDeprecationWarnings:
                 assert "v0.16" in result.stderr
                 # And the legacy flag STILL works (cwd is now demo/)
                 assert Path("plugin.json").exists()
-                # It should follow the Agent Plugins default scaffold
+                # The deprecated producer flag keeps shipped legacy behavior.
                 import json
 
                 pj = json.loads(Path("plugin.json").read_text(encoding="utf-8"))
-                assert "extensions" in pj and "com.microsoft.apm" in pj["extensions"]
-                assert pj["extensions"]["com.microsoft.apm"]["schemaVersion"] == "1"
+                assert "$schema" not in pj
+                assert "extensions" not in pj
             finally:
                 os.chdir(self.original_dir)
 

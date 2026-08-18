@@ -4,18 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from ..agent_plugins import (
     MCP_SCHEMA_ID,
     PLUGIN_SCHEMA_ID,
+    DiagnosticSeverity,
     args_contain_literal_secret,
     contains_literal_secret_fields,
+    load_agent_plugin,
     url_contains_literal_secret,
-    validate_lsp_extension_document,
-    validate_mcp_config_document,
-    validate_plugin_manifest_document,
 )
 from ..agent_plugins.constants import (
     COM_MICROSOFT_APM_NAMESPACE,
@@ -27,8 +28,6 @@ from ..models.apm_package import APMPackage
 from ..utils.archive import (
     projected_archive_path,
     validate_archive_format,
-    write_tar_archive,
-    write_zip_archive,
 )
 from ..utils.console import _rich_warning
 from ..utils.path_security import ensure_path_within, safe_rmtree
@@ -54,6 +53,7 @@ from .export_common import (
 from .formats import BundleFormat, agent_plugin_warning
 from .lockfile_enrichment import enrich_lockfile_for_pack
 from .packer import PackResult
+from .reproducible_archive import write_reproducible_archive
 
 _NAMESPACE = COM_MICROSOFT_APM_NAMESPACE
 _NAMESPACE_PREFIX = f"{_NAMESPACE}/"
@@ -99,14 +99,10 @@ def _agent_lsp_document(package: APMPackage, lockfile: LockFile) -> dict | None:
     }
     if not servers:
         return None
-    document = {"lspServers": servers}
-    validation = validate_lsp_extension_document(document)
-    if not validation.is_valid or validation.normalized is None:
-        raise ValueError("Cannot pack Agent Plugin LSP extension: " + "; ".join(validation.errors))
-    return validation.normalized
+    return {"lspServers": servers}
 
 
-def _agent_mcp_document(package: APMPackage, lockfile: LockFile) -> dict | None:
+def _agent_mcp_document(package: APMPackage, lockfile: LockFile) -> dict:
     """Project resolved production MCP configs into the Agent Plugins schema."""
     dev_names = {dependency.name for dependency in package.get_dev_mcp_dependencies()}
     prod_names = {dependency.name for dependency in package.get_mcp_dependencies()}
@@ -151,17 +147,54 @@ def _agent_mcp_document(package: APMPackage, lockfile: LockFile) -> dict | None:
             )
         servers[str(name)] = projected
 
-    if not servers:
-        return None
-    document = {"$schema": MCP_SCHEMA_ID, "mcpServers": servers}
-    validation = validate_mcp_config_document(document)
-    if not validation.is_valid:
-        details = "; ".join(validation.errors)
+    return {"$schema": MCP_SCHEMA_ID, "mcpServers": servers}
+
+
+def _expected_skill_directories(output_files: list[str]) -> set[str]:
+    """Return skill directories that the canonical loader must discover."""
+    expected: set[str] = set()
+    for output_file in output_files:
+        parts = Path(output_file).parts
+        if len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md":
+            expected.add(parts[1])
+    return expected
+
+
+def _validate_agent_plugin_round_trip(
+    staged_bundle: Path,
+    *,
+    expected_name: str,
+    expected_version: str,
+    expected_skill_directories: set[str],
+    expected_mcp_names: set[str],
+) -> None:
+    """Reload staged output through the canonical Agent Plugin interpreter."""
+    plugin = load_agent_plugin(staged_bundle)
+    errors = [
+        diagnostic.message
+        for diagnostic in plugin.diagnostics
+        if diagnostic.severity is DiagnosticSeverity.ERROR
+    ]
+    if errors:
+        raise ValueError("Generated Agent Plugin failed canonical reload: " + "; ".join(errors))
+    if plugin.identity.name != expected_name or plugin.identity.version != expected_version:
         raise ValueError(
-            "Cannot pack resolved MCP configuration as Agent Plugins v1: "
-            f"{details}. Fix the named server or run 'apm pack --claude-plugin'."
+            "Generated Agent Plugin identity changed during canonical reload: "
+            f"expected {expected_name}@{expected_version}, got "
+            f"{plugin.identity.name}@{plugin.identity.version or '<missing>'}"
         )
-    return validation.normalized
+    loaded_skills = {skill.directory_name for skill in plugin.components.skills}
+    if loaded_skills != expected_skill_directories:
+        raise ValueError(
+            "Generated Agent Plugin skills changed during canonical reload: "
+            f"expected {sorted(expected_skill_directories)}, got {sorted(loaded_skills)}"
+        )
+    loaded_mcp = {server.name for server in plugin.components.mcp_servers}
+    if loaded_mcp != expected_mcp_names:
+        raise ValueError(
+            "Generated Agent Plugin MCP servers changed during canonical reload: "
+            f"expected {sorted(expected_mcp_names)}, got {sorted(loaded_mcp)}"
+        )
 
 
 def export_agent_plugin_bundle(
@@ -202,12 +235,6 @@ def export_agent_plugin_bundle(
     plugin_json["extensions"] = {
         COM_MICROSOFT_APM_NAMESPACE: {"schemaVersion": COM_MICROSOFT_APM_SCHEMA_VERSION}
     }
-    manifest_validation = validate_plugin_manifest_document(plugin_json)
-    if not manifest_validation.is_valid or manifest_validation.normalized is None:
-        raise ValueError(
-            "Cannot pack Agent Plugin manifest: " + "; ".join(manifest_validation.errors)
-        )
-    plugin_json = manifest_validation.normalized
 
     warnings: list[str] = []
     transition_warning = agent_plugin_warning()
@@ -314,8 +341,7 @@ def export_agent_plugin_bundle(
     output_files = sorted(file_map.keys())
     if merged_hooks:
         output_files.append(f"{_NAMESPACE_PREFIX}hooks/hooks.json")
-    if mcp_document:
-        output_files.append("mcp.json")
+    output_files.append("mcp.json")
     if lsp_document:
         output_files.append(f"{_NAMESPACE_PREFIX}lsp.json")
     output_files.append("plugin.json")
@@ -340,62 +366,81 @@ def export_agent_plugin_bundle(
         )
         return PackResult(bundle_path=bundle_path, files=output_files, warnings=warnings)
 
-    _scan_bundle_sources(file_map, logger)
-    _write_bundle_sources(file_map, bundle_dir, output_dir)
-
-    if merged_hooks:
-        hooks_path = bundle_dir / _NAMESPACE_PREFIX / "hooks" / "hooks.json"
-        hooks_path.parent.mkdir(parents=True, exist_ok=True)
-        hooks_path.write_text(json.dumps(merged_hooks, indent=2, sort_keys=True), encoding="utf-8")
-    if mcp_document:
-        mcp_path = bundle_dir / "mcp.json"
-        mcp_path.parent.mkdir(parents=True, exist_ok=True)
-        mcp_path.write_text(
-            json.dumps(mcp_document, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-    if lsp_document:
-        lsp_path = bundle_dir / _NAMESPACE_PREFIX / "lsp.json"
-        lsp_path.parent.mkdir(parents=True, exist_ok=True)
-        lsp_path.write_text(
-            json.dumps(lsp_document, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-
-    (bundle_dir / "plugin.json").write_text(
-        json.dumps(plugin_json, indent=2, sort_keys=False), encoding="utf-8"
-    )
-
-    for doc_name in ("README.md", "LICENSE", "CHANGELOG.md", "CHANGELOG"):
-        _copy_optional_root_file(project_root, bundle_dir, doc_name)
-
-    bundle_files: dict[str, str] = {}
-    for fp in bundle_dir.rglob("*"):
-        if not fp.is_file() or fp.is_symlink():
-            continue
-        rel = fp.relative_to(bundle_dir).as_posix()
-        if rel == "apm.lock.yaml":
-            continue
-        bundle_files[rel] = hashlib.sha256(fp.read_bytes()).hexdigest()
-
-    enriched_yaml = enrich_lockfile_for_pack(
-        lockfile,
-        BundleFormat.AGENT_PLUGIN.lock_value,
-        target or "all",
-        bundle_files=bundle_files,
-    )
-    (bundle_dir / "apm.lock.yaml").write_text(enriched_yaml, encoding="utf-8")
-
-    result = PackResult(bundle_path=bundle_dir, files=output_files, warnings=warnings)
-
     if archive:
         validate_archive_format(archive_format)
-        archive_path = projected_archive_path(output_dir, bundle_dir.name, archive_format)
-        if archive_format == "tar.gz":
-            write_tar_archive(bundle_dir, archive_path)
-        else:
-            write_zip_archive(bundle_dir, archive_path)
-        safe_rmtree(bundle_dir, output_dir)
-        result.bundle_path = archive_path
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _scan_bundle_sources(file_map, logger)
+    with tempfile.TemporaryDirectory(prefix=".apm-agent-plugin-", dir=output_dir) as temp_dir:
+        staging_root = Path(temp_dir)
+        staged_bundle = staging_root / bundle_dir.name
+        ensure_path_within(staged_bundle, staging_root)
+        _write_bundle_sources(file_map, staged_bundle, staging_root)
 
-    return result
+        if merged_hooks:
+            hooks_path = staged_bundle / _NAMESPACE_PREFIX / "hooks" / "hooks.json"
+            hooks_path.parent.mkdir(parents=True, exist_ok=True)
+            hooks_path.write_text(
+                json.dumps(merged_hooks, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        mcp_path = staged_bundle / "mcp.json"
+        mcp_path.parent.mkdir(parents=True, exist_ok=True)
+        mcp_path.write_text(
+            json.dumps(mcp_document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        if lsp_document:
+            lsp_path = staged_bundle / _NAMESPACE_PREFIX / "lsp.json"
+            lsp_path.parent.mkdir(parents=True, exist_ok=True)
+            lsp_path.write_text(
+                json.dumps(lsp_document, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+
+        (staged_bundle / "plugin.json").write_text(
+            json.dumps(plugin_json, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        for doc_name in ("README.md", "LICENSE", "CHANGELOG.md", "CHANGELOG"):
+            _copy_optional_root_file(project_root, staged_bundle, doc_name)
+
+        bundle_files: dict[str, str] = {}
+        for fp in staged_bundle.rglob("*"):
+            if not fp.is_file() or fp.is_symlink():
+                continue
+            rel = fp.relative_to(staged_bundle).as_posix()
+            if rel == "apm.lock.yaml":
+                continue
+            bundle_files[rel] = hashlib.sha256(fp.read_bytes()).hexdigest()
+
+        enriched_yaml = enrich_lockfile_for_pack(
+            lockfile,
+            BundleFormat.AGENT_PLUGIN.lock_value,
+            target or "all",
+            bundle_files=bundle_files,
+            packed_at=lockfile.generated_at,
+        )
+        (staged_bundle / "apm.lock.yaml").write_text(enriched_yaml, encoding="utf-8")
+
+        _validate_agent_plugin_round_trip(
+            staged_bundle,
+            expected_name=pkg_name,
+            expected_version=pkg_version,
+            expected_skill_directories=_expected_skill_directories(output_files),
+            expected_mcp_names=set(mcp_document["mcpServers"]),
+        )
+
+        if archive:
+            archive_path = projected_archive_path(output_dir, bundle_dir.name, archive_format)
+            staged_archive = staging_root / archive_path.name
+            write_reproducible_archive(staged_bundle, staged_archive, archive_format)
+            os.replace(staged_archive, archive_path)
+            committed_path = archive_path
+        else:
+            if bundle_dir.exists():
+                safe_rmtree(bundle_dir, output_dir)
+            os.replace(staged_bundle, bundle_dir)
+            committed_path = bundle_dir
+
+    return PackResult(bundle_path=committed_path, files=output_files, warnings=warnings)

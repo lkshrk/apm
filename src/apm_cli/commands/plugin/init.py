@@ -14,7 +14,7 @@ from ...core.target_detection import TargetParamType
 from ..init import _perform_init
 
 
-@click.command(help="Scaffold an Agent Plugin (creates plugin.json + apm.yml)")
+@click.command(help="Scaffold a plugin project (creates plugin.json + apm.yml)")
 @click.argument("project_name", required=False)
 @click.option(
     "--yes", "-y", is_flag=True, help="Skip interactive prompts and use auto-detected defaults"
@@ -27,17 +27,17 @@ from ..init import _perform_init
     help="Comma-separated target list (skip prompt, write directly)",
 )
 @click.option(
-    "--plugin", "plugin_flag", is_flag=True, help="Explicitly scaffold Agent Plugins v1 (default)"
+    "--plugin", "plugin_flag", is_flag=True, help="Explicitly scaffold native Agent Plugins v1"
 )
 @click.option(
     "--claude-plugin",
     "claude_plugin",
     is_flag=True,
-    help="Preserve legacy Claude plugin.json scaffold (explicit compatibility mode)",
+    help="Scaffold the legacy Claude-compatible layout (current no-flag default)",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
 def init(project_name, yes, target_flag, plugin_flag, claude_plugin, verbose):
-    """Initialize an Agent Plugin (like ``cargo new --lib``).
+    """Initialize a plugin project (like ``cargo new --lib``).
 
     Equivalent to the deprecated ``apm init --plugin`` flag. Use
     ``apm marketplace init`` to publish a marketplace.
@@ -46,7 +46,7 @@ def init(project_name, yes, target_flag, plugin_flag, claude_plugin, verbose):
     if plugin_flag and claude_plugin:
         raise click.UsageError("Options --plugin and --claude-plugin are mutually exclusive")
 
-    plugin_mode = "claude" if claude_plugin else "agent"
+    plugin_mode = "agent" if plugin_flag else "claude" if claude_plugin else None
 
     _perform_init(
         project_name=project_name,

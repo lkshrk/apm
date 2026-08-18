@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
+from apm_cli.agent_plugins import load_agent_plugin
 from apm_cli.bundle.agent_plugin_exporter import export_agent_plugin_bundle
 from apm_cli.bundle.packer import pack_bundle
 
@@ -87,7 +89,10 @@ keywords: [alpha, beta]
     (root / ".apm" / "agents").mkdir(parents=True, exist_ok=True)
     (root / ".apm" / "agents" / "agent.md").write_text("agent", encoding="utf-8")
     (root / ".apm" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
-    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo skill.\n",
+        encoding="utf-8",
+    )
     (root / ".apm" / "commands").mkdir(parents=True, exist_ok=True)
     (root / ".apm" / "commands" / "hello.md").write_text("command", encoding="utf-8")
     (root / ".apm" / "instructions").mkdir(parents=True, exist_ok=True)
@@ -162,24 +167,43 @@ def test_agent_bundle_writes_namespaced_layout_and_valid_docs(tmp_path: Path) ->
     assert plugin_json["extensions"] == {"com.microsoft.apm": {"schemaVersion": "1"}}
     assert lockfile["pack"]["format"] == "agent-plugin"
     assert lsp_json["lspServers"]["pyright"]["command"] == "pyright-langserver"
+    loaded = load_agent_plugin(bundle)
+    assert loaded.identity.name == "agent-pack"
+    assert loaded.identity.version == "1.2.3"
+    assert [skill.directory_name for skill in loaded.components.skills] == ["demo"]
+    assert [server.name for server in loaded.components.mcp_servers] == ["safe"]
 
 
-def test_agent_bundle_dry_run_includes_transition_warning(tmp_path: Path, monkeypatch) -> None:
+def test_agent_bundle_dry_run_does_not_claim_default_flip_before_t10(
+    tmp_path: Path, monkeypatch
+) -> None:
     project = _write_agent_project(tmp_path / "project")
     monkeypatch.setattr("apm_cli.version.get_version", lambda: "0.30.0")
 
     result = export_agent_plugin_bundle(project, tmp_path / "build", dry_run=True)
 
-    assert any("defaults to Agent Plugin output" in warning for warning in result.warnings)
+    assert not any("defaults to Agent Plugin output" in warning for warning in result.warnings)
 
 
-def test_public_packer_defaults_to_agent_plugin(tmp_path: Path) -> None:
+def test_public_packer_defaults_to_legacy_claude_plugin(tmp_path: Path) -> None:
     project = _write_agent_project(tmp_path / "project")
 
     result = pack_bundle(project, tmp_path / "build")
 
     assert (result.bundle_path / "plugin.json").is_file()
-    assert not (result.bundle_path / "apm.yml").exists()
+    plugin_json = json.loads((result.bundle_path / "plugin.json").read_text(encoding="utf-8"))
+    assert "$schema" not in plugin_json
+    assert (result.bundle_path / "agents" / "agent.md").is_file()
+
+
+def test_public_packer_explicit_agent_plugin_round_trips(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+
+    result = pack_bundle(project, tmp_path / "build", fmt="agent-plugin")
+
+    loaded = load_agent_plugin(result.bundle_path)
+    assert loaded.identity.name == "agent-pack"
+    assert {server.name for server in loaded.components.mcp_servers} == {"safe"}
 
 
 def test_agent_bundle_rejects_unrepresentable_resolved_mcp(tmp_path: Path) -> None:
@@ -310,3 +334,63 @@ def test_agent_bundle_rejects_literal_secret_arguments(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match=r"argument values must use .* references"):
         export_agent_plugin_bundle(project, tmp_path / "build")
+
+
+def test_agent_bundle_invalid_skill_fails_before_output_commit(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    (project / ".apm" / "skills" / "demo" / "SKILL.md").write_text(
+        "not a valid skill manifest",
+        encoding="utf-8",
+    )
+    build = tmp_path / "build"
+
+    with pytest.raises(ValueError, match="failed canonical reload"):
+        export_agent_plugin_bundle(project, build)
+
+    assert not (build / "agent-pack-1.2.3").exists()
+
+
+def test_agent_bundle_loader_failure_preserves_existing_output(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    build = tmp_path / "build"
+    existing = build / "agent-pack-1.2.3"
+    existing.mkdir(parents=True)
+    (existing / "sentinel").write_text("preserved", encoding="utf-8")
+
+    def _reject(_root: Path):
+        raise ValueError("canonical loader rejected staged output")
+
+    monkeypatch.setattr("apm_cli.bundle.agent_plugin_exporter.load_agent_plugin", _reject)
+
+    with pytest.raises(ValueError, match="canonical loader rejected"):
+        export_agent_plugin_bundle(project, build)
+
+    assert (existing / "sentinel").read_text(encoding="utf-8") == "preserved"
+
+
+@pytest.mark.parametrize("archive_format", ["zip", "tar.gz"])
+def test_agent_bundle_archives_are_reproducible(
+    tmp_path: Path,
+    archive_format: str,
+) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    first = export_agent_plugin_bundle(
+        project,
+        tmp_path / "first",
+        archive=True,
+        archive_format=archive_format,
+    )
+    for path in project.rglob("*"):
+        if path.is_file():
+            os.utime(path, (2_000_000_000, 2_000_000_000))
+    second = export_agent_plugin_bundle(
+        project,
+        tmp_path / "second",
+        archive=True,
+        archive_format=archive_format,
+    )
+
+    assert first.bundle_path.read_bytes() == second.bundle_path.read_bytes()

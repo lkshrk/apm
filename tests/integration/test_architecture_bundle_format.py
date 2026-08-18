@@ -6,6 +6,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 def test_bundle_format_guard_rejects_parallel_authority(tmp_path: Path) -> None:
     """The boundary checker must reject a second format resolver."""
@@ -153,3 +155,88 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
     assert result.stdout.splitlines()[0] == (
         "[x] Agent Plugin loader must own admissibility, detection, loading, and manifest authority"
     )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "old", "new", "message"),
+    [
+        (
+            "src/apm_cli/bundle/formats.py",
+            "PREFERRED_PLUGIN_FORMAT = BundleFormat.CLAUDE_PLUGIN",
+            "PREFERRED_PLUGIN_FORMAT = BundleFormat.AGENT_PLUGIN",
+            "Agent Plugin preferred-default flip is reserved for T10 after G3",
+        ),
+        (
+            "src/apm_cli/bundle/formats.py",
+            "if len(selections) > 1:",
+            "if len(selections) > 2:",
+            "Bundle selectors and no-flag behavior must route through the canonical format seam",
+        ),
+        (
+            "src/apm_cli/bundle/agent_plugin_exporter.py",
+            "plugin = load_agent_plugin(staged_bundle)",
+            "plugin = None",
+            "Agent Plugin production must canonically reload staged output before commit",
+        ),
+        (
+            "src/apm_cli/bundle/agent_plugin_exporter.py",
+            "if errors:",
+            "if False:",
+            "Agent Plugin production must canonically reload staged output before commit",
+        ),
+        (
+            "src/apm_cli/commands/init.py",
+            "plugin = load_agent_plugin(staged_root)",
+            "plugin = None",
+            "Plugin scaffolding must share the preferred-format seam and canonical reload",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "if len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers):",
+            "if False:",
+            "Agent Plugin client projection must type every unsupported component",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "diagnostics.append(",
+            "rendered.append(",
+            "Agent Plugin client projection must type every unsupported component",
+        ),
+    ],
+)
+def test_producer_projection_guard_kills_contract_mutations(
+    tmp_path: Path,
+    relative_path: str,
+    old: str,
+    new: str,
+    message: str,
+) -> None:
+    """The static gate must kill producer, default, flag, and omission mutants."""
+    root = Path(__file__).parents[2]
+    sandbox = tmp_path / "repo"
+    paths = {
+        "scripts/check_bundle_format_authority.sh",
+        "src/apm_cli/bundle/formats.py",
+        relative_path,
+    }
+    for relative in paths:
+        source = root / relative
+        destination = sandbox / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+    mutation_path = sandbox / relative_path
+    source = mutation_path.read_text(encoding="utf-8")
+    assert old in source
+    mutation_path.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+    result = subprocess.run(
+        ("bash", str(sandbox / "scripts/check_bundle_format_authority.sh"), str(sandbox)),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert result.returncode == 1
+    assert message in result.stdout

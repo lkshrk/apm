@@ -28,6 +28,8 @@ class BundleFormat(str, enum.Enum):
         }[self]
 
 
+PREFERRED_PLUGIN_FORMAT = BundleFormat.CLAUDE_PLUGIN
+
 _CLI_CHOICES = ("plugin", "agent-plugin", "claude", "claude-plugin", "apm")
 _SELECTOR_ALIASES: dict[str, BundleFormat] = {
     "plugin": BundleFormat.AGENT_PLUGIN,
@@ -49,7 +51,7 @@ def cli_format_choices() -> tuple[str, ...]:
 def coerce_bundle_format(value: str | BundleFormat | None) -> BundleFormat:
     """Normalize *value* to a :class:`BundleFormat`."""
     if value is None:
-        return BundleFormat.AGENT_PLUGIN
+        return PREFERRED_PLUGIN_FORMAT
     if isinstance(value, BundleFormat):
         return value
     key = value.strip().lower().replace(" ", "-").replace("_", "-")
@@ -83,17 +85,12 @@ def resolve_bundle_format(
     if claude_plugin:
         selections.append(BundleFormat.CLAUDE_PLUGIN)
 
-    chosen = []
-    for selection in selections:
-        if selection not in chosen:
-            chosen.append(selection)
-
-    if len(chosen) > 1:
+    if len(selections) > 1:
         selector_text = ", ".join(format_selection_text(fmt, plugin, claude_plugin))
         raise ValueError(f"Options {selector_text} are mutually exclusive")
-    if chosen:
-        return chosen[0]
-    return BundleFormat.AGENT_PLUGIN
+    if selections:
+        return selections[0]
+    return PREFERRED_PLUGIN_FORMAT
 
 
 def format_selection_text(
@@ -114,6 +111,8 @@ def format_selection_text(
 
 def agent_plugin_warning(version: str | None = None) -> str | None:
     """Return the transition warning for the Agent Plugin default window."""
+    if PREFERRED_PLUGIN_FORMAT is not BundleFormat.AGENT_PLUGIN:
+        return None
     if version is None:
         from ..version import get_version
 
@@ -132,6 +131,7 @@ def agent_plugin_warning(version: str | None = None) -> str | None:
 
 
 __all__ = [
+    "PREFERRED_PLUGIN_FORMAT",
     "BundleFormat",
     "agent_plugin_warning",
     "cli_format_choices",

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from ..bundle.formats import PREFERRED_PLUGIN_FORMAT, BundleFormat
 from ..bundle.plugin_layout import find_plugin_root_sources
 from ..constants import APM_YML_FILENAME
 from ..core.command_logger import CommandLogger
@@ -135,7 +136,7 @@ def _perform_init(
     target_flag,
     verbose,
     source="init",
-    plugin_mode: str = "agent",
+    plugin_mode: str | None = None,
 ):
     """Shared init body. Called by `apm init` and `apm plugin init`.
 
@@ -145,6 +146,12 @@ def _perform_init(
     """
     logger = CommandLogger(source, verbose=verbose)
     try:
+        effective_plugin_mode = plugin_mode
+        if effective_plugin_mode is None:
+            effective_plugin_mode = (
+                "agent" if PREFERRED_PLUGIN_FORMAT is BundleFormat.AGENT_PLUGIN else "claude"
+            )
+
         # Handle explicit current directory
         if project_name == ".":
             project_name = None
@@ -186,12 +193,22 @@ def _perform_init(
             )
             sys.exit(1)
 
-        # Check for existing apm.yml
+        # Check for existing generated files
         apm_yml_exists = Path(APM_YML_FILENAME).exists()
+        generated_paths = [Path(APM_YML_FILENAME)]
+        if plugin:
+            generated_paths.append(Path("plugin.json"))
+            if effective_plugin_mode == "agent":
+                generated_paths.append(Path("mcp.json"))
+        existing_generated_paths = [path for path in generated_paths if path.exists()]
 
-        # Handle existing apm.yml in brownfield projects
-        if apm_yml_exists:
-            logger.warning("apm.yml already exists")
+        # Handle existing generated files in brownfield projects
+        if existing_generated_paths:
+            if existing_generated_paths == [Path(APM_YML_FILENAME)]:
+                logger.warning("apm.yml already exists")
+            else:
+                rendered_paths = ", ".join(path.as_posix() for path in existing_generated_paths)
+                logger.warning(f"Generated files already exist: {rendered_paths}")
 
             if not yes:
                 confirm = click.confirm("Continue and overwrite?")
@@ -247,7 +264,10 @@ def _perform_init(
 
         # Create plugin.json for plugin mode
         if plugin:
-            _create_plugin_json(config, mode=plugin_mode)
+            if effective_plugin_mode == "agent":
+                _write_and_validate_agent_plugin_scaffold(project_root, config)
+            else:
+                _create_plugin_json(config, mode=effective_plugin_mode)
 
         # Append marketplace authoring block when requested.
         if marketplace_flag:
@@ -380,6 +400,38 @@ def _perform_init(
     except Exception as e:
         logger.error(f"Error initializing project: {e}")
         sys.exit(1)
+
+
+def _write_and_validate_agent_plugin_scaffold(project_root: Path, config: dict) -> None:
+    """Stage and canonically validate native scaffold files before replacement."""
+    import json
+    import tempfile
+
+    from ..agent_plugins import (
+        MCP_SCHEMA_ID,
+        DiagnosticSeverity,
+        load_agent_plugin,
+    )
+
+    mcp_document = {"$schema": MCP_SCHEMA_ID, "mcpServers": {}}
+    with tempfile.TemporaryDirectory(prefix=".apm-plugin-init-", dir=project_root) as stage:
+        staged_root = Path(stage)
+        _create_plugin_json(config, mode="agent", target_path=staged_root / "plugin.json")
+        (staged_root / "mcp.json").write_text(
+            json.dumps(mcp_document, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        plugin = load_agent_plugin(staged_root)
+        errors = [
+            diagnostic.message
+            for diagnostic in plugin.diagnostics
+            if diagnostic.severity is DiagnosticSeverity.ERROR
+        ]
+        if errors:
+            raise ValueError("Generated Agent Plugin scaffold is invalid: " + "; ".join(errors))
+
+        for filename in ("plugin.json", "mcp.json"):
+            os.replace(staged_root / filename, project_root / filename)
 
 
 def _interactive_project_setup(default_name, logger):

@@ -38,8 +38,8 @@ is embedded in each bundle.
 Examples:
 
   # Bundle only (most common -- just dependencies: in apm.yml):
-  apm pack                              # Agent Plugin bundle (default)
-  apm pack --claude-plugin --archive
+  apm pack                              # Legacy Claude plugin bundle (current default)
+  apm pack --plugin --archive           # Native Agent Plugins v1 bundle
   apm pack --format apm -o ./dist       # Legacy APM bundle layout
 
   # Marketplace only (marketplace: in apm.yml, no dependencies:):
@@ -156,14 +156,14 @@ def _parse_marketplace_filter(
     "select_plugin",
     is_flag=True,
     default=False,
-    help="Select Agent Plugin bundle output (default).",
+    help="Select native Agent Plugins v1 bundle output.",
 )
 @click.option(
     "--claude-plugin",
     "select_claude_plugin",
     is_flag=True,
     default=False,
-    help="Select the legacy Claude plugin bundle output.",
+    help="Select the legacy Claude plugin bundle output (current no-flag default).",
 )
 @click.option(
     "--format",
@@ -173,7 +173,8 @@ def _parse_marketplace_filter(
     help=(
         "Bundle format selector. 'plugin' / 'agent-plugin' emit the Agent Plugin "
         "bundle, 'claude' / 'claude-plugin' emit the legacy Claude plugin bundle, "
-        "and 'apm' emits the legacy APM bundle layout."
+        "and 'apm' emits the legacy APM bundle layout. The current no-flag default "
+        "is 'claude-plugin'."
     ),
 )
 @click.option(
@@ -692,9 +693,9 @@ def _render_bundle_result(
             )
         if fmt == BundleFormat.AGENT_PLUGIN:
             logger.progress(
-                "Agent Plugin bundle ready -- contains plugin.json plus skills/ "
-                "and com.microsoft.apm/ primitives, with an embedded apm.lock.yaml "
-                "for install-time integrity verification."
+                "Agent Plugin bundle ready -- contains canonical plugin.json, "
+                "mcp.json, supported skills/, and an embedded apm.lock.yaml "
+                "for integrity verification."
             )
         elif fmt == BundleFormat.CLAUDE_PLUGIN:
             logger.progress(

@@ -472,8 +472,23 @@ class TestPackCmdFlags:
     def test_help_text_includes_all_key_flags(self) -> None:
         result = CliRunner().invoke(pack_cmd, ["--help"])
         assert result.exit_code == 0
-        for flag in ["--archive", "--format", "--dry-run", "--force", "--verbose", "--offline"]:
+        for flag in [
+            "--plugin",
+            "--claude-plugin",
+            "--archive",
+            "--format",
+            "--dry-run",
+            "--force",
+            "--verbose",
+            "--offline",
+        ]:
             assert flag in result.output
+        assert "current no-flag default" in result.output
+
+    def test_redundant_format_selectors_are_usage_error(self) -> None:
+        result = CliRunner().invoke(pack_cmd, ["--plugin", "--format", "plugin"])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
 
     def test_archive_help_includes_migration_and_size_cues(self) -> None:
         result = CliRunner().invoke(pack_cmd, ["--help"])

@@ -33,7 +33,7 @@ class PackResult:
 def pack_bundle(
     project_root: Path,
     output_dir: Path,
-    fmt: str = BundleFormat.AGENT_PLUGIN.value,
+    fmt: str | BundleFormat | None = None,
     target: str | list[str] | None = None,
     archive: bool = False,
     archive_format: str = "zip",
@@ -48,7 +48,7 @@ def pack_bundle(
         output_dir: Directory where the bundle will be created.
         fmt: Bundle format -- ``"agent-plugin"`` (CLI compatibility alias: ``"plugin"``),
             ``"claude-plugin"`` (legacy Claude bundle), or ``"apm"`` (legacy APM bundle).
-            The default matches the CLI and produces an Agent Plugin.
+            ``None`` routes through the preferred-format seam in ``bundle.formats``.
         target: Target filter  -- ``"copilot"``, ``"claude"``, ``"all"``, a list of
             target strings (e.g. ``["claude", "vscode"]``), or *None*
             (auto-detect from apm.yml / project structure).

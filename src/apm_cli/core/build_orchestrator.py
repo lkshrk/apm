@@ -41,7 +41,7 @@ class BuildOptions:
     project_root: Path
     apm_yml_path: Path
     # Bundle-only options
-    bundle_format: BundleFormat | str = BundleFormat.AGENT_PLUGIN
+    bundle_format: BundleFormat | str | None = None
     bundle_target: Any = None
     bundle_archive: bool = False
     bundle_archive_format: str = "zip"

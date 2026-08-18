@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from apm_cli.bundle import formats
 from apm_cli.bundle.formats import (
+    PREFERRED_PLUGIN_FORMAT,
     BundleFormat,
     agent_plugin_warning,
     coerce_bundle_format,
@@ -16,7 +18,7 @@ class TestBundleFormatSelection:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            (None, BundleFormat.AGENT_PLUGIN),
+            (None, BundleFormat.CLAUDE_PLUGIN),
             ("plugin", BundleFormat.AGENT_PLUGIN),
             ("agent-plugin", BundleFormat.AGENT_PLUGIN),
             ("claude", BundleFormat.CLAUDE_PLUGIN),
@@ -27,21 +29,30 @@ class TestBundleFormatSelection:
     def test_coerce_bundle_format(self, value, expected):
         assert coerce_bundle_format(value) is expected
 
-    def test_default_bundle_format_is_agent_plugin(self):
-        assert resolve_bundle_format(None) is BundleFormat.AGENT_PLUGIN
+    def test_preferred_format_seam_preserves_legacy_until_t10(self):
+        assert PREFERRED_PLUGIN_FORMAT is BundleFormat.CLAUDE_PLUGIN
+        assert resolve_bundle_format(None) is PREFERRED_PLUGIN_FORMAT
 
     def test_conflicting_selectors_raise(self):
         with pytest.raises(ValueError, match="mutually exclusive"):
             resolve_bundle_format("apm", plugin=True)
 
-    def test_matching_selectors_are_accepted(self):
-        assert resolve_bundle_format("plugin", plugin=True) is BundleFormat.AGENT_PLUGIN
-        assert (
-            resolve_bundle_format("claude-plugin", claude_plugin=True) is BundleFormat.CLAUDE_PLUGIN
-        )
+    @pytest.mark.parametrize(
+        ("fmt", "plugin", "claude_plugin"),
+        [
+            ("plugin", True, False),
+            ("claude-plugin", False, True),
+        ],
+    )
+    def test_redundant_selectors_are_rejected(self, fmt, plugin, claude_plugin):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            resolve_bundle_format(fmt, plugin=plugin, claude_plugin=claude_plugin)
 
 
 class TestAgentPluginWarningWindow:
+    def test_warning_is_disabled_before_default_flip(self):
+        assert agent_plugin_warning("0.30.0") is None
+
     @pytest.mark.parametrize(
         ("version", "expected"),
         [
@@ -51,7 +62,8 @@ class TestAgentPluginWarningWindow:
             ("0.34.0", None),
         ],
     )
-    def test_warning_window(self, version, expected):
+    def test_warning_window_after_t10(self, version, expected, monkeypatch):
+        monkeypatch.setattr(formats, "PREFERRED_PLUGIN_FORMAT", BundleFormat.AGENT_PLUGIN)
         warning = agent_plugin_warning(version)
         if expected is None:
             assert warning is None

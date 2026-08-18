@@ -16,6 +16,7 @@ from click.testing import CliRunner
 
 from apm_cli.commands.marketplace import marketplace
 from apm_cli.commands.pack import pack_cmd
+from apm_cli.models.validation import PackageType, validate_apm_package
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -95,7 +96,10 @@ dependencies:
     (root / ".apm" / "agents").mkdir(parents=True, exist_ok=True)
     (root / ".apm" / "agents" / "agent.md").write_text("agent", encoding="utf-8")
     (root / ".apm" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
-    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text("skill", encoding="utf-8")
+    (root / ".apm" / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo skill.\n",
+        encoding="utf-8",
+    )
     (root / ".apm" / "commands").mkdir(parents=True, exist_ok=True)
     (root / ".apm" / "commands" / "hello.md").write_text("command", encoding="utf-8")
     (root / ".apm" / "instructions").mkdir(parents=True, exist_ok=True)
@@ -141,11 +145,25 @@ class TestPackUnified:
         # Marketplace.json should NOT be created
         assert not (tmp_path / ".claude-plugin" / "marketplace.json").exists()
 
-    def test_pack_defaults_to_agent_plugin(self, runner, tmp_path, monkeypatch):
+    def test_pack_defaults_to_legacy_claude_plugin(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         _write_agent_block_yml(tmp_path)
 
         result = runner.invoke(pack_cmd, [])
+
+        assert result.exit_code == 0, result.output
+        bundle = next((tmp_path / "build").iterdir())
+        manifest = json.loads((bundle / "plugin.json").read_text(encoding="utf-8"))
+        assert "$schema" not in manifest
+        assert (bundle / "agents" / "agent.md").exists()
+        assert (bundle / ".mcp.json").exists()
+        assert not (bundle / "com.microsoft.apm").exists()
+
+    def test_pack_explicit_agent_plugin_round_trips(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_agent_block_yml(tmp_path)
+
+        result = runner.invoke(pack_cmd, ["--plugin"])
 
         assert result.exit_code == 0, result.output
         bundle = next((tmp_path / "build").iterdir())
@@ -163,18 +181,19 @@ class TestPackUnified:
         assert not (bundle / "apm.yml").exists()
         assert not (bundle / "apm.yaml").exists()
 
-    def test_pack_json_keeps_agent_warning_valid(self, runner, tmp_path, monkeypatch):
+    def test_pack_json_does_not_claim_default_flip_before_t10(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("apm_cli.version.get_version", lambda: "0.30.0")
         _write_agent_block_yml(tmp_path)
 
-        result = runner.invoke(pack_cmd, ["--json"])
+        result = runner.invoke(pack_cmd, ["--plugin", "--json"])
 
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["ok"] is True
-        assert payload["warnings"]
-        assert any("defaults to Agent Plugin output" in warning for warning in payload["warnings"])
+        assert not any(
+            "defaults to Agent Plugin output" in warning for warning in payload["warnings"]
+        )
 
     def test_pack_claude_plugin_preserves_legacy_layout(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -187,6 +206,9 @@ class TestPackUnified:
         assert (bundle / "plugin.json").exists()
         assert (bundle / "agents" / "agent.md").exists()
         assert not (bundle / "com.microsoft.apm" / "agents" / "agent.md").exists()
+        validation = validate_apm_package(bundle)
+        assert validation.is_valid is True
+        assert validation.package_type is PackageType.MARKETPLACE_PLUGIN
 
     def test_pack_conflicting_format_selectors_error(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)

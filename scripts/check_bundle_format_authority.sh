@@ -15,6 +15,61 @@ if [ -n "$duplicates" ]; then
     exit 1
 fi
 
+format_owner="$repo_root/src/apm_cli/bundle/formats.py"
+if ! grep -q '^PREFERRED_PLUGIN_FORMAT = BundleFormat.CLAUDE_PLUGIN$' "$format_owner"; then
+    echo "[x] Agent Plugin preferred-default flip is reserved for T10 after G3"
+    exit 1
+fi
+if ! grep -q '^    if len(selections) > 1:$' "$format_owner" \
+    || ! grep -q '^    return PREFERRED_PLUGIN_FORMAT$' "$format_owner"; then
+    echo "[x] Bundle selectors and no-flag behavior must route through the canonical format seam"
+    exit 1
+fi
+
+agent_plugin_exporter="$repo_root/src/apm_cli/bundle/agent_plugin_exporter.py"
+if [ -f "$agent_plugin_exporter" ]; then
+    loader_line=$(grep -n 'plugin = load_agent_plugin(staged_bundle)' "$agent_plugin_exporter" \
+        | head -1 | cut -d: -f1 || true)
+    archive_line=$(grep -n 'write_reproducible_archive(staged_bundle' "$agent_plugin_exporter" \
+        | head -1 | cut -d: -f1 || true)
+    commit_line=$(grep -n 'os.replace(staged_bundle, bundle_dir)' "$agent_plugin_exporter" \
+        | head -1 | cut -d: -f1 || true)
+    if [ -z "$loader_line" ] \
+        || [ -z "$archive_line" ] \
+        || [ -z "$commit_line" ] \
+        || [ "$loader_line" -ge "$archive_line" ] \
+        || [ "$loader_line" -ge "$commit_line" ] \
+        || ! grep -q '^    if errors:$' "$agent_plugin_exporter" \
+        || ! grep -q '^    if loaded_skills != expected_skill_directories:$' \
+            "$agent_plugin_exporter" \
+        || ! grep -q '^    if loaded_mcp != expected_mcp_names:$' \
+            "$agent_plugin_exporter" \
+        || grep -Eq 'validate_(plugin_manifest|mcp_config|lsp_extension)_(document|file)' \
+            "$agent_plugin_exporter"; then
+        echo "[x] Agent Plugin production must canonically reload staged output before commit"
+        exit 1
+    fi
+fi
+
+init_owner="$repo_root/src/apm_cli/commands/init.py"
+if [ -f "$init_owner" ] \
+    && { ! grep -q 'PREFERRED_PLUGIN_FORMAT is BundleFormat.AGENT_PLUGIN' "$init_owner" \
+        || ! grep -q 'plugin = load_agent_plugin(staged_root)' "$init_owner"; }; then
+    echo "[x] Plugin scaffolding must share the preferred-format seam and canonical reload"
+    exit 1
+fi
+
+client_projection="$repo_root/src/apm_cli/adapters/client/agent_plugin_projection.py"
+if [ -f "$client_projection" ] \
+    && { ! grep -q 'config = adapter.render_server_config(_server_info(server))' \
+            "$client_projection" \
+        || ! grep -q 'len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers)' \
+            "$client_projection" \
+        || [ "$(grep -c 'diagnostics.append(' "$client_projection")" -lt 3 ]; }; then
+    echo "[x] Agent Plugin client projection must type every unsupported component"
+    exit 1
+fi
+
 agent_plugin_owner="$repo_root/src/apm_cli/agent_plugins/loader.py"
 if [ -f "$agent_plugin_owner" ]; then
     agent_plugin_duplicates=$(
