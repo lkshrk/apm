@@ -168,11 +168,15 @@ def test_agent_bundle_writes_portable_core_and_valid_docs(tmp_path: Path) -> Non
     assert dropped_warnings
     # The single dropped-surface warning must name every non-portable primitive
     # dropped from the portable core, including hooks (collected on a separate
-    # channel from skills/agents/commands/instructions/extensions).
+    # channel from skills/agents/commands/instructions/extensions) and lsp
+    # (resolved LSP server configs, carried on the lockfile channel).
     assert all(
         surface in dropped_warnings[0]
-        for surface in ("agents", "commands", "instructions", "extensions", "hooks")
+        for surface in ("agents", "commands", "instructions", "extensions", "hooks", "lsp")
     )
+    # LSP is not representable in any pack format, so the warning must not steer
+    # the operator to --claude-plugin as if it could carry the full set.
+    assert "no pack format carries it" in dropped_warnings[0]
     loaded = load_agent_plugin(bundle)
     assert loaded.identity.name == "agent-pack"
     assert loaded.identity.version == "1.2.3"
@@ -215,6 +219,67 @@ def test_agent_bundle_explicit_includes_warns_when_dropping_hooks(tmp_path: Path
     assert "hooks" in dropped_warnings[0]
     loaded = load_agent_plugin(result.bundle_path)
     assert [skill.directory_name for skill in loaded.components.skills] == ["demo"]
+
+
+def test_agent_bundle_root_layout_hooks_are_surfaced_as_dropped(tmp_path: Path) -> None:
+    """Root-layout hooks (no includes, no .apm/) must enter the dropped warning."""
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    project.joinpath("apm.yml").write_text(
+        "name: agent-pack\nversion: 1.2.3\ndescription: Root-layout hook drop test\n",
+        encoding="utf-8",
+    )
+    _write_lockfile(project)
+    (project / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (project / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo skill.\n",
+        encoding="utf-8",
+    )
+    (project / "hooks").mkdir(parents=True, exist_ok=True)
+    (project / "hooks" / "hooks.json").write_text(
+        json.dumps({"preCommit": [{"command": "lint"}]}),
+        encoding="utf-8",
+    )
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build")
+
+    assert not (result.bundle_path / "hooks").exists()
+    dropped_warnings = [w for w in result.warnings if "non-portable primitives" in w]
+    assert dropped_warnings
+    assert "hooks" in dropped_warnings[0]
+
+
+def test_agent_bundle_lsp_only_drop_does_not_steer_to_claude(tmp_path: Path) -> None:
+    """When only LSP configs drop, the warning must not imply --claude-plugin carries them."""
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    project.joinpath("apm.yml").write_text(
+        "name: agent-pack\nversion: 1.2.3\ndescription: LSP-only drop test\n",
+        encoding="utf-8",
+    )
+    _write_lockfile(
+        project,
+        lsp_configs={
+            "pyright": {
+                "command": "pyright-langserver",
+                "extensionToLanguage": {".py": "python"},
+            }
+        },
+    )
+    (project / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (project / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo skill.\n",
+        encoding="utf-8",
+    )
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build")
+
+    dropped_warnings = [w for w in result.warnings if "non-portable primitives" in w]
+    assert dropped_warnings
+    warning = dropped_warnings[0]
+    assert "lsp" in warning
+    assert "no pack format carries it" in warning
+    assert "--claude-plugin" not in warning
 
 
 def test_agent_bundle_round_trip_accepts_symlinked_output_ancestor(tmp_path: Path) -> None:

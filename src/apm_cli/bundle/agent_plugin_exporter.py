@@ -88,6 +88,28 @@ def _apm_hooks_present(apm_dir: Path) -> bool:
     )
 
 
+def _root_hooks_present(project_root: Path) -> bool:
+    """Report whether root-layout hooks exist without parsing them.
+
+    Packages that follow the plugin directory convention at the repo root (no
+    ``.apm/``) carry hooks as a root ``hooks.json`` file or ``hooks/`` directory.
+    :func:`_collect_root_plugin_components` deliberately skips hooks, so this
+    bounded existence probe -- mirroring ``_collect_hooks_from_root`` discovery
+    -- lets the caller fold ``hooks`` into the single dropped-surface warning
+    without opening or parsing the files.
+    """
+    hooks_file = project_root / "hooks.json"
+    if hooks_file.is_file() and not hooks_file.is_symlink():
+        return True
+    hooks_dir = project_root / "hooks"
+    if not hooks_dir.is_dir():
+        return False
+    return any(
+        entry.is_file() and entry.suffix == ".json" and not entry.is_symlink()
+        for entry in hooks_dir.iterdir()
+    )
+
+
 def _copy_optional_root_file(project_root: Path, bundle_dir: Path, name: str) -> str | None:
     source = project_root / name
     if not source.is_file() or source.is_symlink():
@@ -362,18 +384,32 @@ def export_agent_plugin_bundle(
             )
             own_components.extend(root_components)
             dropped_surfaces |= root_dropped
+            if _root_hooks_present(project_root):
+                dropped_surfaces.add("hooks")
 
     if not isinstance(package.includes, list) and own_apm_dir.is_dir() and not own_components:
         _warn_no_local_primitives(logger)
 
     _merge_file_map(file_map, own_components, pkg_name, force, collisions)
 
+    if lockfile.lsp_configs:
+        dropped_surfaces.add("lsp")
+
     if dropped_surfaces:
+        claude_carriable = dropped_surfaces - {"lsp"}
         _dropped = (
             "Skipping non-portable primitives not representable by Agent Plugins v1 "
             f"({', '.join(sorted(dropped_surfaces))}); only root skills/ and mcp.json are "
-            "packed. Use 'apm pack --claude-plugin' to carry the full primitive set."
+            "packed."
         )
+        if claude_carriable:
+            remainder = "the remaining primitives" if "lsp" in dropped_surfaces else "them"
+            _dropped += f" Use 'apm pack --claude-plugin' to carry {remainder}."
+        if "lsp" in dropped_surfaces:
+            _dropped += (
+                " LSP server configuration is not representable in either Agent Plugins v1 "
+                "or the Claude plugin bundle; no pack format carries it."
+            )
         warnings.append(_dropped)
         if logger:
             logger.warning(_dropped)
