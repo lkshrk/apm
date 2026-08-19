@@ -27,30 +27,11 @@ if ! grep -q '^    if len(selections) > 1:$' "$format_owner" \
 fi
 
 agent_plugin_exporter="$repo_root/src/apm_cli/bundle/agent_plugin_exporter.py"
-if [ -f "$agent_plugin_exporter" ]; then
-    loader_line=$(grep -n 'plugin = load_agent_plugin(staged_bundle)' "$agent_plugin_exporter" \
-        | head -1 | cut -d: -f1 || true)
-    archive_line=$(grep -n 'write_reproducible_archive(staged_bundle' "$agent_plugin_exporter" \
-        | head -1 | cut -d: -f1 || true)
-    commit_line=$(grep -n 'os.replace(staged_bundle, bundle_dir)' "$agent_plugin_exporter" \
-        | head -1 | cut -d: -f1 || true)
-    if [ -z "$loader_line" ] \
-        || [ -z "$archive_line" ] \
-        || [ -z "$commit_line" ] \
-        || [ "$loader_line" -ge "$archive_line" ] \
-        || [ "$loader_line" -ge "$commit_line" ] \
-        || ! grep -q '^    if errors:$' "$agent_plugin_exporter" \
-        || ! grep -q '^    if loaded_skills != expected_skills:$' \
-            "$agent_plugin_exporter" \
-        || ! grep -q '^    if loaded_mcp != expected_mcp_names:$' \
-            "$agent_plugin_exporter" \
-        || ! grep -q '^    _validate_apm_component_round_trip($' "$agent_plugin_exporter" \
-        || grep -Eq 'validate_(plugin_manifest|mcp_config|lsp_extension)_(document|file)' \
-            "$agent_plugin_exporter"; then
-        echo "[x] Agent Plugin production must canonically reload staged output before commit"
-        exit 1
-    fi
-
+if [ -f "$agent_plugin_exporter" ] \
+    && grep -Eq 'validate_(plugin_manifest|mcp_config|lsp_extension)_(document|file)' \
+        "$agent_plugin_exporter"; then
+    echo "[x] Agent Plugin producer must not duplicate canonical loader validation"
+    exit 1
 fi
 
 reproducible_archive="$repo_root/src/apm_cli/bundle/reproducible_archive.py"

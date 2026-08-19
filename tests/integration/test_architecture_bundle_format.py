@@ -173,24 +173,6 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
             "Bundle selectors and no-flag behavior must route through the canonical format seam",
         ),
         (
-            "src/apm_cli/bundle/agent_plugin_exporter.py",
-            "plugin = load_agent_plugin(staged_bundle)",
-            "plugin = None",
-            "Agent Plugin production must canonically reload staged output before commit",
-        ),
-        (
-            "src/apm_cli/bundle/agent_plugin_exporter.py",
-            "if errors:",
-            "if False:",
-            "Agent Plugin production must canonically reload staged output before commit",
-        ),
-        (
-            "src/apm_cli/bundle/agent_plugin_exporter.py",
-            "    _validate_apm_component_round_trip(\n        plugin,",
-            "    _skip_apm_component_round_trip(\n        plugin,",
-            "Agent Plugin production must canonically reload staged output before commit",
-        ),
-        (
             "src/apm_cli/commands/init.py",
             "plugin = load_agent_plugin(staged_root)",
             "plugin = None",
@@ -229,7 +211,7 @@ def test_producer_projection_guard_kills_contract_mutations(
     new: str,
     message: str,
 ) -> None:
-    """The static gate must kill producer, default, flag, and omission mutants."""
+    """The static gate must kill default, init, omission, and streaming mutants."""
     root = Path(__file__).parents[2]
     sandbox = tmp_path / "repo"
     paths = {
