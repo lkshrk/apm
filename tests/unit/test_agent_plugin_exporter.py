@@ -408,15 +408,22 @@ def test_agent_bundle_invalid_skill_fails_before_output_commit(tmp_path: Path) -
     assert not (build / "agent-pack-1.2.3").exists()
 
 
+@pytest.mark.parametrize("archive", [False, True])
 def test_agent_bundle_loader_failure_preserves_existing_output(
     tmp_path: Path,
     monkeypatch,
+    archive: bool,
 ) -> None:
     project = _write_agent_project(tmp_path / "project")
     build = tmp_path / "build"
-    existing = build / "agent-pack-1.2.3"
-    existing.mkdir(parents=True)
-    (existing / "sentinel").write_text("preserved", encoding="utf-8")
+    if archive:
+        existing = build / "agent-pack-1.2.3.zip"
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_bytes(b"preserved-archive")
+    else:
+        existing = build / "agent-pack-1.2.3"
+        existing.mkdir(parents=True)
+        (existing / "sentinel").write_text("preserved", encoding="utf-8")
 
     def _reject(_root: Path):
         raise ValueError("canonical loader rejected staged output")
@@ -424,9 +431,12 @@ def test_agent_bundle_loader_failure_preserves_existing_output(
     monkeypatch.setattr("apm_cli.bundle.agent_plugin_exporter.load_agent_plugin", _reject)
 
     with pytest.raises(ValueError, match="canonical loader rejected"):
-        export_agent_plugin_bundle(project, build)
+        export_agent_plugin_bundle(project, build, archive=archive)
 
-    assert (existing / "sentinel").read_text(encoding="utf-8") == "preserved"
+    if archive:
+        assert existing.read_bytes() == b"preserved-archive"
+    else:
+        assert (existing / "sentinel").read_text(encoding="utf-8") == "preserved"
 
 
 @pytest.mark.parametrize("archive_format", ["zip", "tar.gz"])
