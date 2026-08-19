@@ -27,12 +27,19 @@ from apm_cli.models.dependency.native_mcp import AgentPluginMCPPreparationFailur
 pytestmark = pytest.mark.component
 
 
-def _load_plugin(root: Path, servers: dict, *, include_apm_components: bool = False) -> object:
+def _load_plugin(
+    root: Path,
+    servers: dict,
+    *,
+    name: str = "projection-test",
+    version: str = "1.0.0",
+    include_apm_components: bool = False,
+) -> object:
     root.mkdir(parents=True)
     manifest = {
         "$schema": PLUGIN_SCHEMA_ID,
-        "name": "projection-test",
-        "version": "1.0.0",
+        "name": name,
+        "version": version,
         "description": "Projection fixture",
     }
     if include_apm_components:
@@ -55,10 +62,13 @@ def _load_plugin(root: Path, servers: dict, *, include_apm_components: bool = Fa
     )
     if include_apm_components:
         extension_root = root / COM_MICROSOFT_APM_NAMESPACE
-        for name in ("agents", "commands", "instructions", "extensions"):
-            component = extension_root / name
+        for component_name in ("agents", "commands", "instructions", "extensions"):
+            component = extension_root / component_name
             component.mkdir(parents=True)
-            (component / f"{name}.txt").write_text(name, encoding="utf-8")
+            (component / f"{component_name}.txt").write_text(
+                component_name,
+                encoding="utf-8",
+            )
         (extension_root / "lsp.json").write_text(
             json.dumps(
                 {
@@ -234,3 +244,112 @@ def test_projection_preserves_typed_mcp_preparation_failure(tmp_path: Path) -> N
     assert projection.mcp_failures == (failure,)
     assert projection.diagnostics == ()
     assert projection.is_complete is False
+
+
+def test_projection_rejects_incomplete_and_reordered_preparation_before_rendering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    plugin = _load_plugin(
+        tmp_path / "plugin",
+        {
+            "first": {"type": "stdio", "command": "first"},
+            "second": {"type": "stdio", "command": "second"},
+        },
+    )
+    preparation = prepare_agent_plugin_mcp_servers(
+        plugin,
+        plugin_root=tmp_path / "installed",
+        plugin_data=tmp_path / "data",
+    )
+    adapter = CodexClientAdapter(project_root=tmp_path)
+    monkeypatch.setattr(
+        adapter,
+        "render_server_config",
+        lambda _server_info: pytest.fail("mismatched preparation reached the renderer"),
+    )
+
+    for results in (preparation.results[:1], tuple(reversed(preparation.results))):
+        with pytest.raises(
+            ValueError,
+            match=r"^Client projection requires complete ordered MCP preparation results$",
+        ):
+            project_agent_plugin_for_client(
+                plugin,
+                replace(preparation, results=results),
+                adapter,
+            )
+
+
+def test_projection_rejects_foreign_plugin_preparation_before_rendering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    servers = {"local": {"type": "stdio", "command": "tool"}}
+    plugin = _load_plugin(tmp_path / "plugin", servers)
+    foreign_plugin = _load_plugin(
+        tmp_path / "foreign",
+        servers,
+        name="foreign-plugin",
+        version="2.0.0",
+    )
+    foreign_preparation = prepare_agent_plugin_mcp_servers(
+        foreign_plugin,
+        plugin_root=tmp_path / "foreign-installed",
+        plugin_data=tmp_path / "foreign-data",
+    )
+    adapter = CodexClientAdapter(project_root=tmp_path)
+    monkeypatch.setattr(
+        adapter,
+        "render_server_config",
+        lambda _server_info: pytest.fail("foreign preparation reached the renderer"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"^Client projection MCP preparation provenance does not match plugin IR$",
+    ):
+        project_agent_plugin_for_client(plugin, foreign_preparation, adapter)
+
+
+def test_projection_rejects_server_declaration_mismatch_before_rendering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    plugin = _load_plugin(
+        tmp_path / "plugin",
+        {
+            "first": {"type": "stdio", "command": "first"},
+            "second": {"type": "stdio", "command": "second"},
+        },
+    )
+    preparation = prepare_agent_plugin_mcp_servers(
+        plugin,
+        plugin_root=tmp_path / "installed",
+        plugin_data=tmp_path / "data",
+    )
+    first = preparation.successes[0]
+    mismatched_provenance = replace(
+        first.provenance,
+        declaration=plugin.components.mcp_servers[1].provenance,
+    )
+    mismatched_first = replace(
+        first,
+        config=replace(first.config, provenance=mismatched_provenance),
+    )
+    mismatched_preparation = replace(
+        preparation,
+        results=(mismatched_first, *preparation.results[1:]),
+    )
+    adapter = CodexClientAdapter(project_root=tmp_path)
+    monkeypatch.setattr(
+        adapter,
+        "render_server_config",
+        lambda _server_info: pytest.fail("mismatched provenance reached the renderer"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"^Client projection MCP result provenance does not match canonical server IR$",
+    ):
+        project_agent_plugin_for_client(plugin, mismatched_preparation, adapter)

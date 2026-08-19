@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
-from apm_cli.agent_plugins.ir import AgentPluginExecutable, McpServerType, SourceProvenance
+if TYPE_CHECKING:
+    from apm_cli.agent_plugins.ir import AgentPluginExecutable, McpServerType, SourceProvenance
 
 
 @dataclass(frozen=True, slots=True)
