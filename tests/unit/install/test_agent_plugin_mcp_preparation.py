@@ -16,6 +16,7 @@ from apm_cli.agent_plugins.errors import (
 from apm_cli.agent_plugins.ir import (
     AgentPlugin,
     AgentPluginComponents,
+    AgentPluginExecutable,
     AgentPluginIdentity,
     AgentPluginMcpServer,
     McpServerType,
@@ -38,6 +39,10 @@ def _server(
     server_type: McpServerType,
     **overrides,
 ) -> AgentPluginMcpServer:
+    provenance = SourceProvenance(
+        path=root / "mcp.json",
+        json_pointer=f"/mcpServers/{name}",
+    )
     values = {
         "name": name,
         "server_type": server_type,
@@ -47,12 +52,23 @@ def _server(
         "cwd": None,
         "url": None,
         "headers": (),
-        "provenance": SourceProvenance(
-            path=root / "mcp.json",
-            json_pointer=f"/mcpServers/{name}",
-        ),
+        "provenance": provenance,
     }
     values.update(overrides)
+    if (
+        "executables" not in overrides
+        and server_type is McpServerType.STDIO
+        and values["command"] is not None
+    ):
+        command = str(values["command"])
+        values["executables"] = (
+            AgentPluginExecutable(
+                declaration=command,
+                plugin_relative_path=command.removeprefix("./"),
+                asset=None,
+                provenance=provenance,
+            ),
+        )
     return AgentPluginMcpServer(**values)
 
 
@@ -276,6 +292,7 @@ def test_preparation_preserves_plugin_and_per_server_provenance(tmp_path: Path) 
     for result, server in zip(prepared.successes, plugin.components.mcp_servers, strict=True):
         assert result.provenance.plugin is prepared.provenance
         assert result.provenance.declaration is server.provenance
+        assert result.config.executables is server.executables
 
 
 def test_attached_ir_is_the_only_ingress_fact_source(tmp_path: Path) -> None:

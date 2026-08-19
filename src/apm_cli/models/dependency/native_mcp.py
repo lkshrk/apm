@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeAlias
 
-from apm_cli.agent_plugins.ir import McpServerType, SourceProvenance
+from apm_cli.agent_plugins.ir import AgentPluginExecutable, McpServerType, SourceProvenance
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +40,7 @@ class AgentPluginMCPServerConfig:
     cwd: str | None
     url: str | None = field(repr=False)
     headers: tuple[tuple[str, str], ...] = field(repr=False)
+    executables: tuple[AgentPluginExecutable, ...]
     provenance: AgentPluginMCPServerProvenance
 
 

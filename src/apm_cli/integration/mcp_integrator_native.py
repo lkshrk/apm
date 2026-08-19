@@ -86,6 +86,7 @@ def _prepare_agent_plugin_mcp_server(
         ),
         url=server.url,
         headers=server.headers,
+        executables=server.executables,
         provenance=server_provenance,
     )
     return AgentPluginMCPPreparationSuccess(config=config)

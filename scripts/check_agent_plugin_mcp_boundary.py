@@ -10,6 +10,8 @@ from pathlib import Path
 FACADE_PATH = Path("src/apm_cli/install/mcp/integration.py")
 PROJECTOR_PATH = Path("src/apm_cli/integration/mcp_integrator_native.py")
 MODEL_PATH = Path("src/apm_cli/models/dependency/native_mcp.py")
+LOCAL_BUNDLE_PATH = Path("src/apm_cli/install/local_bundle_handler.py")
+CLIENT_PROJECTION_PATH = Path("src/apm_cli/adapters/client/agent_plugin_projection.py")
 
 _FORBIDDEN_CALLS = frozenset(
     {
@@ -48,6 +50,7 @@ _AMBIENT_CREDENTIAL_NAMES = frozenset(
         "ADO_APM_PAT",
         "GH_TOKEN",
         "GITHUB_APM_PAT",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
         "GITHUB_TOKEN",
     }
 )
@@ -107,6 +110,73 @@ def _single_call(function: ast.FunctionDef, name: str) -> ast.Call | None:
 
 def _attribute_chain(node: ast.AST, chain: str) -> bool:
     return _call_name(node) == chain
+
+
+def _test_excludes_native_agent_plugin(node: ast.AST) -> bool:
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, ast.Not)
+        and isinstance(node.operand, ast.Name)
+        and node.operand.id == "is_agent_plugin"
+    ):
+        return True
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+        return any(_test_excludes_native_agent_plugin(value) for value in node.values)
+    return False
+
+
+def _parent_fields(tree: ast.AST) -> dict[ast.AST, tuple[ast.AST, str]]:
+    parents: dict[ast.AST, tuple[ast.AST, str]] = {}
+    for parent in ast.walk(tree):
+        for field, value in ast.iter_fields(parent):
+            children = value if isinstance(value, list) else [value]
+            for child in children:
+                if isinstance(child, ast.AST):
+                    parents[child] = (parent, field)
+    return parents
+
+
+def _enclosing_function(
+    node: ast.AST,
+    parents: dict[ast.AST, tuple[ast.AST, str]],
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    current = node
+    while current in parents:
+        parent, _field = parents[current]
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return parent
+        current = parent
+    return None
+
+
+def _first_statement_after_docstring(function: ast.FunctionDef) -> ast.stmt | None:
+    body = function.body
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body = body[1:]
+    return body[0] if body else None
+
+
+def _is_legacy_guarded(
+    node: ast.AST,
+    function: ast.FunctionDef,
+    parents: dict[ast.AST, tuple[ast.AST, str]],
+) -> bool:
+    current = node
+    while current is not function and current in parents:
+        parent, field = parents[current]
+        if (
+            isinstance(parent, ast.If)
+            and field == "body"
+            and _test_excludes_native_agent_plugin(parent.test)
+        ):
+            return True
+        current = parent
+    return False
 
 
 def _boundary_violations(
@@ -386,6 +456,7 @@ def _check_projector(tree: ast.Module, path: Path) -> list[str]:
         "command": "server.command",
         "url": "server.url",
         "headers": "server.headers",
+        "executables": "server.executables",
         "provenance": "server_provenance",
     }
     if any(
@@ -393,8 +464,8 @@ def _check_projector(tree: ast.Module, path: Path) -> list[str]:
         for name, expected in expected_literals.items()
     ):
         violations.append(
-            f"{path}:{per_server.lineno}: native MCP command, URL, headers, type, name, and "
-            "provenance must be copied literally"
+            f"{path}:{per_server.lineno}: native MCP command, URL, headers, executable facts, "
+            "type, name, and provenance must be copied literally"
         )
 
     expected_expansions = {
@@ -477,9 +548,334 @@ def _check_models(tree: ast.Module, path: Path) -> list[str]:
     return violations
 
 
+def _check_client_projection(tree: ast.Module, path: Path) -> list[str]:
+    """Require client rendering to consume typed T6 preparation results."""
+    function = _find_function(tree, "project_agent_plugin_for_client")
+    runtime_env = _find_function(tree, "_runtime_env_diagnostic")
+    if function is None or runtime_env is None:
+        return [f"{path}: Agent Plugin client projection must have one definition"]
+    violations: list[str] = []
+    server_assignments = [
+        node.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "server"
+    ]
+    if len(server_assignments) != 1 or _shape(server_assignments[0]) != _shape(
+        _expression("result.config")
+    ):
+        violations.append(
+            f"{path}:{function.lineno}: client MCP rendering must consume T6 preparation configs"
+        )
+
+    result_loops = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "result"
+        and _shape(node.iter) == _shape(_expression("mcp_preparation.results"))
+    ]
+    projected = _single_call(function, "ProjectedMcpServer")
+    if (
+        len(result_loops) != 1
+        or projected is None
+        or _shape(_keyword(projected, "preparation") or ast.Constant(None))
+        != _shape(_expression("result"))
+    ):
+        violations.append(
+            f"{path}:{function.lineno}: client MCP projection must preserve typed preparation "
+            "results and provenance"
+        )
+
+    forbidden_calls = sorted(
+        {
+            _call_name(node)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and _call_name(node)
+            in {
+                "MCPDependency.from_dict",
+                "load_agent_plugin",
+                "prepare_agent_plugin_mcp_servers",
+                "validate_mcp_config_file",
+            }
+        }
+    )
+    if forbidden_calls:
+        violations.append(
+            f"{path}:{function.lineno}: client MCP projection must not reinterpret canonical IR: "
+            f"{', '.join(forbidden_calls)}"
+        )
+    projection_diagnostics = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and _call_name(node) == "ClientProjectionDiagnostic"
+    ]
+    runtime_diagnostic = _single_call(runtime_env, "ClientProjectionDiagnostic")
+    if (
+        len(projection_diagnostics) != 2
+        or any(
+            _shape(_keyword(call, "preparation") or ast.Constant(None))
+            != _shape(_expression("result"))
+            for call in projection_diagnostics
+        )
+        or runtime_diagnostic is None
+        or _shape(_keyword(runtime_diagnostic, "preparation") or ast.Constant(None))
+        != _shape(_expression("preparation"))
+    ):
+        violations.append(
+            f"{path}:{function.lineno}: client MCP diagnostics must retain their typed "
+            "preparation result and provenance"
+        )
+    return violations
+
+
+def _check_local_bundle_boundary(tree: ast.Module, path: Path) -> list[str]:
+    """Require legacy-only local bundle MCP parsing and wiring."""
+    install = _find_function(tree, "install_local_bundle")
+    parser = _find_function(tree, "_parse_legacy_bundle_mcp_servers")
+    writer = _find_function(tree, "_wire_legacy_bundle_mcp_servers")
+    format_guard = _find_function(tree, "_require_legacy_bundle_mcp_format")
+    if install is None or parser is None or writer is None or format_guard is None:
+        return [f"{path}: legacy local-bundle MCP helpers must each have one definition"]
+
+    violations: list[str] = []
+    is_agent_plugin_assignments = [
+        node.value
+        for node in ast.walk(install)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "is_agent_plugin"
+    ]
+    if len(is_agent_plugin_assignments) != 1 or _shape(is_agent_plugin_assignments[0]) != _shape(
+        _expression('getattr(bundle_info, "format", "") == BundleFormat.AGENT_PLUGIN.value')
+    ):
+        violations.append(
+            f"{path}:{install.lineno}: local-bundle native classification must use "
+            "BundleFormat.AGENT_PLUGIN"
+        )
+
+    guard_raises = [
+        node
+        for node in ast.walk(format_guard)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and _call_name(node.exc) == "AgentPluginLegacyBoundaryError"
+    ]
+    guard_tests = [
+        node
+        for node in ast.walk(format_guard)
+        if isinstance(node, ast.Compare)
+        and _shape(node) == _shape(_expression("bundle_format == BundleFormat.AGENT_PLUGIN.value"))
+    ]
+    legacy_allowlist_tests = [
+        node
+        for node in ast.walk(format_guard)
+        if isinstance(node, ast.Compare)
+        and _shape(node) == _shape(_expression("bundle_format != BundleFormat.CLAUDE_PLUGIN.value"))
+    ]
+    if len(guard_tests) != 1 or len(guard_raises) != 1 or len(legacy_allowlist_tests) != 1:
+        violations.append(
+            f"{path}:{format_guard.lineno}: legacy MCP helpers must reject "
+            "BundleFormat.AGENT_PLUGIN and allow only BundleFormat.CLAUDE_PLUGIN"
+        )
+
+    removed_helpers = {
+        "_parse_bundle_mcp_servers",
+        "_wire_bundle_mcp_servers",
+    }
+    live_functions = {
+        node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if live_functions & removed_helpers:
+        violations.append(
+            f"{path}: native-capable local-bundle MCP helper names must remain retired"
+        )
+
+    parser_args = {
+        argument.arg
+        for argument in (
+            *parser.args.posonlyargs,
+            *parser.args.args,
+            *parser.args.kwonlyargs,
+        )
+    }
+    if "agent_plugin" in parser_args:
+        violations.append(
+            f"{path}:{parser.lineno}: legacy MCP parser must not accept a native Agent Plugin mode"
+        )
+    for legacy_function in (parser, writer):
+        first = _first_statement_after_docstring(legacy_function)
+        if (
+            not isinstance(first, ast.Expr)
+            or not isinstance(first.value, ast.Call)
+            or _call_name(first.value) != "_require_legacy_bundle_mcp_format"
+            or len(first.value.args) != 1
+            or not isinstance(first.value.args[0], ast.Name)
+            or first.value.args[0].id != "bundle_format"
+        ):
+            violations.append(
+                f"{path}:{legacy_function.lineno}: legacy MCP helper must reject native format "
+                "before interpretation or writes"
+            )
+
+    parser_calls = {_call_name(node) for node in ast.walk(parser) if isinstance(node, ast.Call)}
+    forbidden_parser_calls = sorted(
+        parser_calls & {"load_agent_plugin", "validate_mcp_config_file"}
+    )
+    if forbidden_parser_calls:
+        violations.append(
+            f"{path}:{parser.lineno}: legacy MCP parser must not reinterpret native Agent Plugin "
+            f"metadata: {', '.join(forbidden_parser_calls)}"
+        )
+
+    nested_helpers = {node.name for node in parser.body if isinstance(node, ast.FunctionDef)}
+    expected_nested = {
+        "_expand_legacy_placeholders",
+        "_materialize_legacy_server_config",
+    }
+    if not expected_nested <= nested_helpers:
+        violations.append(
+            f"{path}:{parser.lineno}: legacy placeholder and materialization behavior must stay "
+            "explicitly scoped beneath the legacy parser"
+        )
+
+    parents = _parent_fields(tree)
+    legacy_calls = {
+        "_parse_legacy_bundle_mcp_servers",
+        "_wire_legacy_bundle_mcp_servers",
+    }
+    for reference in (
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in legacy_calls
+    ):
+        parent = parents.get(reference)
+        call = parent[0] if parent is not None else None
+        if not (
+            isinstance(call, ast.Call)
+            and call.func is reference
+            and _enclosing_function(call, parents) is install
+            and _is_legacy_guarded(call, install, parents)
+        ):
+            violations.append(
+                f"{path}:{reference.lineno}: native Agent Plugin flow must not reach or alias "
+                f"legacy MCP interpretation or writes via {reference.id}"
+            )
+
+    legacy_owner_calls = {
+        "MCPDependency.from_dict": parser.name,
+        "MCPIntegrator.install": writer.name,
+        "run_owned_mcp_integration": writer.name,
+        "validate_mcp_config_file": parser.name,
+    }
+    for call in (node for node in ast.walk(tree) if isinstance(node, ast.Call)):
+        call_name = _call_name(call)
+        required_owner = legacy_owner_calls.get(call_name)
+        owner = _enclosing_function(call, parents)
+        if required_owner is not None and (owner is None or owner.name != required_owner):
+            violations.append(
+                f"{path}:{call.lineno}: {call_name} must remain inside the legacy-only "
+                f"{required_owner} owner"
+            )
+
+    forbidden_anywhere = {
+        "AuthResolver",
+        "GitHubTokenManager",
+        "os.environ.get",
+        "os.getenv",
+    }
+    forbidden_calls = sorted(
+        {
+            _call_name(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _call_name(node) in forbidden_anywhere
+        }
+    )
+    forbidden_imports = sorted(
+        {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+            if alias.name in {"AuthResolver", "GitHubTokenManager"}
+        }
+    )
+    ambient_names = sorted(
+        {
+            node.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in _AMBIENT_CREDENTIAL_NAMES
+        }
+    )
+    if forbidden_calls or forbidden_imports or ambient_names:
+        details = sorted({*forbidden_calls, *forbidden_imports, *ambient_names})
+        violations.append(
+            f"{path}: local-bundle native MCP seam must not resolve or name ambient "
+            f"credentials: {', '.join(details)}"
+        )
+    return violations
+
+
+def _check_external_legacy_helper_references(root: Path) -> list[str]:
+    """Reject legacy MCP helper call sites outside their owning module."""
+    helper_names = {
+        "_parse_legacy_bundle_mcp_servers",
+        "_wire_legacy_bundle_mcp_servers",
+    }
+    violations: list[str] = []
+    source_root = root / "src/apm_cli"
+    for path in source_root.rglob("*.py"):
+        relative = path.relative_to(root)
+        if relative == LOCAL_BUNDLE_PATH:
+            continue
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(relative))
+        except (OSError, SyntaxError) as exc:
+            violations.append(f"{relative}: cannot inspect legacy MCP references: {exc}")
+            continue
+        references = sorted(
+            {
+                (node.lineno, node.id)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Name) and node.id in helper_names
+            }
+            | {
+                (node.lineno, node.attr)
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute) and node.attr in helper_names
+            }
+            | {
+                (node.lineno, alias.name)
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.Import, ast.ImportFrom))
+                for alias in node.names
+                if alias.name in helper_names
+            }
+        )
+        for lineno, name in references:
+            violations.append(
+                f"{relative}:{lineno}: {name} is legacy-only and must not gain external "
+                "native Agent Plugin call sites"
+            )
+    return violations
+
+
 def check(root: Path) -> list[str]:
     """Return native Agent Plugin MCP boundary violations."""
-    paths = (FACADE_PATH, PROJECTOR_PATH, MODEL_PATH)
+    paths = (
+        FACADE_PATH,
+        PROJECTOR_PATH,
+        MODEL_PATH,
+        LOCAL_BUNDLE_PATH,
+        CLIENT_PROJECTION_PATH,
+    )
     trees: dict[Path, ast.Module] = {}
     violations: list[str] = []
     for relative in paths:
@@ -493,6 +889,14 @@ def check(root: Path) -> list[str]:
     violations.extend(_check_facade(trees[FACADE_PATH], FACADE_PATH))
     violations.extend(_check_projector(trees[PROJECTOR_PATH], PROJECTOR_PATH))
     violations.extend(_check_models(trees[MODEL_PATH], MODEL_PATH))
+    violations.extend(_check_local_bundle_boundary(trees[LOCAL_BUNDLE_PATH], LOCAL_BUNDLE_PATH))
+    violations.extend(
+        _check_client_projection(
+            trees[CLIENT_PROJECTION_PATH],
+            CLIENT_PROJECTION_PATH,
+        )
+    )
+    violations.extend(_check_external_legacy_helper_references(root))
     return violations
 
 

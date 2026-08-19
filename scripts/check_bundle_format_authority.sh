@@ -55,9 +55,12 @@ fi
 
 client_projection="$repo_root/src/apm_cli/adapters/client/agent_plugin_projection.py"
 if [ -f "$client_projection" ] \
-    && { ! grep -q 'config = adapter.render_server_config(_server_info(server))' \
+    && { ! grep -q 'for result in mcp_preparation.results:' "$client_projection" \
+        || ! grep -q 'server = result.config' "$client_projection" \
+        || ! grep -q 'config = adapter.render_server_config(_server_info(server))' \
             "$client_projection" \
-        || ! grep -q 'len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers)' \
+        || ! grep -q 'preparation=result' "$client_projection" \
+        || ! grep -q 'len(rendered) + len(failures) + len(diagnostics)' \
             "$client_projection" \
         || ! grep -q 'len(apm_diagnostics) != _apm_component_count(plugin)' \
             "$client_projection" \

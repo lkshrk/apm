@@ -14,6 +14,7 @@ from apm_cli.agent_plugins import (
     MCP_SCHEMA_ID,
     PLUGIN_SCHEMA_ID,
     AgentPluginDeploymentBoundaryError,
+    AgentPluginLegacyBoundaryError,
 )
 from apm_cli.cli import cli
 from apm_cli.commands.uninstall.cli import uninstall
@@ -979,3 +980,104 @@ def test_native_local_bundle_is_blocked_before_opaque_deployment(tmp_path: Path)
         )
 
     assert _tree_snapshot(project) == before
+
+
+def test_native_local_bundle_cannot_reach_legacy_mcp_interpretation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.bundle.formats import BundleFormat
+    from apm_cli.bundle.local_bundle import LocalBundleInfo
+    from apm_cli.install import local_bundle_handler
+    from apm_cli.models.dependency.mcp import MCPDependency
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    info = LocalBundleInfo(
+        source_dir=bundle,
+        plugin_json={"name": "native"},
+        package_id="native",
+        lockfile=None,
+        format=BundleFormat.AGENT_PLUGIN.value,
+    )
+    legacy_parse = MagicMock()
+    legacy_wire = MagicMock()
+    legacy_from_dict = MagicMock()
+    monkeypatch.setattr(
+        local_bundle_handler,
+        "_parse_legacy_bundle_mcp_servers",
+        legacy_parse,
+    )
+    monkeypatch.setattr(
+        local_bundle_handler,
+        "_wire_legacy_bundle_mcp_servers",
+        legacy_wire,
+    )
+    monkeypatch.setattr(MCPDependency, "from_dict", legacy_from_dict)
+
+    with pytest.raises(AgentPluginDeploymentBoundaryError):
+        local_bundle_handler.install_local_bundle(
+            bundle_info=info,
+            bundle_arg=str(bundle),
+            target=None,
+            global_=False,
+            force=False,
+            dry_run=False,
+            verbose=False,
+            no_policy=False,
+            alias=None,
+            logger=MagicMock(),
+            rejected_flags={},
+            allow_executables=None,
+        )
+
+    legacy_parse.assert_not_called()
+    legacy_wire.assert_not_called()
+    legacy_from_dict.assert_not_called()
+
+
+def test_legacy_mcp_helpers_self_reject_native_bundle_format(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.bundle.formats import BundleFormat
+    from apm_cli.install import local_bundle_handler
+    from apm_cli.models.dependency.mcp import MCPDependency
+
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    (bundle / "mcp.json").write_text(
+        '{"mcpServers":{"native":{"type":"stdio","command":"tool"}}}',
+        encoding="ascii",
+    )
+    legacy_from_dict = MagicMock()
+    legacy_install = MagicMock()
+    monkeypatch.setattr(MCPDependency, "from_dict", legacy_from_dict)
+    monkeypatch.setattr(
+        "apm_cli.integration.mcp_integrator.MCPIntegrator.install",
+        legacy_install,
+    )
+
+    with pytest.raises(AgentPluginLegacyBoundaryError):
+        local_bundle_handler._parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.AGENT_PLUGIN.value,
+        )
+    with pytest.raises(AgentPluginLegacyBoundaryError):
+        local_bundle_handler._wire_legacy_bundle_mcp_servers(
+            bundle_format=BundleFormat.AGENT_PLUGIN.value,
+            targets=[],
+            project_root=tmp_path,
+            user_scope=False,
+            verbose=False,
+            logger=MagicMock(),
+            deps=[],
+        )
+    with pytest.raises(ValueError, match="require a Claude plugin bundle format"):
+        local_bundle_handler._parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format="unknown",
+        )
+
+    legacy_from_dict.assert_not_called()
+    legacy_install.assert_not_called()

@@ -8,9 +8,14 @@ from typing import Any
 
 from ...agent_plugins.ir import (
     AgentPlugin,
-    AgentPluginMcpServer,
     AgentPluginSkill,
     McpServerType,
+)
+from ...models.dependency.native_mcp import (
+    AgentPluginMCPPreparation,
+    AgentPluginMCPPreparationFailure,
+    AgentPluginMCPPreparationSuccess,
+    AgentPluginMCPServerConfig,
 )
 from .base import MCPClientAdapter
 
@@ -47,6 +52,7 @@ class ClientProjectionDiagnostic:
     capability: ClientProjectionCapability
     component: str
     message: str
+    preparation: AgentPluginMCPPreparationSuccess | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +61,7 @@ class ProjectedMcpServer:
 
     name: str
     config: dict[str, Any]
+    preparation: AgentPluginMCPPreparationSuccess
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,23 +71,24 @@ class AgentPluginClientProjection:
     target: str
     skills: tuple[AgentPluginSkill, ...]
     mcp_servers: tuple[ProjectedMcpServer, ...]
+    mcp_failures: tuple[AgentPluginMCPPreparationFailure, ...]
     diagnostics: tuple[ClientProjectionDiagnostic, ...]
 
     @property
     def is_complete(self) -> bool:
         """Return whether every canonical component rendered successfully."""
-        return not self.diagnostics
+        return not self.diagnostics and not self.mcp_failures
 
 
-def _capability(server: AgentPluginMcpServer) -> ClientProjectionCapability:
+def _capability(server_type: McpServerType) -> ClientProjectionCapability:
     return {
         McpServerType.STDIO: ClientProjectionCapability.MCP_STDIO,
         McpServerType.STREAMABLE_HTTP: ClientProjectionCapability.MCP_STREAMABLE_HTTP,
         McpServerType.SSE: ClientProjectionCapability.MCP_SSE,
-    }[server.server_type]
+    }[server_type]
 
 
-def _server_info(server: AgentPluginMcpServer) -> dict[str, Any]:
+def _server_info(server: AgentPluginMCPServerConfig) -> dict[str, Any]:
     if server.server_type is McpServerType.STDIO:
         return {
             "name": server.name,
@@ -106,8 +114,9 @@ def _server_info(server: AgentPluginMcpServer) -> dict[str, Any]:
 
 def _runtime_env_diagnostic(
     adapter: MCPClientAdapter,
-    server: AgentPluginMcpServer,
+    preparation: AgentPluginMCPPreparationSuccess,
 ) -> ClientProjectionDiagnostic | None:
+    server = preparation.config
     if adapter.supports_runtime_env_substitution:
         return None
     if not server.env and not server.headers:
@@ -115,12 +124,13 @@ def _runtime_env_diagnostic(
     return ClientProjectionDiagnostic(
         code=ClientProjectionDiagnosticCode.RUNTIME_ENV_UNSUPPORTED,
         target=adapter.target_name,
-        capability=_capability(server),
+        capability=_capability(server.server_type),
         component=f"mcp:{server.name}",
         message=(
             f"{adapter.target_name} cannot safely project runtime environment references "
             f"for MCP server {server.name!r} without explicit resolved values."
         ),
+        preparation=preparation,
     )
 
 
@@ -171,13 +181,44 @@ def _apm_component_diagnostics(
 
 def project_agent_plugin_for_client(
     plugin: AgentPlugin,
+    mcp_preparation: AgentPluginMCPPreparation,
     adapter: MCPClientAdapter,
 ) -> AgentPluginClientProjection:
-    """Project canonical components or return one typed diagnostic per omission."""
+    """Project prepared canonical components or return typed omissions."""
+    canonical_names = tuple(server.name for server in plugin.components.mcp_servers)
+    prepared_names = tuple(result.server_name for result in mcp_preparation.results)
+    if canonical_names != prepared_names:
+        raise ValueError("Client projection requires complete ordered MCP preparation results")
+    if (
+        mcp_preparation.provenance.plugin_name != plugin.identity.name
+        or mcp_preparation.provenance.plugin_version != plugin.identity.version
+        or mcp_preparation.provenance.specification_version != plugin.specification_version
+        or mcp_preparation.provenance.source_root != plugin.root
+        or mcp_preparation.provenance.manifest != plugin.manifest
+    ):
+        raise ValueError("Client projection MCP preparation provenance does not match plugin IR")
+    for result, canonical in zip(
+        mcp_preparation.results,
+        plugin.components.mcp_servers,
+        strict=True,
+    ):
+        if (
+            result.provenance.plugin is not mcp_preparation.provenance
+            or result.provenance.declaration != canonical.provenance
+        ):
+            raise ValueError(
+                "Client projection MCP result provenance does not match canonical server IR"
+            )
+
     rendered: list[ProjectedMcpServer] = []
+    failures: list[AgentPluginMCPPreparationFailure] = []
     diagnostics: list[ClientProjectionDiagnostic] = []
-    for server in plugin.components.mcp_servers:
-        env_diagnostic = _runtime_env_diagnostic(adapter, server)
+    for result in mcp_preparation.results:
+        if isinstance(result, AgentPluginMCPPreparationFailure):
+            failures.append(result)
+            continue
+        server = result.config
+        env_diagnostic = _runtime_env_diagnostic(adapter, result)
         if env_diagnostic is not None:
             diagnostics.append(env_diagnostic)
             continue
@@ -188,12 +229,13 @@ def project_agent_plugin_for_client(
                 ClientProjectionDiagnostic(
                     code=ClientProjectionDiagnosticCode.TRANSPORT_UNSUPPORTED,
                     target=adapter.target_name,
-                    capability=_capability(server),
+                    capability=_capability(server.server_type),
                     component=f"mcp:{server.name}",
                     message=(
                         f"{adapter.target_name} cannot represent MCP server "
                         f"{server.name!r} with {server.server_type.value} transport."
                     ),
+                    preparation=result,
                 )
             )
             continue
@@ -202,18 +244,25 @@ def project_agent_plugin_for_client(
                 ClientProjectionDiagnostic(
                     code=ClientProjectionDiagnosticCode.TRANSPORT_UNSUPPORTED,
                     target=adapter.target_name,
-                    capability=_capability(server),
+                    capability=_capability(server.server_type),
                     component=f"mcp:{server.name}",
                     message=(
                         f"{adapter.target_name} produced no configuration for MCP server "
                         f"{server.name!r}."
                     ),
+                    preparation=result,
                 )
             )
             continue
-        rendered.append(ProjectedMcpServer(name=server.name, config=config))
+        rendered.append(
+            ProjectedMcpServer(
+                name=server.name,
+                config=config,
+                preparation=result,
+            )
+        )
 
-    if len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers):
+    if len(rendered) + len(failures) + len(diagnostics) != len(mcp_preparation.results):
         raise AssertionError("Client projection left canonical MCP components unaccounted")
     apm_diagnostics = _apm_component_diagnostics(plugin, adapter)
     if len(apm_diagnostics) != _apm_component_count(plugin):
@@ -223,6 +272,7 @@ def project_agent_plugin_for_client(
         target=adapter.target_name,
         skills=plugin.components.skills,
         mcp_servers=tuple(rendered),
+        mcp_failures=tuple(failures),
         diagnostics=tuple(diagnostics),
     )
 

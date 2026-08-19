@@ -107,8 +107,10 @@ def test_native_agent_plugin_mcp_has_static_boundary() -> None:
         ),
         (
             "src/apm_cli/models/dependency/native_mcp.py",
-            "from apm_cli.agent_plugins.ir import McpServerType, SourceProvenance",
-            "from apm_cli.agent_plugins.ir import McpServerType, SourceProvenance\n"
+            "from apm_cli.agent_plugins.ir import "
+            "AgentPluginExecutable, McpServerType, SourceProvenance",
+            "from apm_cli.agent_plugins.ir import "
+            "AgentPluginExecutable, McpServerType, SourceProvenance\n"
             'Path("model-config.json").write_text("mutated")',
             "module pure-call allowlist rejected",
         ),
@@ -118,6 +120,130 @@ def test_native_agent_plugin_mcp_has_static_boundary() -> None:
             "        command=_expand_agent_plugin_mcp_value("
             "server.command, plugin_root=plugin_root, plugin_data=plugin_data),",
             "must be copied literally",
+        ),
+        (
+            "src/apm_cli/integration/mcp_integrator_native.py",
+            "        executables=server.executables,",
+            "        executables=(),",
+            "executable facts",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        if not is_agent_plugin:\n            bundle_mcp_declared = False",
+            "        if is_agent_plugin:\n            bundle_mcp_declared = False",
+            "must not reach or alias legacy MCP interpretation",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        if not is_agent_plugin and bundle_mcp_present "
+            "and bundle_info.source_dir is not None:",
+            "        if is_agent_plugin and bundle_mcp_present "
+            "and bundle_info.source_dir is not None:",
+            "must not reach or alias legacy MCP interpretation",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    runtime_root: Path | None = None,\n) -> list[MCPDependency]:",
+            "    runtime_root: Path | None = None,\n"
+            "    agent_plugin: bool = False,\n"
+            ") -> list[MCPDependency]:",
+            "must not accept a native Agent Plugin mode",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            '        is_agent_plugin = getattr(bundle_info, "format", "") '
+            "== BundleFormat.AGENT_PLUGIN.value",
+            "        is_agent_plugin = False",
+            "native classification must use BundleFormat.AGENT_PLUGIN",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)\n"
+            "        MCPDependency.from_dict({})",
+            "must remain inside the legacy-only",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)\n"
+            "        AuthResolver()",
+            "must not resolve or name ambient credentials",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)\n"
+            '        os.getenv("GITHUB_PERSONAL_ACCESS_TOKEN")',
+            "must not resolve or name ambient credentials",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)\n"
+            "        legacy_parser = _parse_legacy_bundle_mcp_servers",
+            "must not reach or alias legacy MCP interpretation",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    _require_legacy_bundle_mcp_format(bundle_format)\n"
+            "    from urllib.parse import urlparse",
+            "    from urllib.parse import urlparse",
+            "must reject native format before interpretation or writes",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    _require_legacy_bundle_mcp_format(bundle_format)\n"
+            "    if not deps and owner is None:",
+            "    if not deps and owner is None:",
+            "must reject native format before interpretation or writes",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    if bundle_format == BundleFormat.AGENT_PLUGIN.value:",
+            "    if bundle_format == BundleFormat.CLAUDE_PLUGIN.value:",
+            "must reject BundleFormat.AGENT_PLUGIN",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    if bundle_format != BundleFormat.CLAUDE_PLUGIN.value:",
+            "    if bundle_format != BundleFormat.APM.value:",
+            "allow only BundleFormat.CLAUDE_PLUGIN",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "    if not deps and owner is None:",
+            "    deps = _parse_legacy_bundle_mcp_servers(\n"
+            "        Path('.'), bundle_format=bundle_format\n"
+            "    )\n"
+            "    if not deps and owner is None:",
+            "must not reach or alias legacy MCP interpretation",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "        server = result.config",
+            "        server = plugin.components.mcp_servers[0]",
+            "must consume T6 preparation configs",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "                preparation=result,",
+            "                preparation=mcp_preparation.successes[0],",
+            "typed preparation",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "                    preparation=result,",
+            "                    preparation=None,",
+            "diagnostics must retain their typed preparation",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "from ...models.dependency.native_mcp import (",
+            "from apm_cli.install.local_bundle_handler import "
+            "_parse_legacy_bundle_mcp_servers\n"
+            "from ...models.dependency.native_mcp import (",
+            "is legacy-only and must not gain external",
         ),
     ),
 )
@@ -134,6 +260,8 @@ def test_native_agent_plugin_mcp_guard_rejects_semantic_mutations(
         "src/apm_cli/install/mcp/integration.py",
         "src/apm_cli/integration/mcp_integrator_native.py",
         "src/apm_cli/models/dependency/native_mcp.py",
+        "src/apm_cli/install/local_bundle_handler.py",
+        "src/apm_cli/adapters/client/agent_plugin_projection.py",
     )
     for relative in paths:
         destination = sandbox / relative

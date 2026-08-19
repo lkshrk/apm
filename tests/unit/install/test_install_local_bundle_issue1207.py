@@ -31,6 +31,7 @@ import yaml
 from click.testing import CliRunner
 
 from apm_cli.agent_plugins import AgentPluginDeploymentBoundaryError, NotAgentPluginError
+from apm_cli.bundle.formats import BundleFormat
 from apm_cli.bundle.local_bundle import check_target_mismatch
 from apm_cli.install.agent_plugin_runtime import (
     stage_agent_plugin_bundle,
@@ -486,8 +487,8 @@ class TestBundleMcpWiring:
     itself is never deployed verbatim.
     """
 
-    def test_parse_bundle_mcp_servers_anthropic_format(self, tmp_path: Path) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+    def test_parse_legacy_bundle_mcp_servers_anthropic_format(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()
@@ -511,7 +512,10 @@ class TestBundleMcpWiring:
             encoding="utf-8",
         )
 
-        deps = _parse_bundle_mcp_servers(bundle)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
         names = {d.name for d in deps}
         assert names == {"weather", "search"}
         # ``type`` aliases ``transport`` (handled by MCPDependency.from_dict).
@@ -521,8 +525,8 @@ class TestBundleMcpWiring:
         # Self-defined (not pulled from registry).
         assert weather.registry is False
 
-    def test_parse_bundle_mcp_servers_case_insensitive(self, tmp_path: Path) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+    def test_parse_legacy_bundle_mcp_servers_case_insensitive(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()
@@ -530,11 +534,14 @@ class TestBundleMcpWiring:
             json.dumps({"mcpServers": {"x": {"type": "stdio", "command": "echo"}}}),
             encoding="utf-8",
         )
-        deps = _parse_bundle_mcp_servers(bundle)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
         assert {d.name for d in deps} == {"x"}
 
-    def test_parse_bundle_mcp_servers_root_mcp_json(self, tmp_path: Path) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+    def test_parse_legacy_bundle_mcp_servers_root_mcp_json(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()
@@ -542,11 +549,16 @@ class TestBundleMcpWiring:
             json.dumps({"mcpServers": {"root": {"type": "stdio", "command": "echo"}}}),
             encoding="utf-8",
         )
-        deps = _parse_bundle_mcp_servers(bundle)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
         assert {d.name for d in deps} == {"root"}
 
-    def test_parse_bundle_mcp_servers_root_invalid_server_is_skipped(self, tmp_path: Path) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+    def test_parse_legacy_bundle_mcp_servers_root_invalid_server_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()
@@ -561,13 +573,16 @@ class TestBundleMcpWiring:
             ),
             encoding="utf-8",
         )
-        deps = _parse_bundle_mcp_servers(bundle)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
         assert {d.name for d in deps} == {"good"}
 
-    def test_parse_bundle_mcp_servers_materializes_placeholders_and_cwd(
+    def test_parse_legacy_bundle_mcp_servers_materializes_placeholders_and_cwd(
         self, tmp_path: Path
     ) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "apm-home" / "agent-plugins" / "agent-123"
         data_root = tmp_path / "apm-home" / "plugin-data" / "agent-123"
@@ -590,7 +605,11 @@ class TestBundleMcpWiring:
             encoding="utf-8",
         )
 
-        deps = _parse_bundle_mcp_servers(bundle, data_root=data_root)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+            data_root=data_root,
+        )
         assert len(deps) == 1
         dep = deps[0]
         assert dep.command == str((bundle / "bin" / "tool").resolve())
@@ -608,21 +627,39 @@ class TestBundleMcpWiring:
             "PLUGIN_DATA": str(data_root),
         }
 
-    def test_parse_bundle_mcp_servers_missing_or_malformed_returns_empty(
+    def test_parse_legacy_bundle_mcp_servers_missing_or_malformed_returns_empty(
         self, tmp_path: Path
     ) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_bundle_mcp_servers
+        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
         bundle = tmp_path / "bundle"
         bundle.mkdir()
         # Missing file.
-        assert _parse_bundle_mcp_servers(bundle) == []
+        assert (
+            _parse_legacy_bundle_mcp_servers(
+                bundle,
+                bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+            )
+            == []
+        )
         # Malformed JSON.
         (bundle / ".mcp.json").write_text("{not json", encoding="utf-8")
-        assert _parse_bundle_mcp_servers(bundle) == []
+        assert (
+            _parse_legacy_bundle_mcp_servers(
+                bundle,
+                bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+            )
+            == []
+        )
         # Valid JSON, no mcpServers key.
         (bundle / ".mcp.json").write_text(json.dumps({"unrelated": 1}), encoding="utf-8")
-        assert _parse_bundle_mcp_servers(bundle) == []
+        assert (
+            _parse_legacy_bundle_mcp_servers(
+                bundle,
+                bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+            )
+            == []
+        )
         # Bad per-server entry is skipped, others survive.  ``noxform`` is
         # not a valid transport so strict validation raises and the entry
         # is dropped; ``good`` parses cleanly.
@@ -637,7 +674,10 @@ class TestBundleMcpWiring:
             ),
             encoding="utf-8",
         )
-        deps = _parse_bundle_mcp_servers(bundle)
+        deps = _parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
         assert {d.name for d in deps} == {"good"}
 
     def test_parse_bundle_lsp_servers_root_lsp_json(self, tmp_path: Path) -> None:
@@ -661,10 +701,10 @@ class TestBundleMcpWiring:
         deps = _parse_bundle_lsp_servers(bundle)
         assert {d.name for d in deps} == {"pyright"}
 
-    def test_wire_bundle_mcp_servers_invokes_integrator_with_csv_targets(
+    def test_wire_legacy_bundle_mcp_servers_invokes_integrator_with_csv_targets(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """``_wire_bundle_mcp_servers`` calls ``MCPIntegrator.install`` once
+        """``_wire_legacy_bundle_mcp_servers`` calls ``MCPIntegrator.install`` once
         with a CSV of all resolved target names so per-target dispatch is
         delegated to the integrator's existing fan-out.
         """
@@ -695,13 +735,18 @@ class TestBundleMcpWiring:
             info=lambda *a, **k: None,
             warning=lambda *a, **k: None,
         )
-        count = local_bundle_handler._wire_bundle_mcp_servers(
-            bundle_dir=bundle,
+        deps = local_bundle_handler._parse_legacy_bundle_mcp_servers(
+            bundle,
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+        )
+        count = local_bundle_handler._wire_legacy_bundle_mcp_servers(
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
             targets=targets,
             project_root=tmp_path / "project",
             user_scope=False,
             verbose=False,
             logger=logger,
+            deps=deps,
         )
         assert count == 1
         # Per scsec N1 (PR #1336): the bundle wiring forwards canonical
@@ -713,7 +758,7 @@ class TestBundleMcpWiring:
         assert captured["kwargs"]["user_scope"] is False
         assert {d.name for d in captured["deps"]} == {"a"}
 
-    def test_wire_bundle_mcp_servers_handles_missing_mcp_json(
+    def test_wire_legacy_bundle_mcp_servers_handles_missing_mcp_json(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         from apm_cli.install import local_bundle_handler
@@ -737,19 +782,20 @@ class TestBundleMcpWiring:
             info=lambda *a, **k: None,
             warning=lambda *a, **k: None,
         )
-        count = local_bundle_handler._wire_bundle_mcp_servers(
-            bundle_dir=bundle,
+        count = local_bundle_handler._wire_legacy_bundle_mcp_servers(
+            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
             targets=[KNOWN_TARGETS["copilot"]],
             project_root=tmp_path / "project",
             user_scope=False,
             verbose=False,
             logger=logger,
+            deps=[],
         )
         assert count == 0
         # Integrator is not invoked when the bundle has no servers to wire.
         assert called["n"] == 0
 
-    def test_wire_bundle_mcp_servers_propagates_integrator_failure(
+    def test_wire_legacy_bundle_mcp_servers_propagates_integrator_failure(
         self, tmp_path: Path, monkeypatch
     ) -> None:
         """A failed executable integration must abort the bundle transaction."""
@@ -778,13 +824,18 @@ class TestBundleMcpWiring:
         )
 
         with pytest.raises(RuntimeError, match="simulated wiring failure"):
-            local_bundle_handler._wire_bundle_mcp_servers(
-                bundle_dir=bundle,
+            deps = local_bundle_handler._parse_legacy_bundle_mcp_servers(
+                bundle,
+                bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
+            )
+            local_bundle_handler._wire_legacy_bundle_mcp_servers(
+                bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
                 targets=[KNOWN_TARGETS["copilot"]],
                 project_root=tmp_path / "project",
                 user_scope=False,
                 verbose=False,
                 logger=logger,
+                deps=deps,
             )
         assert warnings == []
 
