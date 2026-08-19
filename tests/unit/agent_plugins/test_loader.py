@@ -95,95 +95,6 @@ def test_loader_returns_frozen_ir_with_component_provenance(tmp_path: Path) -> N
         plugin.identity.name = "mutated"  # type: ignore[misc]
 
 
-def test_apm_extension_components_are_exact_typed_and_bounded(tmp_path: Path) -> None:
-    _write_manifest(tmp_path)
-    _write_valid_skill(tmp_path, "portable")
-    skill_support = tmp_path / "skills" / "portable" / "reference.txt"
-    skill_support.write_text("reference", encoding="utf-8")
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    lsp_executable = bin_dir / "lsp"
-    lsp_executable.write_text("lsp", encoding="utf-8")
-    lsp_executable.chmod(0o755)
-    hook_executable = bin_dir / "hook.sh"
-    hook_executable.write_text("#!/bin/sh\n", encoding="utf-8")
-    hook_executable.chmod(0o700)
-
-    extension_root = tmp_path / "com.microsoft.apm"
-    for component, filename in (
-        ("agents", "agent.md"),
-        ("commands", "command.md"),
-        ("instructions", "instruction.md"),
-        ("extensions", "extension.mjs"),
-    ):
-        directory = extension_root / component
-        directory.mkdir(parents=True)
-        (directory / filename).write_text(component, encoding="utf-8")
-    (extension_root / "lsp.json").write_text(
-        json.dumps(
-            {
-                "lspServers": {
-                    "good": {
-                        "command": "./bin/lsp",
-                        "args": ["--stdio"],
-                        "env": {"MODE": "safe"},
-                        "extensionToLanguage": {".py": "python"},
-                    },
-                    "bad": {
-                        "extensionToLanguage": {".bad": "bad"},
-                    },
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    hooks = extension_root / "hooks"
-    hooks.mkdir()
-    (hooks / "hooks.json").write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": "*",
-                            "hooks": [{"command": "${PLUGIN_ROOT}/bin/hook.sh"}],
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    plugin = load_agent_plugin(tmp_path)
-
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.agents is not None
-    assert tuple(asset.path for asset in plugin.apm_components.agents.assets) == (
-        "com.microsoft.apm/agents/agent.md",
-    )
-    assert plugin.apm_components.commands is not None
-    assert plugin.apm_components.instructions is not None
-    assert plugin.apm_components.extensions is not None
-    assert plugin.apm_components.lsp is not None
-    assert tuple(server.name for server in plugin.apm_components.lsp.servers) == ("good",)
-    lsp = plugin.apm_components.lsp.servers[0]
-    assert lsp.extension_to_language == ((".py", "python"),)
-    assert lsp.executables[0].asset is not None
-    assert lsp.executables[0].asset.executable_mode == 0o111
-    assert plugin.apm_components.hooks is not None
-    hook = plugin.apm_components.hooks
-    assert hook.executables[0].plugin_relative_path == "bin/hook.sh"
-    assert hook.executables[0].provenance.json_pointer == ("/hooks/PreToolUse/0/hooks/0/command")
-    assert hook.executables[0].asset is not None
-    assert hook.executables[0].asset.executable_mode == 0o100
-    assert tuple(asset.path for asset in plugin.components.skills[0].assets) == (
-        "skills/portable/SKILL.md",
-        "skills/portable/reference.txt",
-    )
-    assert any(diagnostic.code == "apm.lsp.server.invalid" for diagnostic in plugin.diagnostics)
-
-
 def test_asset_digest_verification_rejects_post_load_mutation(tmp_path: Path) -> None:
     _write_manifest(tmp_path)
     _write_valid_skill(tmp_path, "digest")
@@ -415,60 +326,27 @@ def test_inventory_resolves_plugin_root_once(
     assert root_resolves == 1
 
 
-def test_undeclared_or_alternate_apm_paths_never_activate(tmp_path: Path) -> None:
+def test_root_non_portable_component_directories_are_ignored(tmp_path: Path) -> None:
     _write_manifest(tmp_path, extensions={})
-    undeclared = tmp_path / "com.microsoft.apm" / "agents"
-    undeclared.mkdir(parents=True)
-    (undeclared / "agent.md").write_text("agent", encoding="utf-8")
-    alternate = tmp_path / ".apm" / "agents"
-    alternate.mkdir(parents=True)
-    (alternate / "alternate.md").write_text("alternate", encoding="utf-8")
     raw = tmp_path / "agents"
     raw.mkdir()
     (raw / "raw.md").write_text("raw", encoding="utf-8")
 
     plugin = load_agent_plugin(tmp_path)
 
-    assert plugin.apm_components is None
     codes = {diagnostic.code for diagnostic in plugin.diagnostics}
-    assert "apm.extension.undeclared" in codes
     assert "portable.component.ignored" in codes
 
 
-@pytest.mark.parametrize(
-    ("document", "disabled_component"),
-    [
-        ({"unexpected": {}}, "lsp"),
-        ({"hooks": []}, "hooks"),
-    ],
-)
-def test_invalid_apm_document_disables_only_its_component(
-    tmp_path: Path,
-    document: dict[str, object],
-    disabled_component: str,
-) -> None:
+def test_invalid_skill_and_mcp_are_isolated_from_each_other(tmp_path: Path) -> None:
     _write_manifest(tmp_path)
     _write_valid_skill(tmp_path, "survivor")
     _write_mcp(tmp_path, {"survivor": {"type": "stdio", "command": "survivor"}})
-    extension_root = tmp_path / "com.microsoft.apm"
-    extension_root.mkdir()
-    agents = extension_root / "agents"
-    agents.mkdir()
-    (agents / "agent.md").write_text("agent", encoding="utf-8")
-    if disabled_component == "lsp":
-        (extension_root / "lsp.json").write_text(json.dumps(document), encoding="utf-8")
-    else:
-        hooks = extension_root / "hooks"
-        hooks.mkdir()
-        (hooks / "hooks.json").write_text(json.dumps(document), encoding="utf-8")
 
     plugin = load_agent_plugin(tmp_path)
 
     assert tuple(skill.name for skill in plugin.components.skills) == ("survivor",)
     assert tuple(server.name for server in plugin.components.mcp_servers) == ("survivor",)
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.agents is not None
-    assert getattr(plugin.apm_components, disabled_component) is None
 
 
 @pytest.mark.parametrize(
@@ -480,247 +358,49 @@ def test_invalid_apm_document_disables_only_its_component(
         r"${PLUGIN_ROOT}\..\evil.sh",
     ],
 )
-@pytest.mark.parametrize("component", ["hook", "mcp-arg", "lsp-arg"])
 def test_executable_parent_escapes_are_rejected_without_decoy_matching(
     tmp_path: Path,
     escape: str,
-    component: str,
 ) -> None:
     _write_manifest(tmp_path)
     (tmp_path / "evil.sh").write_text("decoy", encoding="utf-8")
-    extension_root = tmp_path / "com.microsoft.apm"
-    extension_root.mkdir()
-    if component == "hook":
-        hooks = extension_root / "hooks"
-        hooks.mkdir()
-        (hooks / "evil.sh").write_text("in-root decoy", encoding="utf-8")
-        (hooks / "hooks.json").write_text(
-            json.dumps({"hooks": {"PreToolUse": [{"bash": f"bash {escape}"}]}}),
-            encoding="utf-8",
-        )
-        diagnostic_code = "apm.hooks.executable.invalid"
-    elif component == "mcp-arg":
-        _write_mcp(
-            tmp_path,
-            {"unsafe": {"type": "stdio", "command": "bash", "args": [escape]}},
-        )
-        diagnostic_code = "mcp.server.executable.invalid"
-    else:
-        (extension_root / "lsp.json").write_text(
-            json.dumps(
-                {
-                    "lspServers": {
-                        "unsafe": {
-                            "command": "server",
-                            "args": [escape],
-                            "extensionToLanguage": {".py": "python"},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-        diagnostic_code = "apm.lsp.server.executable.invalid"
-
-    plugin = load_agent_plugin(tmp_path)
-    diagnostic = next(item for item in plugin.diagnostics if item.code == diagnostic_code)
-
-    assert "segment '..' is a traversal sequence" in diagnostic.message
-    if component == "hook":
-        assert plugin.apm_components is not None
-        assert plugin.apm_components.hooks is None
-    elif component == "mcp-arg":
-        assert plugin.components.mcp_servers == ()
-    else:
-        assert plugin.apm_components is not None
-        assert plugin.apm_components.lsp is not None
-        assert plugin.apm_components.lsp.servers == ()
-
-
-@pytest.mark.parametrize("with_root_decoy", [False, True])
-def test_unsafe_primary_hook_reference_never_falls_back(
-    tmp_path: Path,
-    with_root_decoy: bool,
-) -> None:
-    _write_manifest(tmp_path)
-    hooks = tmp_path / "com.microsoft.apm" / "hooks"
-    hooks.mkdir(parents=True)
-    outside = tmp_path.parent / f"{tmp_path.name}-outside.sh"
-    outside.write_text("outside", encoding="utf-8")
-    link = hooks / "link.sh"
-    link.symlink_to(outside)
-    if with_root_decoy:
-        (tmp_path / "link.sh").write_text("benign decoy", encoding="utf-8")
-    (hooks / "hooks.json").write_text(
-        json.dumps({"hooks": {"PreToolUse": [{"command": "./link.sh"}]}}),
-        encoding="utf-8",
+    _write_mcp(
+        tmp_path,
+        {"unsafe": {"type": "stdio", "command": "bash", "args": [escape]}},
     )
 
     plugin = load_agent_plugin(tmp_path)
     diagnostic = next(
-        item for item in plugin.diagnostics if item.code == "apm.hooks.executable.invalid"
+        item for item in plugin.diagnostics if item.code == "mcp.server.executable.invalid"
     )
 
-    root = tmp_path.resolve()
-    literal_link = root / "com.microsoft.apm" / "hooks" / "link.sh"
-    assert diagnostic.message == (
-        "Executable reference './link.sh' was rejected: "
-        f"Cannot verify containment of '{literal_link}' within '{root}': "
-        f"Path '{literal_link}' resolves to '{outside.resolve()}' which is outside "
-        f"the allowed base directory '{root}'"
-    )
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.hooks is None
-    assert not any(
-        item.code in {"apm.hooks.executable.missing", "apm.hooks.path.ignored"}
-        and item.path.endswith("link.sh")
-        for item in plugin.diagnostics
-    )
+    assert "segment '..' is a traversal sequence" in diagnostic.message
+    assert plugin.components.mcp_servers == ()
 
 
-def test_safe_primary_hook_reference_wins_over_root_decoy(tmp_path: Path) -> None:
-    _write_manifest(tmp_path)
-    hooks = tmp_path / "com.microsoft.apm" / "hooks"
-    hooks.mkdir(parents=True)
-    (hooks / "run.sh").write_text("primary", encoding="utf-8")
-    (tmp_path / "run.sh").write_text("decoy", encoding="utf-8")
-    (hooks / "hooks.json").write_text(
-        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
-        encoding="utf-8",
-    )
-
-    plugin = load_agent_plugin(tmp_path)
-
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.hooks is not None
-    executable = plugin.apm_components.hooks.executables[0]
-    assert executable.plugin_relative_path == "com.microsoft.apm/hooks/run.sh"
-    assert executable.asset is not None
-    assert executable.asset.sha256 == hashlib.sha256(b"primary").hexdigest()
-
-
-def test_absent_primary_hook_reference_uses_root_fallback(tmp_path: Path) -> None:
-    _write_manifest(tmp_path)
-    hooks = tmp_path / "com.microsoft.apm" / "hooks"
-    hooks.mkdir(parents=True)
-    (tmp_path / "run.sh").write_text("fallback", encoding="utf-8")
-    (hooks / "hooks.json").write_text(
-        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
-        encoding="utf-8",
-    )
-
-    plugin = load_agent_plugin(tmp_path)
-
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.hooks is not None
-    executable = plugin.apm_components.hooks.executables[0]
-    assert executable.plugin_relative_path == "run.sh"
-    assert executable.asset is not None
-    assert executable.asset.sha256 == hashlib.sha256(b"fallback").hexdigest()
-
-
-def test_referenced_hook_asset_is_not_reported_as_ignored(tmp_path: Path) -> None:
-    _write_manifest(tmp_path)
-    hooks = tmp_path / "com.microsoft.apm" / "hooks"
-    hooks.mkdir(parents=True)
-    (hooks / "run.sh").write_text("run", encoding="utf-8")
-    (hooks / "extra.txt").write_text("extra", encoding="utf-8")
-    (hooks / "hooks.json").write_text(
-        json.dumps({"hooks": {"PreToolUse": [{"command": "./run.sh"}]}}),
-        encoding="utf-8",
-    )
-
-    plugin = load_agent_plugin(tmp_path)
-    ignored_paths = {
-        diagnostic.path
-        for diagnostic in plugin.diagnostics
-        if diagnostic.code == "apm.hooks.path.ignored"
-    }
-
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.hooks is not None
-    assert plugin.apm_components.hooks.executables[0].plugin_relative_path == (
-        "com.microsoft.apm/hooks/run.sh"
-    )
-    assert ignored_paths == {"com.microsoft.apm/hooks/extra.txt"}
-
-
-@pytest.mark.parametrize(
-    ("component", "diagnostic_code"),
-    [
-        ("mcp", "mcp.server.executable.missing"),
-        ("lsp", "apm.lsp.server.executable.missing"),
-        ("hook", "apm.hooks.executable.missing"),
-    ],
-)
 def test_missing_referenced_executable_has_typed_fact_and_diagnostic(
     tmp_path: Path,
-    component: str,
-    diagnostic_code: str,
 ) -> None:
     _write_manifest(tmp_path)
-    extension_root = tmp_path / "com.microsoft.apm"
-    extension_root.mkdir()
-    if component == "mcp":
-        _write_mcp(tmp_path, {"missing": {"type": "stdio", "command": "./bin/missing"}})
-    elif component == "lsp":
-        (extension_root / "lsp.json").write_text(
-            json.dumps(
-                {
-                    "lspServers": {
-                        "missing": {
-                            "command": "./bin/missing",
-                            "extensionToLanguage": {".py": "python"},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-    else:
-        hooks = extension_root / "hooks"
-        hooks.mkdir()
-        (hooks / "hooks.json").write_text(
-            json.dumps({"hooks": {"PreToolUse": [{"command": "./missing.sh"}]}}),
-            encoding="utf-8",
-        )
+    _write_mcp(tmp_path, {"missing": {"type": "stdio", "command": "./bin/missing"}})
 
     plugin = load_agent_plugin(tmp_path)
 
-    assert any(item.code == diagnostic_code for item in plugin.diagnostics)
-    if component == "mcp":
-        executable = plugin.components.mcp_servers[0].executables[0]
-    elif component == "lsp":
-        assert plugin.apm_components is not None
-        assert plugin.apm_components.lsp is not None
-        executable = plugin.apm_components.lsp.servers[0].executables[0]
-    else:
-        assert plugin.apm_components is not None
-        assert plugin.apm_components.hooks is not None
-        executable = plugin.apm_components.hooks.executables[0]
+    assert any(item.code == "mcp.server.executable.missing" for item in plugin.diagnostics)
+    executable = plugin.components.mcp_servers[0].executables[0]
     assert executable.plugin_relative_path is not None
     assert executable.asset is None
 
 
-@pytest.mark.parametrize("surface", ["skills-root", "apm-agents"])
 def test_component_root_nfc_case_ambiguity_has_surface_diagnostic(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    surface: str,
 ) -> None:
     _write_manifest(tmp_path)
-    if surface == "skills-root":
-        _write_valid_skill(tmp_path, "valid")
-        directory = tmp_path
-        alias = tmp_path / "Skills"
-        expected_code = "skills.location.ambiguous"
-    else:
-        agents = tmp_path / "com.microsoft.apm" / "agents"
-        agents.mkdir(parents=True)
-        (agents / "agent.md").write_text("agent", encoding="utf-8")
-        directory = agents.parent
-        alias = agents.parent / "Agents"
-        expected_code = "apm.extension.path.ambiguous"
+    _write_valid_skill(tmp_path, "valid")
+    directory = tmp_path
+    alias = tmp_path / "Skills"
+    expected_code = "skills.location.ambiguous"
     original_iterdir = Path.iterdir
 
     def ambiguous_iterdir(path):
@@ -735,21 +415,14 @@ def test_component_root_nfc_case_ambiguity_has_surface_diagnostic(
     assert any(item.code == expected_code for item in plugin.diagnostics)
 
 
-@pytest.mark.parametrize("surface", ["skill", "extension"])
 def test_nested_asset_nfc_ambiguity_rejects_only_component(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    surface: str,
 ) -> None:
     _write_manifest(tmp_path)
-    if surface == "skill":
-        _write_valid_skill(tmp_path, "ambiguous")
-        component_root = tmp_path / "skills" / "ambiguous"
-        expected_code = "skill.assets.invalid"
-    else:
-        component_root = tmp_path / "com.microsoft.apm" / "agents"
-        component_root.mkdir(parents=True)
-        expected_code = "apm.extension.assets.invalid"
+    _write_valid_skill(tmp_path, "ambiguous")
+    component_root = tmp_path / "skills" / "ambiguous"
+    expected_code = "skill.assets.invalid"
     canonical = component_root / "\u00e9.txt"
     alias = component_root / "e\u0301.txt"
     canonical.write_text("content", encoding="utf-8")

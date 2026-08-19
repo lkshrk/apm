@@ -219,12 +219,6 @@ COMPONENT_KIND_SKILL_ASSET = "skill-asset"
 COMPONENT_KIND_MCP_STDIO = "mcp-stdio"
 COMPONENT_KIND_MCP_REMOTE = "mcp-remote"
 COMPONENT_KIND_MCP_UNKNOWN = "mcp-unknown"
-COMPONENT_KIND_APM_AGENT = "apm-agent"
-COMPONENT_KIND_APM_COMMAND = "apm-command"
-COMPONENT_KIND_APM_INSTRUCTION = "apm-instruction"
-COMPONENT_KIND_APM_EXTENSION = "apm-extension"
-COMPONENT_KIND_APM_HOOK = "apm-hook"
-COMPONENT_KIND_APM_LSP = "apm-lsp"
 
 ASSET_STATE_NONE = "none"
 ASSET_STATE_EXTERNAL = "external"
@@ -662,96 +656,6 @@ def inventory_agent_plugin_executables(plugin: Any) -> AgentPluginExecInventory:
             )
         )
 
-    apm_components = getattr(plugin, "apm_components", None)
-    if apm_components is not None:
-        for field_name, kind in (
-            ("agents", COMPONENT_KIND_APM_AGENT),
-            ("commands", COMPONENT_KIND_APM_COMMAND),
-            ("instructions", COMPONENT_KIND_APM_INSTRUCTION),
-        ):
-            file_component = getattr(apm_components, field_name, None)
-            if file_component is not None:
-                _append_file_component_assets(
-                    plugin_root,
-                    plugin_key,
-                    file_component,
-                    kind=kind,
-                    exec_type=EXEC_TYPE_BIN,
-                    components=components,
-                )
-
-        extension_component = getattr(apm_components, "extensions", None)
-        if extension_component is not None:
-            _append_file_component_assets(
-                plugin_root,
-                plugin_key,
-                extension_component,
-                kind=COMPONENT_KIND_APM_EXTENSION,
-                exec_type=EXEC_TYPE_CANVAS,
-                components=components,
-                executable_suffixes=frozenset({".js", ".mjs"}),
-            )
-
-        hook_component = getattr(apm_components, "hooks", None)
-        if hook_component is not None:
-            hook_executables = tuple(getattr(hook_component, "executables", ()) or ())
-            _append_declared_executables(
-                plugin_root,
-                plugin_key,
-                hook_executables,
-                kind=COMPONENT_KIND_APM_HOOK,
-                name="hooks",
-                exec_type=EXEC_TYPE_HOOKS,
-                components=components,
-            )
-            _append_unreferenced_assets(
-                plugin_root,
-                plugin_key,
-                tuple(getattr(hook_component, "assets", ()) or ()),
-                hook_executables,
-                kind=COMPONENT_KIND_APM_HOOK,
-                exec_type=EXEC_TYPE_HOOKS,
-                components=components,
-            )
-
-        lsp_component = getattr(apm_components, "lsp", None)
-        if lsp_component is not None:
-            lsp_executables: list[AgentPluginExecutable] = []
-            for server in tuple(getattr(lsp_component, "servers", ()) or ()):
-                server_executables = tuple(getattr(server, "executables", ()) or ())
-                server_name = str(getattr(server, "name", "") or "")
-                if not server_executables:
-                    failures.append(
-                        _component_failure(
-                            plugin_key,
-                            COMPONENT_KIND_APM_LSP,
-                            server_name,
-                            FAILURE_INVALID_COMPONENT,
-                            f"Canonical LSP server {server_name!r} has no executable facts",
-                        )
-                    )
-                lsp_executables.extend(server_executables)
-                _append_declared_executables(
-                    plugin_root,
-                    plugin_key,
-                    server_executables,
-                    kind=COMPONENT_KIND_APM_LSP,
-                    name=server_name,
-                    exec_type=EXEC_TYPE_LSP,
-                    components=components,
-                    command=getattr(server, "command", None),
-                    args=tuple(getattr(server, "args", ()) or ()),
-                )
-            _append_unreferenced_assets(
-                plugin_root,
-                plugin_key,
-                tuple(getattr(lsp_component, "assets", ()) or ()),
-                tuple(lsp_executables),
-                kind=COMPONENT_KIND_APM_LSP,
-                exec_type=EXEC_TYPE_LSP,
-                components=components,
-            )
-
     return AgentPluginExecInventory(
         components=tuple(
             sorted(
@@ -883,98 +787,6 @@ def _declared_executable_component(
         asset_size=asset.size if asset is not None else None,
         asset_executable_mode=asset.executable_mode if asset is not None else None,
     )
-
-
-def _append_declared_executables(
-    plugin_root: Path,
-    plugin_key: str,
-    executables: tuple[AgentPluginExecutable, ...],
-    *,
-    kind: str,
-    name: str,
-    exec_type: str,
-    components: list[ExecutableComponent],
-    command: str | None = None,
-    args: tuple[str, ...] = (),
-    cwd: str | None = None,
-) -> None:
-    """Append canonical declaration facts without consulting the filesystem."""
-    for executable in executables:
-        components.append(
-            _declared_executable_component(
-                plugin_root,
-                plugin_key,
-                kind=kind,
-                name=name,
-                exec_type=exec_type,
-                executable=executable,
-                command=command,
-                args=args,
-                cwd=cwd,
-            )
-        )
-
-
-def _append_file_component_assets(
-    plugin_root: Path,
-    plugin_key: str,
-    file_component: Any,
-    *,
-    kind: str,
-    exec_type: str,
-    components: list[ExecutableComponent],
-    executable_suffixes: frozenset[str] = _EXECUTABLE_LIKE_SUFFIXES,
-) -> None:
-    """Append exact APM extension asset facts with conservative classification."""
-    component_name = str(getattr(file_component, "name", "") or "")
-    for asset in tuple(getattr(file_component, "assets", ()) or ()):
-        components.append(
-            _asset_component(
-                plugin_root,
-                plugin_key,
-                kind=kind,
-                name=f"{component_name}:{asset.path}",
-                asset=asset,
-                classification=_asset_classification(
-                    asset,
-                    executable_suffixes=executable_suffixes,
-                ),
-                exec_type=exec_type,
-            )
-        )
-
-
-def _append_unreferenced_assets(
-    plugin_root: Path,
-    plugin_key: str,
-    assets: tuple[AgentPluginAsset, ...],
-    executables: tuple[AgentPluginExecutable, ...],
-    *,
-    kind: str,
-    exec_type: str,
-    components: list[ExecutableComponent],
-) -> None:
-    """Append declaration documents while rejecting unknown unreferenced code."""
-    referenced = {
-        executable.asset.path for executable in executables if executable.asset is not None
-    }
-    for asset in assets:
-        if asset.path in referenced:
-            continue
-        classification = _asset_classification(asset)
-        if classification == EXEC_CLASS_EXECUTABLE:
-            classification = EXEC_CLASS_UNKNOWN
-        components.append(
-            _asset_component(
-                plugin_root,
-                plugin_key,
-                kind=kind,
-                name=asset.path,
-                asset=asset,
-                classification=classification,
-                exec_type=exec_type,
-            )
-        )
 
 
 def _component_failure(

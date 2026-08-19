@@ -15,12 +15,6 @@ from apm_cli.agent_plugins.ir import (
     AgentPluginIdentity,
     AgentPluginMcpServer,
     AgentPluginSkill,
-    ApmExtensionComponents,
-    ApmExtensionFileComponent,
-    ApmExtensionHookComponent,
-    ApmExtensionLspComponent,
-    ApmExtensionLspServer,
-    FrozenJsonObject,
     McpServerType,
     SourceProvenance,
 )
@@ -29,9 +23,6 @@ from apm_cli.security.executables import (
     ASSET_STATE_EXTERNAL,
     ASSET_STATE_MISSING,
     ASSET_STATE_VERIFIED,
-    COMPONENT_KIND_APM_EXTENSION,
-    COMPONENT_KIND_APM_HOOK,
-    COMPONENT_KIND_APM_LSP,
     COMPONENT_KIND_MCP_REMOTE,
     COMPONENT_KIND_MCP_STDIO,
     COMPONENT_KIND_SKILL_ASSET,
@@ -39,9 +30,6 @@ from apm_cli.security.executables import (
     EXEC_CLASS_EXECUTABLE,
     EXEC_CLASS_UNKNOWN,
     EXEC_TYPE_BIN,
-    EXEC_TYPE_CANVAS,
-    EXEC_TYPE_HOOKS,
-    EXEC_TYPE_LSP,
     EXEC_TYPE_MCP,
     FAILURE_APPROVAL_REQUIRED,
     FAILURE_INVALID_COMPONENT,
@@ -206,114 +194,6 @@ def _asset(
     )
 
 
-def _apm_plugin(root: Path) -> AgentPlugin:
-    plugin = _plugin(root)
-    skill = plugin.components.skills[0]
-    skill = replace(
-        skill,
-        assets=(
-            *skill.assets,
-            _asset(root, "skills/review/scripts/check.py", mode=0o100),
-        ),
-    )
-    lsp_asset = _asset(root, "bin/lsp", mode=0o111)
-    hook_asset = _asset(root, "bin/hook.sh", mode=0o100)
-    lsp_provenance = SourceProvenance(
-        root / "com.microsoft.apm" / "lsp.json",
-        "/lspServers/python/command",
-    )
-    hook_provenance = SourceProvenance(
-        root / "com.microsoft.apm" / "hooks" / "hooks.json",
-        "/hooks/PreToolUse/0/hooks/0/command",
-    )
-    apm_components = ApmExtensionComponents(
-        agents=ApmExtensionFileComponent(
-            name="agents",
-            root=root / "com.microsoft.apm" / "agents",
-            provenance=SourceProvenance(root / "plugin.json", "/extensions/com.microsoft.apm"),
-            assets=(_asset(root, "com.microsoft.apm/agents/reviewer.md"),),
-        ),
-        commands=ApmExtensionFileComponent(
-            name="commands",
-            root=root / "com.microsoft.apm" / "commands",
-            provenance=SourceProvenance(root / "plugin.json", "/extensions/com.microsoft.apm"),
-            assets=(_asset(root, "com.microsoft.apm/commands/review.md"),),
-        ),
-        instructions=ApmExtensionFileComponent(
-            name="instructions",
-            root=root / "com.microsoft.apm" / "instructions",
-            provenance=SourceProvenance(root / "plugin.json", "/extensions/com.microsoft.apm"),
-            assets=(_asset(root, "com.microsoft.apm/instructions/safe.md"),),
-        ),
-        extensions=ApmExtensionFileComponent(
-            name="extensions",
-            root=root / "com.microsoft.apm" / "extensions",
-            provenance=SourceProvenance(root / "plugin.json", "/extensions/com.microsoft.apm"),
-            assets=(_asset(root, "com.microsoft.apm/extensions/extension.mjs"),),
-        ),
-        hooks=ApmExtensionHookComponent(
-            document=FrozenJsonObject(items=()),
-            provenance=SourceProvenance(
-                root / "com.microsoft.apm" / "hooks" / "hooks.json",
-                "",
-            ),
-            executables=(
-                AgentPluginExecutable(
-                    declaration="${PLUGIN_ROOT}/bin/hook.sh",
-                    plugin_relative_path="bin/hook.sh",
-                    asset=hook_asset,
-                    provenance=hook_provenance,
-                ),
-            ),
-            assets=(
-                _asset(root, "com.microsoft.apm/hooks/hooks.json"),
-                hook_asset,
-            ),
-        ),
-        lsp=ApmExtensionLspComponent(
-            provenance=SourceProvenance(root / "com.microsoft.apm" / "lsp.json", ""),
-            servers=(
-                ApmExtensionLspServer(
-                    name="python",
-                    command="./bin/lsp",
-                    args=("--stdio",),
-                    env=(),
-                    extension_to_language=((".py", "python"),),
-                    transport=None,
-                    initialization_options=None,
-                    settings=None,
-                    workspace_folder=None,
-                    startup_timeout=None,
-                    shutdown_timeout=None,
-                    restart_on_crash=None,
-                    max_restarts=None,
-                    provenance=SourceProvenance(
-                        root / "com.microsoft.apm" / "lsp.json",
-                        "/lspServers/python",
-                    ),
-                    executables=(
-                        AgentPluginExecutable(
-                            declaration="./bin/lsp",
-                            plugin_relative_path="bin/lsp",
-                            asset=lsp_asset,
-                            provenance=lsp_provenance,
-                        ),
-                    ),
-                ),
-            ),
-            assets=(
-                _asset(root, "com.microsoft.apm/lsp.json"),
-                lsp_asset,
-            ),
-        ),
-    )
-    return replace(
-        plugin,
-        components=replace(plugin.components, skills=(skill,)),
-        apm_components=apm_components,
-    )
-
-
 def test_inventory_classifies_portable_v1_components_without_ingress_paths(
     tmp_path: Path,
 ) -> None:
@@ -341,65 +221,6 @@ def test_inventory_classifies_portable_v1_components_without_ingress_paths(
     assert executable.asset_executable_mode == 0o111
 
 
-def test_inventory_covers_apm_extension_executable_surfaces(tmp_path: Path) -> None:
-    inventory = inventory_agent_plugin_executables(_apm_plugin(tmp_path))
-
-    assert inventory.failures == ()
-    assert len(inventory.components) == 12
-    assert {
-        (component.kind, component.exec_type) for component in inventory.executable_components
-    } == {
-        (COMPONENT_KIND_SKILL_ASSET, EXEC_TYPE_BIN),
-        (COMPONENT_KIND_MCP_STDIO, EXEC_TYPE_MCP),
-        (COMPONENT_KIND_APM_EXTENSION, EXEC_TYPE_CANVAS),
-        (COMPONENT_KIND_APM_HOOK, EXEC_TYPE_HOOKS),
-        (COMPONENT_KIND_APM_LSP, EXEC_TYPE_LSP),
-    }
-    assert all(
-        component.asset_state == ASSET_STATE_VERIFIED
-        for component in inventory.executable_components
-    )
-    assert {component.provenance for component in inventory.executable_components} == {
-        "skills/review/scripts/check.py",
-        "mcp.json#/mcpServers/local-tools/command",
-        "com.microsoft.apm/extensions/extension.mjs",
-        "com.microsoft.apm/hooks/hooks.json#/hooks/PreToolUse/0/hooks/0/command",
-        "com.microsoft.apm/lsp.json#/lspServers/python/command",
-    }
-
-
-def test_unknown_apm_asset_classification_fails_closed(tmp_path: Path) -> None:
-    plugin = _plugin(tmp_path)
-    agents = ApmExtensionFileComponent(
-        name="agents",
-        root=tmp_path / "com.microsoft.apm" / "agents",
-        provenance=SourceProvenance(tmp_path / "plugin.json", "/extensions/com.microsoft.apm"),
-        assets=(_asset(tmp_path, "com.microsoft.apm/agents/payload.wasm"),),
-    )
-    plugin = replace(
-        plugin,
-        apm_components=ApmExtensionComponents(
-            agents=agents,
-            commands=None,
-            instructions=None,
-            extensions=None,
-            hooks=None,
-            lsp=None,
-        ),
-    )
-
-    evaluation = evaluate_agent_plugin_executable_trust(
-        plugin,
-        trust_context=_policy(project_allow={PLUGIN_KEY: {EXEC_TYPE_MCP: True}}),
-        source_facts=SOURCE_FACTS,
-        explicit_consent=True,
-    )
-
-    assert len(evaluation.failures) == 1
-    assert evaluation.failures[0].component_kind == "apm-agent"
-    assert evaluation.failures[0].code == FAILURE_INVALID_COMPONENT
-
-
 def test_trust_evaluation_does_not_reopen_verified_assets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -413,14 +234,11 @@ def test_trust_evaluation_does_not_reopen_verified_assets(
     )
 
     evaluation = evaluate_agent_plugin_executable_trust(
-        _apm_plugin(tmp_path),
+        _plugin(tmp_path),
         trust_context=_policy(
             project_allow={
                 PLUGIN_KEY: {
                     EXEC_TYPE_BIN: True,
-                    EXEC_TYPE_CANVAS: True,
-                    EXEC_TYPE_HOOKS: True,
-                    EXEC_TYPE_LSP: True,
                     EXEC_TYPE_MCP: True,
                 }
             }
@@ -693,14 +511,11 @@ def test_equivalent_canonical_facts_produce_identical_decision_inputs(
         project_allow={
             PLUGIN_KEY: {
                 EXEC_TYPE_BIN: True,
-                EXEC_TYPE_CANVAS: True,
-                EXEC_TYPE_HOOKS: True,
-                EXEC_TYPE_LSP: True,
                 EXEC_TYPE_MCP: True,
             }
         }
     )
-    baseline_plugin = _apm_plugin(tmp_path / "baseline")
+    baseline_plugin = _plugin(tmp_path / "baseline")
     baseline = tuple(
         assemble_agent_plugin_exec_trust_context(
             policy,
@@ -710,7 +525,7 @@ def test_equivalent_canonical_facts_produce_identical_decision_inputs(
         )
         for component in inventory_agent_plugin_executables(baseline_plugin).components
     )
-    ingress_plugin = _apm_plugin(tmp_path / ingress / "materialized-basename")
+    ingress_plugin = _plugin(tmp_path / ingress / "materialized-basename")
     actual = tuple(
         assemble_agent_plugin_exec_trust_context(
             policy,

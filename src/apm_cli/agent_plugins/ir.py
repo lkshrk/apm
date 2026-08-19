@@ -165,68 +165,6 @@ class ApmExtensionData:
 
 
 @dataclass(frozen=True, slots=True)
-class ApmExtensionFileComponent:
-    """One exact APM extension directory and its bounded file inventory."""
-
-    name: str
-    root: Path
-    provenance: SourceProvenance
-    assets: tuple[AgentPluginAsset, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ApmExtensionLspServer:
-    """One immutable LSP server accepted by the canonical validator."""
-
-    name: str
-    command: str
-    args: tuple[str, ...]
-    env: tuple[tuple[str, str], ...]
-    extension_to_language: tuple[tuple[str, str], ...]
-    transport: str | None
-    initialization_options: FrozenJsonValue | None
-    settings: FrozenJsonValue | None
-    workspace_folder: str | None
-    startup_timeout: int | None
-    shutdown_timeout: int | None
-    restart_on_crash: bool | None
-    max_restarts: int | None
-    provenance: SourceProvenance
-    executables: tuple[AgentPluginExecutable, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ApmExtensionLspComponent:
-    """Validated ``com.microsoft.apm/lsp.json`` facts and referenced assets."""
-
-    provenance: SourceProvenance
-    servers: tuple[ApmExtensionLspServer, ...]
-    assets: tuple[AgentPluginAsset, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ApmExtensionHookComponent:
-    """Validated hook snapshot plus executable declarations and assets."""
-
-    document: FrozenJsonObject
-    provenance: SourceProvenance
-    executables: tuple[AgentPluginExecutable, ...]
-    assets: tuple[AgentPluginAsset, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ApmExtensionComponents:
-    """Exact component set owned by ``extensions.com.microsoft.apm`` v1."""
-
-    agents: ApmExtensionFileComponent | None
-    commands: ApmExtensionFileComponent | None
-    instructions: ApmExtensionFileComponent | None
-    extensions: ApmExtensionFileComponent | None
-    hooks: ApmExtensionHookComponent | None
-    lsp: ApmExtensionLspComponent | None
-
-
-@dataclass(frozen=True, slots=True)
 class ApmConfiguration:
     """APM-only dependency, policy, and build configuration from apm.yml."""
 
@@ -246,7 +184,6 @@ class AgentPlugin:
     apm_extension: ApmExtensionData | None
     apm_configuration: ApmConfiguration | None
     diagnostics: tuple[AgentPluginDiagnostic, ...]
-    apm_components: ApmExtensionComponents | None = None
 
 
 @dataclass(frozen=True, slots=True)
