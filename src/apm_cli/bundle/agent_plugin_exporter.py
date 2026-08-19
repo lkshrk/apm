@@ -12,7 +12,6 @@ from pathlib import Path
 from ..agent_plugins import (
     MCP_SCHEMA_ID,
     PLUGIN_SCHEMA_ID,
-    AgentPlugin,
     AgentPluginAsset,
     AgentPluginExecutable,
     DiagnosticSeverity,
@@ -20,10 +19,6 @@ from ..agent_plugins import (
     contains_literal_secret_fields,
     load_agent_plugin,
     url_contains_literal_secret,
-)
-from ..agent_plugins.constants import (
-    COM_MICROSOFT_APM_NAMESPACE,
-    COM_MICROSOFT_APM_SCHEMA_VERSION,
 )
 from ..deps.lockfile import LockFile, get_lockfile_path, migrate_lockfile_if_needed
 from ..deps.plugin_parser import synthesize_plugin_json_from_apm_yml
@@ -40,10 +35,7 @@ from .export_common import (
     _collect_apm_components,
     _collect_deployed_components,
     _collect_explicit_local_components,
-    _collect_hooks_from_apm,
-    _collect_hooks_from_root,
     _collect_root_plugin_components,
-    _deep_merge,
     _dep_install_path,
     _get_dev_dependency_urls,
     _merge_file_map,
@@ -58,24 +50,25 @@ from .lockfile_enrichment import enrich_lockfile_for_pack
 from .packer import PackResult
 from .reproducible_archive import write_reproducible_archive
 
-_NAMESPACE = COM_MICROSOFT_APM_NAMESPACE
-_NAMESPACE_PREFIX = f"{_NAMESPACE}/"
-_APM_FILE_COMPONENT_NAMES = ("agents", "commands", "instructions", "extensions")
 
+def _portable_components(
+    components: list[tuple[Path, str]],
+) -> tuple[list[tuple[Path, str]], set[str]]:
+    """Split collected components into portable skills and dropped surfaces.
 
-def _namespace_output_rel(output_rel: str) -> str:
-    """Map plugin-native paths into the Agent Plugin namespace."""
-    if output_rel.startswith("skills/") or output_rel.startswith(_NAMESPACE_PREFIX):
-        return output_rel
-    if output_rel == "hooks.json":
-        return f"{_NAMESPACE_PREFIX}hooks/hooks.json"
-    if output_rel == ".mcp.json":
-        return "mcp.json"
-    if output_rel == "mcp.json":
-        return "mcp.json"
-    if output_rel == ".lsp.json":
-        return f"{_NAMESPACE_PREFIX}lsp.json"
-    return f"{_NAMESPACE_PREFIX}{output_rel}"
+    Portable Agent Plugins v1 carries only root ``skills/``; every other
+    collected top-level directory is a non-portable primitive that the
+    portable core cannot represent. Return the retained skill components and
+    the set of dropped top-level directory names for a single surfaced warning.
+    """
+    retained: list[tuple[Path, str]] = []
+    dropped: set[str] = set()
+    for source, rel in components:
+        if rel.startswith("skills/"):
+            retained.append((source, rel))
+        else:
+            dropped.add(Path(rel).parts[0])
+    return retained, dropped
 
 
 def _copy_optional_root_file(project_root: Path, bundle_dir: Path, name: str) -> str | None:
@@ -87,26 +80,6 @@ def _copy_optional_root_file(project_root: Path, bundle_dir: Path, name: str) ->
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest, follow_symlinks=False)
     return name
-
-
-def _agent_lsp_document(package: APMPackage, lockfile: LockFile) -> dict | None:
-    """Project resolved production LSP configs into the APM extension."""
-    dev_names = {dependency.name for dependency in package.get_dev_lsp_dependencies()}
-    prod_names = {dependency.name for dependency in package.get_lsp_dependencies()}
-    resolved_names = set(lockfile.lsp_servers)
-    servers: dict[str, object] = {}
-    for name, config in lockfile.lsp_configs.items():
-        if name not in resolved_names or (name in dev_names and name not in prod_names):
-            continue
-        if isinstance(config, dict):
-            projected = dict(config)
-            projected.pop("name", None)
-        else:
-            projected = config
-        servers[str(name)] = projected
-    if not servers:
-        return None
-    return {"lspServers": servers}
 
 
 def _agent_mcp_document(package: APMPackage, lockfile: LockFile) -> dict:
@@ -204,93 +177,6 @@ def _validate_executable_facts(
             )
 
 
-def _validate_apm_component_round_trip(
-    plugin: AgentPlugin,
-    *,
-    expected_output_files: set[str],
-    expected_lsp_names: set[str],
-    expected_hooks_document: dict | None,
-) -> None:
-    """Compare generated extension facts with canonical loader-owned component IR."""
-    extension = plugin.apm_extension
-    if (
-        extension is None
-        or extension.schema_version != COM_MICROSOFT_APM_SCHEMA_VERSION
-        or extension.provenance.path != plugin.manifest.path
-        or extension.provenance.json_pointer != f"/extensions/{COM_MICROSOFT_APM_NAMESPACE}"
-    ):
-        raise ValueError("Generated Agent Plugin lost its exact com.microsoft.apm declaration")
-
-    components = plugin.apm_components
-    if components is None:
-        raise ValueError("Generated Agent Plugin lost its declared com.microsoft.apm components")
-
-    for name in _APM_FILE_COMPONENT_NAMES:
-        prefix = f"{_NAMESPACE_PREFIX}{name}/"
-        expected_assets = {
-            output_file for output_file in expected_output_files if output_file.startswith(prefix)
-        }
-        component = getattr(components, name)
-        loaded_assets = set() if component is None else _asset_paths(component.assets)
-        if loaded_assets != expected_assets:
-            raise ValueError(
-                f"Generated Agent Plugin {name} assets changed during canonical reload: "
-                f"expected {sorted(expected_assets)}, got {sorted(loaded_assets)}"
-            )
-        if component is not None and component.root != plugin.root / _NAMESPACE / name:
-            raise ValueError(
-                f"Generated Agent Plugin {name} path changed during canonical reload: "
-                f"{component.root}"
-            )
-
-    expected_lsp_path = plugin.root / _NAMESPACE / "lsp.json"
-    lsp = components.lsp
-    if not expected_lsp_names:
-        if lsp is not None:
-            raise ValueError("Generated Agent Plugin unexpectedly activated an LSP component")
-    elif lsp is None:
-        raise ValueError("Generated Agent Plugin lost its com.microsoft.apm/lsp.json component")
-    else:
-        loaded_lsp_names = {server.name for server in lsp.servers}
-        if loaded_lsp_names != expected_lsp_names or lsp.provenance.path != expected_lsp_path:
-            raise ValueError(
-                "Generated Agent Plugin LSP servers changed during canonical reload: "
-                f"expected {sorted(expected_lsp_names)}, got {sorted(loaded_lsp_names)}"
-            )
-        if f"{_NAMESPACE_PREFIX}lsp.json" not in _asset_paths(lsp.assets):
-            raise ValueError("Generated Agent Plugin LSP inventory lost its declaration asset")
-        for server in lsp.servers:
-            _validate_executable_facts(
-                server.executables,
-                declaration_path=expected_lsp_path,
-                expected_output_files=expected_output_files,
-                component=f"LSP server {server.name!r}",
-            )
-
-    expected_hooks_path = plugin.root / _NAMESPACE / "hooks" / "hooks.json"
-    hooks = components.hooks
-    if expected_hooks_document is None:
-        if hooks is not None:
-            raise ValueError("Generated Agent Plugin unexpectedly activated a hooks component")
-    elif hooks is None:
-        raise ValueError(
-            "Generated Agent Plugin lost its com.microsoft.apm/hooks/hooks.json component"
-        )
-    else:
-        if (
-            hooks.provenance.path != expected_hooks_path
-            or hooks.document.thaw() != expected_hooks_document
-            or f"{_NAMESPACE_PREFIX}hooks/hooks.json" not in _asset_paths(hooks.assets)
-        ):
-            raise ValueError("Generated Agent Plugin hooks changed during canonical reload")
-        _validate_executable_facts(
-            hooks.executables,
-            declaration_path=expected_hooks_path,
-            expected_output_files=expected_output_files,
-            component="hooks",
-        )
-
-
 def _validate_agent_plugin_round_trip(
     staged_bundle: Path,
     *,
@@ -298,8 +184,6 @@ def _validate_agent_plugin_round_trip(
     expected_version: str,
     expected_output_files: set[str],
     expected_mcp_names: set[str],
-    expected_lsp_names: set[str],
-    expected_hooks_document: dict | None,
 ) -> None:
     """Reload staged output through the canonical Agent Plugin interpreter."""
     plugin = load_agent_plugin(staged_bundle)
@@ -338,12 +222,6 @@ def _validate_agent_plugin_round_trip(
             expected_output_files=expected_output_files,
             component=f"MCP server {server.name!r}",
         )
-    _validate_apm_component_round_trip(
-        plugin,
-        expected_output_files=expected_output_files,
-        expected_lsp_names=expected_lsp_names,
-        expected_hooks_document=expected_hooks_document,
-    )
 
 
 def export_agent_plugin_bundle(
@@ -381,9 +259,6 @@ def export_agent_plugin_bundle(
 
     plugin_json = {"$schema": PLUGIN_SCHEMA_ID}
     plugin_json.update(synthesize_plugin_json_from_apm_yml(apm_yml_path))
-    plugin_json["extensions"] = {
-        COM_MICROSOFT_APM_NAMESPACE: {"schemaVersion": COM_MICROSOFT_APM_SCHEMA_VERSION}
-    }
 
     warnings: list[str] = []
     transition_warning = agent_plugin_warning()
@@ -393,9 +268,8 @@ def export_agent_plugin_bundle(
     dev_dep_urls = _get_dev_dependency_urls(apm_yml_path)
     file_map: dict[str, tuple[Path, str]] = {}
     collisions: list[str] = []
-    merged_hooks: dict = {}
+    dropped_surfaces: set[str] = set()
     mcp_document = _agent_mcp_document(package, lockfile)
-    lsp_document = _agent_lsp_document(package, lockfile)
     apm_modules_dir = project_root / "apm_modules"
 
     if lockfile:
@@ -413,10 +287,10 @@ def export_agent_plugin_bundle(
             dep_name = dep.repo_url
             install_path = _dep_install_path(dep, apm_modules_dir)
             if dep.deployed_files:
-                dep_components = [
-                    (src, _namespace_output_rel(rel))
-                    for src, rel in _collect_deployed_components(project_root, dep)
-                ]
+                dep_components, dep_dropped = _portable_components(
+                    _collect_deployed_components(project_root, dep)
+                )
+                dropped_surfaces |= dep_dropped
                 if dep.skill_subset and not dep_components:
                     declared_skills = ", ".join(dep.skill_subset)
                     raise ValueError(
@@ -451,35 +325,39 @@ def export_agent_plugin_bundle(
 
     own_apm_dir = project_root / ".apm"
     if isinstance(package.includes, list):
-        own_components, root_hooks = _collect_explicit_local_components(
+        own_components, _root_hooks = _collect_explicit_local_components(
             project_root, package.includes
         )
-        own_components = [(src, _namespace_output_rel(rel)) for src, rel in own_components]
+        own_components, own_dropped = _portable_components(own_components)
+        dropped_surfaces |= own_dropped
     else:
-        own_components = [
-            (src, _namespace_output_rel(rel)) for src, rel in _collect_apm_components(own_apm_dir)
-        ]
-        root_hooks = _collect_hooks_from_apm(own_apm_dir)
+        own_components, own_dropped = _portable_components(_collect_apm_components(own_apm_dir))
+        dropped_surfaces |= own_dropped
         if own_apm_dir.is_dir():
             _warn_skipped_root_components(project_root, logger)
         else:
-            own_components.extend(
-                (src, _namespace_output_rel(rel))
-                for src, rel in _collect_root_plugin_components(project_root)
+            root_components, root_dropped = _portable_components(
+                _collect_root_plugin_components(project_root)
             )
-            root_hooks_top = _collect_hooks_from_root(project_root)
-            _deep_merge(root_hooks, root_hooks_top, overwrite=False)
+            own_components.extend(root_components)
+            dropped_surfaces |= root_dropped
 
-    if (
-        not isinstance(package.includes, list)
-        and own_apm_dir.is_dir()
-        and not own_components
-        and not root_hooks
-    ):
+    if not isinstance(package.includes, list) and own_apm_dir.is_dir() and not own_components:
         _warn_no_local_primitives(logger)
 
     _merge_file_map(file_map, own_components, pkg_name, force, collisions)
-    _deep_merge(merged_hooks, root_hooks, overwrite=True)
+
+    if dropped_surfaces:
+        _dropped = (
+            "Skipping non-portable primitives not representable by Agent Plugins v1 "
+            f"({', '.join(sorted(dropped_surfaces))}); only root skills/ and mcp.json are "
+            "packed. Use 'apm pack --claude-plugin' to carry the full primitive set."
+        )
+        warnings.append(_dropped)
+        if logger:
+            logger.warning(_dropped)
+        else:
+            _rich_warning(_dropped, symbol="warning")
 
     for msg in collisions:
         if logger:
@@ -488,11 +366,7 @@ def export_agent_plugin_bundle(
             _rich_warning(msg)
 
     output_files = sorted(file_map.keys())
-    if merged_hooks:
-        output_files.append(f"{_NAMESPACE_PREFIX}hooks/hooks.json")
     output_files.append("mcp.json")
-    if lsp_document:
-        output_files.append(f"{_NAMESPACE_PREFIX}lsp.json")
     output_files.append("plugin.json")
     output_files.extend(
         name
@@ -525,26 +399,12 @@ def export_agent_plugin_bundle(
         ensure_path_within(staged_bundle, staging_root)
         _write_bundle_sources(file_map, staged_bundle, staging_root)
 
-        if merged_hooks:
-            hooks_path = staged_bundle / _NAMESPACE_PREFIX / "hooks" / "hooks.json"
-            hooks_path.parent.mkdir(parents=True, exist_ok=True)
-            hooks_path.write_text(
-                json.dumps(merged_hooks, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
         mcp_path = staged_bundle / "mcp.json"
         mcp_path.parent.mkdir(parents=True, exist_ok=True)
         mcp_path.write_text(
             json.dumps(mcp_document, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
-        if lsp_document:
-            lsp_path = staged_bundle / _NAMESPACE_PREFIX / "lsp.json"
-            lsp_path.parent.mkdir(parents=True, exist_ok=True)
-            lsp_path.write_text(
-                json.dumps(lsp_document, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
 
         (staged_bundle / "plugin.json").write_text(
             json.dumps(plugin_json, indent=2, sort_keys=True) + "\n",
@@ -578,10 +438,6 @@ def export_agent_plugin_bundle(
             expected_version=pkg_version,
             expected_output_files=set(output_files),
             expected_mcp_names=set(mcp_document["mcpServers"]),
-            expected_lsp_names=(
-                set(lsp_document["lspServers"]) if lsp_document is not None else set()
-            ),
-            expected_hooks_document=merged_hooks or None,
         )
 
         if archive:

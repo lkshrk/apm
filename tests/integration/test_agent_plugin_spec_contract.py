@@ -172,9 +172,6 @@ def test_portable_core_has_exactly_skills_and_mcp_servers(tmp_path: Path) -> Non
         "contract-remote",
         "contract-stdio",
     )
-    assert plugin.apm_components is not None
-    assert plugin.apm_components.lsp is not None
-    assert tuple(server.name for server in plugin.apm_components.lsp.servers) == ("contract-lsp",)
     ignored_paths = {
         diagnostic.path
         for diagnostic in plugin.diagnostics
