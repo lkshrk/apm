@@ -12,6 +12,9 @@ from pathlib import Path
 from ..agent_plugins import (
     MCP_SCHEMA_ID,
     PLUGIN_SCHEMA_ID,
+    AgentPlugin,
+    AgentPluginAsset,
+    AgentPluginExecutable,
     DiagnosticSeverity,
     args_contain_literal_secret,
     contains_literal_secret_fields,
@@ -57,6 +60,7 @@ from .reproducible_archive import write_reproducible_archive
 
 _NAMESPACE = COM_MICROSOFT_APM_NAMESPACE
 _NAMESPACE_PREFIX = f"{_NAMESPACE}/"
+_APM_FILE_COMPONENT_NAMES = ("agents", "commands", "instructions", "extensions")
 
 
 def _namespace_output_rel(output_rel: str) -> str:
@@ -90,13 +94,16 @@ def _agent_lsp_document(package: APMPackage, lockfile: LockFile) -> dict | None:
     dev_names = {dependency.name for dependency in package.get_dev_lsp_dependencies()}
     prod_names = {dependency.name for dependency in package.get_lsp_dependencies()}
     resolved_names = set(lockfile.lsp_servers)
-    servers = {
-        str(name): dict(config)
-        for name, config in lockfile.lsp_configs.items()
-        if name in resolved_names
-        and not (name in dev_names and name not in prod_names)
-        and isinstance(config, dict)
-    }
+    servers: dict[str, object] = {}
+    for name, config in lockfile.lsp_configs.items():
+        if name not in resolved_names or (name in dev_names and name not in prod_names):
+            continue
+        if isinstance(config, dict):
+            projected = dict(config)
+            projected.pop("name", None)
+        else:
+            projected = config
+        servers[str(name)] = projected
     if not servers:
         return None
     return {"lspServers": servers}
@@ -150,14 +157,138 @@ def _agent_mcp_document(package: APMPackage, lockfile: LockFile) -> dict:
     return {"$schema": MCP_SCHEMA_ID, "mcpServers": servers}
 
 
-def _expected_skill_directories(output_files: list[str]) -> set[str]:
-    """Return skill directories that the canonical loader must discover."""
-    expected: set[str] = set()
+def _expected_skill_assets(output_files: set[str]) -> dict[str, set[str]]:
+    """Return exact portable skill assets grouped by immediate directory."""
+    expected: dict[str, set[str]] = {}
     for output_file in output_files:
         parts = Path(output_file).parts
-        if len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md":
-            expected.add(parts[1])
+        if len(parts) >= 3 and parts[0] == "skills":
+            expected.setdefault(parts[1], set()).add(output_file)
     return expected
+
+
+def _asset_paths(assets: tuple[AgentPluginAsset, ...]) -> set[str]:
+    """Return canonical paths from an immutable loader-owned inventory."""
+    return {asset.path for asset in assets}
+
+
+def _validate_executable_facts(
+    executables: tuple[AgentPluginExecutable, ...],
+    *,
+    declaration_path: Path,
+    expected_output_files: set[str],
+    component: str,
+) -> None:
+    """Require referenced executable facts to remain tied to generated assets."""
+    for executable in executables:
+        if executable.provenance.path != declaration_path:
+            raise ValueError(
+                f"Generated Agent Plugin {component} executable provenance changed during "
+                f"canonical reload: {executable.provenance.path}"
+            )
+        if executable.plugin_relative_path is None:
+            if executable.asset is not None:
+                raise ValueError(
+                    f"Generated Agent Plugin {component} external executable unexpectedly "
+                    "resolved to a package asset"
+                )
+            continue
+        if (
+            executable.asset is None
+            or executable.asset.path != executable.plugin_relative_path
+            or executable.asset.path not in expected_output_files
+        ):
+            raise ValueError(
+                f"Generated Agent Plugin {component} executable asset changed during "
+                f"canonical reload: {executable.plugin_relative_path}"
+            )
+
+
+def _validate_apm_component_round_trip(
+    plugin: AgentPlugin,
+    *,
+    expected_output_files: set[str],
+    expected_lsp_names: set[str],
+    expected_hooks_document: dict | None,
+) -> None:
+    """Compare generated extension facts with canonical loader-owned component IR."""
+    extension = plugin.apm_extension
+    if (
+        extension is None
+        or extension.schema_version != COM_MICROSOFT_APM_SCHEMA_VERSION
+        or extension.provenance.path != plugin.manifest.path
+        or extension.provenance.json_pointer != f"/extensions/{COM_MICROSOFT_APM_NAMESPACE}"
+    ):
+        raise ValueError("Generated Agent Plugin lost its exact com.microsoft.apm declaration")
+
+    components = plugin.apm_components
+    if components is None:
+        raise ValueError("Generated Agent Plugin lost its declared com.microsoft.apm components")
+
+    for name in _APM_FILE_COMPONENT_NAMES:
+        prefix = f"{_NAMESPACE_PREFIX}{name}/"
+        expected_assets = {
+            output_file for output_file in expected_output_files if output_file.startswith(prefix)
+        }
+        component = getattr(components, name)
+        loaded_assets = set() if component is None else _asset_paths(component.assets)
+        if loaded_assets != expected_assets:
+            raise ValueError(
+                f"Generated Agent Plugin {name} assets changed during canonical reload: "
+                f"expected {sorted(expected_assets)}, got {sorted(loaded_assets)}"
+            )
+        if component is not None and component.root != plugin.root / _NAMESPACE / name:
+            raise ValueError(
+                f"Generated Agent Plugin {name} path changed during canonical reload: "
+                f"{component.root}"
+            )
+
+    expected_lsp_path = plugin.root / _NAMESPACE / "lsp.json"
+    lsp = components.lsp
+    if not expected_lsp_names:
+        if lsp is not None:
+            raise ValueError("Generated Agent Plugin unexpectedly activated an LSP component")
+    elif lsp is None:
+        raise ValueError("Generated Agent Plugin lost its com.microsoft.apm/lsp.json component")
+    else:
+        loaded_lsp_names = {server.name for server in lsp.servers}
+        if loaded_lsp_names != expected_lsp_names or lsp.provenance.path != expected_lsp_path:
+            raise ValueError(
+                "Generated Agent Plugin LSP servers changed during canonical reload: "
+                f"expected {sorted(expected_lsp_names)}, got {sorted(loaded_lsp_names)}"
+            )
+        if f"{_NAMESPACE_PREFIX}lsp.json" not in _asset_paths(lsp.assets):
+            raise ValueError("Generated Agent Plugin LSP inventory lost its declaration asset")
+        for server in lsp.servers:
+            _validate_executable_facts(
+                server.executables,
+                declaration_path=expected_lsp_path,
+                expected_output_files=expected_output_files,
+                component=f"LSP server {server.name!r}",
+            )
+
+    expected_hooks_path = plugin.root / _NAMESPACE / "hooks" / "hooks.json"
+    hooks = components.hooks
+    if expected_hooks_document is None:
+        if hooks is not None:
+            raise ValueError("Generated Agent Plugin unexpectedly activated a hooks component")
+    elif hooks is None:
+        raise ValueError(
+            "Generated Agent Plugin lost its com.microsoft.apm/hooks/hooks.json component"
+        )
+    else:
+        if (
+            hooks.provenance.path != expected_hooks_path
+            or hooks.document.thaw() != expected_hooks_document
+            or f"{_NAMESPACE_PREFIX}hooks/hooks.json" not in _asset_paths(hooks.assets)
+        ):
+            raise ValueError("Generated Agent Plugin hooks changed during canonical reload")
+        _validate_executable_facts(
+            hooks.executables,
+            declaration_path=expected_hooks_path,
+            expected_output_files=expected_output_files,
+            component="hooks",
+        )
 
 
 def _validate_agent_plugin_round_trip(
@@ -165,8 +296,10 @@ def _validate_agent_plugin_round_trip(
     *,
     expected_name: str,
     expected_version: str,
-    expected_skill_directories: set[str],
+    expected_output_files: set[str],
     expected_mcp_names: set[str],
+    expected_lsp_names: set[str],
+    expected_hooks_document: dict | None,
 ) -> None:
     """Reload staged output through the canonical Agent Plugin interpreter."""
     plugin = load_agent_plugin(staged_bundle)
@@ -183,11 +316,14 @@ def _validate_agent_plugin_round_trip(
             f"expected {expected_name}@{expected_version}, got "
             f"{plugin.identity.name}@{plugin.identity.version or '<missing>'}"
         )
-    loaded_skills = {skill.directory_name for skill in plugin.components.skills}
-    if loaded_skills != expected_skill_directories:
+    expected_skills = _expected_skill_assets(expected_output_files)
+    loaded_skills = {
+        skill.directory_name: _asset_paths(skill.assets) for skill in plugin.components.skills
+    }
+    if loaded_skills != expected_skills:
         raise ValueError(
             "Generated Agent Plugin skills changed during canonical reload: "
-            f"expected {sorted(expected_skill_directories)}, got {sorted(loaded_skills)}"
+            f"expected {sorted(expected_skills)}, got {sorted(loaded_skills)}"
         )
     loaded_mcp = {server.name for server in plugin.components.mcp_servers}
     if loaded_mcp != expected_mcp_names:
@@ -195,6 +331,19 @@ def _validate_agent_plugin_round_trip(
             "Generated Agent Plugin MCP servers changed during canonical reload: "
             f"expected {sorted(expected_mcp_names)}, got {sorted(loaded_mcp)}"
         )
+    for server in plugin.components.mcp_servers:
+        _validate_executable_facts(
+            server.executables,
+            declaration_path=plugin.root / "mcp.json",
+            expected_output_files=expected_output_files,
+            component=f"MCP server {server.name!r}",
+        )
+    _validate_apm_component_round_trip(
+        plugin,
+        expected_output_files=expected_output_files,
+        expected_lsp_names=expected_lsp_names,
+        expected_hooks_document=expected_hooks_document,
+    )
 
 
 def export_agent_plugin_bundle(
@@ -427,8 +576,12 @@ def export_agent_plugin_bundle(
             staged_bundle,
             expected_name=pkg_name,
             expected_version=pkg_version,
-            expected_skill_directories=_expected_skill_directories(output_files),
+            expected_output_files=set(output_files),
             expected_mcp_names=set(mcp_document["mcpServers"]),
+            expected_lsp_names=(
+                set(lsp_document["lspServers"]) if lsp_document is not None else set()
+            ),
+            expected_hooks_document=merged_hooks or None,
         )
 
         if archive:

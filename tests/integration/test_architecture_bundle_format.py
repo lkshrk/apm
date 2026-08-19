@@ -185,6 +185,12 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
             "Agent Plugin production must canonically reload staged output before commit",
         ),
         (
+            "src/apm_cli/bundle/agent_plugin_exporter.py",
+            "    _validate_apm_component_round_trip(\n        plugin,",
+            "    _skip_apm_component_round_trip(\n        plugin,",
+            "Agent Plugin production must canonically reload staged output before commit",
+        ),
+        (
             "src/apm_cli/commands/init.py",
             "plugin = load_agent_plugin(staged_root)",
             "plugin = None",
@@ -200,6 +206,12 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
             "src/apm_cli/adapters/client/agent_plugin_projection.py",
             "diagnostics.append(",
             "rendered.append(",
+            "Agent Plugin client projection must type every unsupported component",
+        ),
+        (
+            "src/apm_cli/adapters/client/agent_plugin_projection.py",
+            "if len(apm_diagnostics) != _apm_component_count(plugin):",
+            "if False:",
             "Agent Plugin client projection must type every unsupported component",
         ),
         (

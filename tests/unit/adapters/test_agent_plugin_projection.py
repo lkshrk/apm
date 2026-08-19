@@ -13,22 +13,31 @@ from apm_cli.adapters.client.agent_plugin_projection import (
     project_agent_plugin_for_client,
 )
 from apm_cli.adapters.client.codex import CodexClientAdapter
-from apm_cli.agent_plugins import MCP_SCHEMA_ID, PLUGIN_SCHEMA_ID, load_agent_plugin
+from apm_cli.agent_plugins import (
+    COM_MICROSOFT_APM_NAMESPACE,
+    COM_MICROSOFT_APM_SCHEMA_VERSION,
+    MCP_SCHEMA_ID,
+    PLUGIN_SCHEMA_ID,
+    load_agent_plugin,
+)
 
 pytestmark = pytest.mark.component
 
 
-def _load_plugin(root: Path, servers: dict) -> object:
+def _load_plugin(root: Path, servers: dict, *, include_apm_components: bool = False) -> object:
     root.mkdir(parents=True)
+    manifest = {
+        "$schema": PLUGIN_SCHEMA_ID,
+        "name": "projection-test",
+        "version": "1.0.0",
+        "description": "Projection fixture",
+    }
+    if include_apm_components:
+        manifest["extensions"] = {
+            COM_MICROSOFT_APM_NAMESPACE: {"schemaVersion": COM_MICROSOFT_APM_SCHEMA_VERSION}
+        }
     (root / "plugin.json").write_text(
-        json.dumps(
-            {
-                "$schema": PLUGIN_SCHEMA_ID,
-                "name": "projection-test",
-                "version": "1.0.0",
-                "description": "Projection fixture",
-            }
-        ),
+        json.dumps(manifest),
         encoding="utf-8",
     )
     (root / "mcp.json").write_text(
@@ -41,6 +50,31 @@ def _load_plugin(root: Path, servers: dict) -> object:
         "---\nname: demo\ndescription: Demo projection skill\n---\n\nUse this skill.\n",
         encoding="utf-8",
     )
+    if include_apm_components:
+        extension_root = root / COM_MICROSOFT_APM_NAMESPACE
+        for name in ("agents", "commands", "instructions", "extensions"):
+            component = extension_root / name
+            component.mkdir(parents=True)
+            (component / f"{name}.txt").write_text(name, encoding="utf-8")
+        (extension_root / "lsp.json").write_text(
+            json.dumps(
+                {
+                    "lspServers": {
+                        "python": {
+                            "command": "pyright-langserver",
+                            "extensionToLanguage": {".py": "python"},
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        hooks = extension_root / "hooks"
+        hooks.mkdir()
+        (hooks / "hooks.json").write_text(
+            json.dumps({"preCommit": [{"command": "lint"}]}),
+            encoding="utf-8",
+        )
     return load_agent_plugin(root)
 
 
@@ -112,3 +146,32 @@ def test_projection_returns_typed_runtime_env_diagnostic_without_rendering(
     assert diagnostic.code is ClientProjectionDiagnosticCode.RUNTIME_ENV_UNSUPPORTED
     assert diagnostic.capability is ClientProjectionCapability.MCP_STDIO
     assert diagnostic.component == "mcp:local"
+
+
+def test_projection_types_every_canonical_apm_component_omission(tmp_path: Path) -> None:
+    plugin = _load_plugin(
+        tmp_path / "plugin",
+        {},
+        include_apm_components=True,
+    )
+    adapter = CodexClientAdapter(project_root=tmp_path)
+
+    projection = project_agent_plugin_for_client(plugin, adapter)
+
+    assert projection.skills
+    assert projection.mcp_servers == ()
+    assert {
+        diagnostic.component: diagnostic.capability for diagnostic in projection.diagnostics
+    } == {
+        "apm:agents": ClientProjectionCapability.APM_AGENTS,
+        "apm:commands": ClientProjectionCapability.APM_COMMANDS,
+        "apm:instructions": ClientProjectionCapability.APM_INSTRUCTIONS,
+        "apm:extensions": ClientProjectionCapability.APM_EXTENSIONS,
+        "apm:hooks": ClientProjectionCapability.APM_HOOKS,
+        "apm:lsp": ClientProjectionCapability.APM_LSP,
+    }
+    assert all(
+        diagnostic.code is ClientProjectionDiagnosticCode.COMPONENT_UNSUPPORTED
+        for diagnostic in projection.diagnostics
+    )
+    assert projection.is_complete is False

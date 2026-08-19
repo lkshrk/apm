@@ -40,10 +40,11 @@ if [ -f "$agent_plugin_exporter" ]; then
         || [ "$loader_line" -ge "$archive_line" ] \
         || [ "$loader_line" -ge "$commit_line" ] \
         || ! grep -q '^    if errors:$' "$agent_plugin_exporter" \
-        || ! grep -q '^    if loaded_skills != expected_skill_directories:$' \
+        || ! grep -q '^    if loaded_skills != expected_skills:$' \
             "$agent_plugin_exporter" \
         || ! grep -q '^    if loaded_mcp != expected_mcp_names:$' \
             "$agent_plugin_exporter" \
+        || ! grep -q '^    _validate_apm_component_round_trip($' "$agent_plugin_exporter" \
         || grep -Eq 'validate_(plugin_manifest|mcp_config|lsp_extension)_(document|file)' \
             "$agent_plugin_exporter"; then
         echo "[x] Agent Plugin production must canonically reload staged output before commit"
@@ -77,7 +78,12 @@ if [ -f "$client_projection" ] \
             "$client_projection" \
         || ! grep -q 'len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers)' \
             "$client_projection" \
-        || [ "$(grep -c 'diagnostics.append(' "$client_projection")" -lt 3 ]; }; then
+        || ! grep -q 'len(apm_diagnostics) != _apm_component_count(plugin)' \
+            "$client_projection" \
+        || ! grep -q 'apm_diagnostics = _apm_component_diagnostics(plugin, adapter)' \
+            "$client_projection" \
+        || grep -Eq '\.(glob|iterdir|read_bytes|read_text|rglob)\(' "$client_projection" \
+        || [ "$(grep -c 'diagnostics.append(' "$client_projection")" -lt 4 ]; }; then
     echo "[x] Agent Plugin client projection must type every unsupported component"
     exit 1
 fi

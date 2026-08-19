@@ -22,6 +22,12 @@ class ClientProjectionCapability(str, Enum):
     MCP_STREAMABLE_HTTP = "mcp.streamable-http"
     MCP_SSE = "mcp.sse"
     SKILLS = "skills"
+    APM_AGENTS = "apm.agents"
+    APM_COMMANDS = "apm.commands"
+    APM_INSTRUCTIONS = "apm.instructions"
+    APM_EXTENSIONS = "apm.extensions"
+    APM_HOOKS = "apm.hooks"
+    APM_LSP = "apm.lsp"
 
 
 class ClientProjectionDiagnosticCode(str, Enum):
@@ -29,6 +35,7 @@ class ClientProjectionDiagnosticCode(str, Enum):
 
     RUNTIME_ENV_UNSUPPORTED = "client.runtime-env.unsupported"
     TRANSPORT_UNSUPPORTED = "client.transport.unsupported"
+    COMPONENT_UNSUPPORTED = "client.component.unsupported"
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +124,51 @@ def _runtime_env_diagnostic(
     )
 
 
+_APM_COMPONENT_CAPABILITIES = (
+    ("agents", ClientProjectionCapability.APM_AGENTS),
+    ("commands", ClientProjectionCapability.APM_COMMANDS),
+    ("instructions", ClientProjectionCapability.APM_INSTRUCTIONS),
+    ("extensions", ClientProjectionCapability.APM_EXTENSIONS),
+    ("hooks", ClientProjectionCapability.APM_HOOKS),
+    ("lsp", ClientProjectionCapability.APM_LSP),
+)
+
+
+def _apm_component_count(plugin: AgentPlugin) -> int:
+    components = plugin.apm_components
+    if components is None:
+        return 0
+    return sum(
+        getattr(components, name) is not None for name, _capability in _APM_COMPONENT_CAPABILITIES
+    )
+
+
+def _apm_component_diagnostics(
+    plugin: AgentPlugin,
+    adapter: MCPClientAdapter,
+) -> list[ClientProjectionDiagnostic]:
+    components = plugin.apm_components
+    if components is None:
+        return []
+    diagnostics: list[ClientProjectionDiagnostic] = []
+    for name, capability in _APM_COMPONENT_CAPABILITIES:
+        if getattr(components, name) is None:
+            continue
+        diagnostics.append(
+            ClientProjectionDiagnostic(
+                code=ClientProjectionDiagnosticCode.COMPONENT_UNSUPPORTED,
+                target=adapter.target_name,
+                capability=capability,
+                component=f"apm:{name}",
+                message=(
+                    f"{adapter.target_name} has no Agent Plugin projection for "
+                    f"com.microsoft.apm {name} components."
+                ),
+            )
+        )
+    return diagnostics
+
+
 def project_agent_plugin_for_client(
     plugin: AgentPlugin,
     adapter: MCPClientAdapter,
@@ -163,6 +215,10 @@ def project_agent_plugin_for_client(
 
     if len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers):
         raise AssertionError("Client projection left canonical MCP components unaccounted")
+    apm_diagnostics = _apm_component_diagnostics(plugin, adapter)
+    if len(apm_diagnostics) != _apm_component_count(plugin):
+        raise AssertionError("Client projection left canonical APM components unaccounted")
+    diagnostics.extend(apm_diagnostics)
     return AgentPluginClientProjection(
         target=adapter.target_name,
         skills=plugin.components.skills,

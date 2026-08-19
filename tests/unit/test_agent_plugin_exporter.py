@@ -101,7 +101,7 @@ keywords: [alpha, beta]
     (root / ".apm" / "extensions" / "ext.json").write_text("{}", encoding="utf-8")
     (root / ".apm" / "hooks").mkdir(parents=True, exist_ok=True)
     (root / ".apm" / "hooks" / "hooks.json").write_text(
-        json.dumps({"preCommit": ["lint"]}),
+        json.dumps({"preCommit": [{"command": "lint"}]}),
         encoding="utf-8",
     )
     (root / ".mcp.json").write_text(
@@ -171,7 +171,60 @@ def test_agent_bundle_writes_namespaced_layout_and_valid_docs(tmp_path: Path) ->
     assert loaded.identity.name == "agent-pack"
     assert loaded.identity.version == "1.2.3"
     assert [skill.directory_name for skill in loaded.components.skills] == ["demo"]
+    assert tuple(asset.path for asset in loaded.components.skills[0].assets) == (
+        "skills/demo/SKILL.md",
+    )
     assert [server.name for server in loaded.components.mcp_servers] == ["safe"]
+    assert loaded.components.mcp_servers[0].executables[0].declaration == "tool"
+    assert loaded.components.mcp_servers[0].executables[0].asset is None
+    assert loaded.apm_extension is not None
+    assert loaded.apm_extension.schema_version == "1"
+    assert loaded.apm_extension.provenance.path == bundle / "plugin.json"
+    assert loaded.apm_extension.provenance.json_pointer == "/extensions/com.microsoft.apm"
+    assert loaded.apm_components is not None
+    assert tuple(asset.path for asset in loaded.apm_components.agents.assets) == (
+        "com.microsoft.apm/agents/agent.md",
+    )
+    assert tuple(asset.path for asset in loaded.apm_components.commands.assets) == (
+        "com.microsoft.apm/commands/hello.md",
+    )
+    assert tuple(asset.path for asset in loaded.apm_components.instructions.assets) == (
+        "com.microsoft.apm/instructions/note.md",
+    )
+    assert tuple(asset.path for asset in loaded.apm_components.extensions.assets) == (
+        "com.microsoft.apm/extensions/ext.json",
+    )
+    assert loaded.apm_components.lsp is not None
+    assert tuple(server.name for server in loaded.apm_components.lsp.servers) == ("pyright",)
+    assert loaded.apm_components.lsp.servers[0].extension_to_language == ((".py", "python"),)
+    assert loaded.apm_components.lsp.servers[0].executables[0].declaration == ("pyright-langserver")
+    assert loaded.apm_components.lsp.servers[0].executables[0].asset is None
+    assert tuple(asset.path for asset in loaded.apm_components.lsp.assets) == (
+        "com.microsoft.apm/lsp.json",
+    )
+    assert loaded.apm_components.hooks is not None
+    assert loaded.apm_components.hooks.document.thaw() == {"preCommit": [{"command": "lint"}]}
+    assert loaded.apm_components.hooks.executables[0].declaration == "lint"
+    assert loaded.apm_components.hooks.executables[0].asset is None
+    assert tuple(asset.path for asset in loaded.apm_components.hooks.assets) == (
+        "com.microsoft.apm/hooks/hooks.json",
+    )
+
+
+def test_agent_bundle_round_trip_accepts_symlinked_output_ancestor(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    real_output_parent = tmp_path / "real-output"
+    real_output_parent.mkdir()
+    output_alias = tmp_path / "output-alias"
+    output_alias.symlink_to(real_output_parent, target_is_directory=True)
+
+    result = export_agent_plugin_bundle(project, output_alias / "build")
+
+    assert result.bundle_path == output_alias / "build" / "agent-pack-1.2.3"
+    loaded = load_agent_plugin(result.bundle_path)
+    assert loaded.root == result.bundle_path.resolve()
+    assert loaded.apm_components is not None
+    assert loaded.apm_components.agents is not None
 
 
 def test_agent_bundle_dry_run_does_not_claim_default_flip_before_t10(
@@ -348,6 +401,44 @@ def test_agent_bundle_invalid_skill_fails_before_output_commit(tmp_path: Path) -
         export_agent_plugin_bundle(project, build)
 
     assert not (build / "agent-pack-1.2.3").exists()
+
+
+def test_agent_bundle_malformed_lsp_fails_before_directory_commit(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    _write_lockfile(project, lsp_configs={"broken": "not-an-object"})
+    build = tmp_path / "build"
+    existing = build / "agent-pack-1.2.3"
+    existing.mkdir(parents=True)
+    (existing / "sentinel").write_bytes(b"preserved-directory")
+
+    with pytest.raises(ValueError, match="Every LSP server"):
+        export_agent_plugin_bundle(project, build)
+
+    assert (existing / "sentinel").read_bytes() == b"preserved-directory"
+
+
+def test_agent_bundle_literal_secret_lsp_fails_before_archive_commit(tmp_path: Path) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    _write_lockfile(
+        project,
+        lsp_configs={
+            "unsafe": {
+                "name": "unsafe",
+                "command": "pyright-langserver",
+                "extensionToLanguage": {".py": "python"},
+                "env": {"API_TOKEN": "literal-secret"},
+            }
+        },
+    )
+    build = tmp_path / "build"
+    build.mkdir()
+    existing_archive = build / "agent-pack-1.2.3.zip"
+    existing_archive.write_bytes(b"preserved-archive")
+
+    with pytest.raises(ValueError, match="literal secret"):
+        export_agent_plugin_bundle(project, build, archive=True)
+
+    assert existing_archive.read_bytes() == b"preserved-archive"
 
 
 def test_agent_bundle_loader_failure_preserves_existing_output(
