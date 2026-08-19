@@ -63,9 +63,6 @@ INVENTORY_FUNCTIONS = {
     "_asset_classification",
     "_asset_component",
     "_declared_executable_component",
-    "_append_declared_executables",
-    "_append_file_component_assets",
-    "_append_unreferenced_assets",
 }
 FORBIDDEN_INVENTORY_CALLS = {
     "glob",

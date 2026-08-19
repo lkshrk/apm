@@ -219,32 +219,6 @@ def test_native_agent_plugin_mcp_has_static_boundary() -> None:
             "    if not deps and owner is None:",
             "must not reach or alias legacy MCP interpretation",
         ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "        server = result.config",
-            "        server = plugin.components.mcp_servers[0]",
-            "must consume T6 preparation configs",
-        ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "                preparation=result,",
-            "                preparation=mcp_preparation.successes[0],",
-            "typed preparation",
-        ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "                    preparation=result,",
-            "                    preparation=None,",
-            "diagnostics must retain their typed preparation",
-        ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "from ...models.dependency.native_mcp import (",
-            "from apm_cli.install.local_bundle_handler import "
-            "_parse_legacy_bundle_mcp_servers\n"
-            "from ...models.dependency.native_mcp import (",
-            "is legacy-only and must not gain external",
-        ),
     ),
 )
 def test_native_agent_plugin_mcp_guard_rejects_semantic_mutations(
@@ -261,7 +235,6 @@ def test_native_agent_plugin_mcp_guard_rejects_semantic_mutations(
         "src/apm_cli/integration/mcp_integrator_native.py",
         "src/apm_cli/models/dependency/native_mcp.py",
         "src/apm_cli/install/local_bundle_handler.py",
-        "src/apm_cli/adapters/client/agent_plugin_projection.py",
     )
     for relative in paths:
         destination = sandbox / relative

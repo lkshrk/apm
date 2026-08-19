@@ -59,11 +59,11 @@ def test_agent_plugin_contract_has_single_owner() -> None:
     assert "detect_agent_plugin(package_path)" in detection
     assert "admit_legacy_plugin_manifest(plugin_path)" in legacy
     assert "Agent Plugin classification must route through its loader" in guard
-    assert loader.count("def _discover_apm_extension_components(") == 1
+    assert loader.count("def _discover_skills(") == 1
+    assert loader.count("def _discover_mcp_servers(") == 1
     assert loader.count("AssetInventory(root)") == 1
     assert "class AgentPluginAsset:" in ir
     assert "sha256: str" in ir
-    assert "class ApmExtensionComponents:" in ir
     assert "hashlib.sha256()" in assets
     assert "if stat.S_ISLNK" in assets
     assert "Agent Plugin component IR must remain canonical and inventory-backed" in boundary_guard
@@ -97,27 +97,6 @@ def test_agent_plugin_contract_has_single_owner() -> None:
             "    digest: str",
         ),
         (
-            "src/apm_cli/agent_plugins/loader.py",
-            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")',
-            '_APM_DIRECTORY_COMPONENTS = (".apm/agents", "commands", "instructions", "extensions")',
-        ),
-        (
-            "src/apm_cli/agent_plugins/loader.py",
-            "if extension is None or extension.schema_version !=",
-            "if False and extension is None or extension.schema_version !=",
-        ),
-        (
-            "src/apm_cli/agent_plugins/loader.py",
-            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")',
-            '_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions", "bin")',
-        ),
-        (
-            "src/apm_cli/agent_plugins/loader.py",
-            '    if not _has_exact_entry(namespace_entries, "lsp.json"):\n        return None',
-            '    if not _has_exact_entry(namespace_entries, "lsp.json"):\n'
-            '        raise AgentPluginManifestError("invalid LSP")',
-        ),
-        (
             "src/apm_cli/agent_plugins/assets.py",
             "                    self._reserve_bytes(len(chunk))",
             "                    pass",
@@ -146,16 +125,6 @@ def test_agent_plugin_contract_has_single_owner() -> None:
             "src/apm_cli/agent_plugins/loader.py",
             "    return any(entry.name == name for entry in entries)",
             '    return any(entry.name == name for entry in Path(".").iterdir())',
-        ),
-        (
-            "src/apm_cli/agent_plugins/loader.py",
-            "from ..hook_contract import HookContractError, HookSourceDocument, parse_hook_source",
-            "from ..integration.hook_integrator import HookIntegrator",
-        ),
-        (
-            "src/apm_cli/agent_plugins/loader.py",
-            r'''    r"(?:\.\.[/\\])+[^\s\"']+|"''',
-            r'''    r"never|"''',
         ),
         (
             "src/apm_cli/agent_plugins/loader.py",

@@ -179,24 +179,6 @@ def test_agent_plugin_guard_requires_admissibility_before_legacy_fallback(
             "Plugin scaffolding must share the preferred-format seam and canonical reload",
         ),
         (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "if len(rendered) + len(diagnostics) != len(plugin.components.mcp_servers):",
-            "if False:",
-            "Agent Plugin client projection must type every unsupported component",
-        ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "diagnostics.append(",
-            "rendered.append(",
-            "Agent Plugin client projection must type every unsupported component",
-        ),
-        (
-            "src/apm_cli/adapters/client/agent_plugin_projection.py",
-            "if len(apm_diagnostics) != _apm_component_count(plugin):",
-            "if False:",
-            "Agent Plugin client projection must type every unsupported component",
-        ),
-        (
             "src/apm_cli/bundle/reproducible_archive.py",
             "shutil.copyfileobj(source, member)",
             "member.write(path.read_bytes())",

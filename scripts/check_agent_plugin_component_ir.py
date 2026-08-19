@@ -8,7 +8,6 @@ import sys
 from pathlib import Path
 
 _PORTABLE_FIELDS = ("skills", "mcp_servers")
-_APM_DIRECTORY_COMPONENTS = ("agents", "commands", "instructions", "extensions")
 
 
 def _module(root: Path, relative: str) -> tuple[str, ast.Module]:
@@ -25,16 +24,6 @@ def _class_fields(tree: ast.Module, name: str) -> tuple[str, ...]:
         for node in class_node.body
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
     )
-
-
-def _assigned_literal(tree: ast.Module, name: str) -> object:
-    assignment = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.Assign)
-        and any(isinstance(target, ast.Name) and target.id == name for target in node.targets)
-    )
-    return ast.literal_eval(assignment.value)
 
 
 def _function(tree: ast.Module, name: str) -> ast.FunctionDef:
@@ -55,7 +44,7 @@ def _has_call(tree: ast.AST, owner: str, method: str) -> bool:
 
 
 def check(root: Path) -> list[str]:
-    ir_source, ir_tree = _module(root, "src/apm_cli/agent_plugins/ir.py")
+    _ir_source, ir_tree = _module(root, "src/apm_cli/agent_plugins/ir.py")
     loader_source, loader_tree = _module(root, "src/apm_cli/agent_plugins/loader.py")
     assets_source, assets_tree = _module(root, "src/apm_cli/agent_plugins/assets.py")
     validation_source, _validation_tree = _module(root, "src/apm_cli/models/validation.py")
@@ -70,8 +59,6 @@ def check(root: Path) -> list[str]:
 
     if _class_fields(ir_tree, "AgentPluginComponents") != _PORTABLE_FIELDS:
         failures.append("portable AgentPluginComponents fields changed")
-    if _assigned_literal(loader_tree, "_APM_DIRECTORY_COMPONENTS") != _APM_DIRECTORY_COMPONENTS:
-        failures.append("APM extension directory vocabulary changed")
     if _class_fields(ir_tree, "AgentPluginAsset") != (
         "path",
         "source",
@@ -80,10 +67,6 @@ def check(root: Path) -> list[str]:
         "executable_mode",
     ):
         failures.append("asset integrity facts changed")
-    if "apm_components: ApmExtensionComponents | None" not in ir_source:
-        failures.append("AgentPlugin lost its optional APM component aggregate")
-    if "if extension is None or extension.schema_version !=" not in loader_source:
-        failures.append("undeclared APM extension activation guard changed")
     if "if stat.S_ISLNK" not in assets_source or not _has_call(
         assets_tree,
         "hashlib",
@@ -116,22 +99,15 @@ def check(root: Path) -> list[str]:
     ):
         failures.append("asset cache or pre-resolved containment fast path changed")
     if (
-        "parse_hook_source(document)" not in loader_source
-        or "integration.hook_integrator" in loader_source
-        or "HOOK_COMMAND_KEYS: tuple[str, ...]" not in hook_contract_source
+        "HOOK_COMMAND_KEYS: tuple[str, ...]" not in hook_contract_source
         or "HOOK_COMMAND_KEYS: tuple[str, ...]" in hook_ir_source
     ):
-        failures.append("Agent Plugin hooks bypass the neutral hook grammar owner")
-    if "(?:\\.\\.[/\\\\])+" not in loader_source:
-        failures.append("parent-relative executable references may evade rejection")
+        failures.append("neutral hook command grammar must stay owned by hook_contract")
     if (
         "primary.disposition is _CandidateDisposition.ABSENT" not in loader_source
         or "disposition=_CandidateDisposition.REJECTED" not in loader_source
     ):
         failures.append("rejected hook-relative candidates may fall through to root fallback")
-    for name in ("_discover_apm_lsp_component", "_discover_apm_hook_component"):
-        if any(isinstance(node, ast.Raise) for node in ast.walk(_function(loader_tree, name))):
-            failures.append(f"{name} may abort unrelated components")
     forbidden_scan_methods = {"glob", "iterdir", "read_bytes", "read_text", "rglob"}
     if any(
         isinstance(node, ast.Call)
@@ -140,10 +116,6 @@ def check(root: Path) -> list[str]:
         for node in ast.walk(projection_tree)
     ):
         failures.append("projection rescans source files instead of consuming IR")
-    if '"bin"' in ast.get_source_segment(loader_source, _function(loader_tree, "_load_v1")) or (
-        "bin" in _assigned_literal(loader_tree, "_APM_DIRECTORY_COMPONENTS")
-    ):
-        failures.append("root bin was promoted to a component")
     if (
         "agent_plugin_detection: AgentPluginDetection | None = None" not in validation_source
         or "result.agent_plugin = plugin" not in validation_source

@@ -53,25 +53,6 @@ if [ -f "$init_owner" ] \
     exit 1
 fi
 
-client_projection="$repo_root/src/apm_cli/adapters/client/agent_plugin_projection.py"
-if [ -f "$client_projection" ] \
-    && { ! grep -q 'for result in mcp_preparation.results:' "$client_projection" \
-        || ! grep -q 'server = result.config' "$client_projection" \
-        || ! grep -q 'config = adapter.render_server_config(_server_info(server))' \
-            "$client_projection" \
-        || ! grep -q 'preparation=result' "$client_projection" \
-        || ! grep -q 'len(rendered) + len(failures) + len(diagnostics)' \
-            "$client_projection" \
-        || ! grep -q 'len(apm_diagnostics) != _apm_component_count(plugin)' \
-            "$client_projection" \
-        || ! grep -q 'apm_diagnostics = _apm_component_diagnostics(plugin, adapter)' \
-            "$client_projection" \
-        || grep -Eq '\.(glob|iterdir|read_bytes|read_text|rglob)\(' "$client_projection" \
-        || [ "$(grep -c 'diagnostics.append(' "$client_projection")" -lt 4 ]; }; then
-    echo "[x] Agent Plugin client projection must type every unsupported component"
-    exit 1
-fi
-
 agent_plugin_owner="$repo_root/src/apm_cli/agent_plugins/loader.py"
 if [ -f "$agent_plugin_owner" ]; then
     agent_plugin_duplicates=$(

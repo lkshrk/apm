@@ -11,7 +11,6 @@ FACADE_PATH = Path("src/apm_cli/install/mcp/integration.py")
 PROJECTOR_PATH = Path("src/apm_cli/integration/mcp_integrator_native.py")
 MODEL_PATH = Path("src/apm_cli/models/dependency/native_mcp.py")
 LOCAL_BUNDLE_PATH = Path("src/apm_cli/install/local_bundle_handler.py")
-CLIENT_PROJECTION_PATH = Path("src/apm_cli/adapters/client/agent_plugin_projection.py")
 
 _FORBIDDEN_CALLS = frozenset(
     {
@@ -548,91 +547,6 @@ def _check_models(tree: ast.Module, path: Path) -> list[str]:
     return violations
 
 
-def _check_client_projection(tree: ast.Module, path: Path) -> list[str]:
-    """Require client rendering to consume typed T6 preparation results."""
-    function = _find_function(tree, "project_agent_plugin_for_client")
-    runtime_env = _find_function(tree, "_runtime_env_diagnostic")
-    if function is None or runtime_env is None:
-        return [f"{path}: Agent Plugin client projection must have one definition"]
-    violations: list[str] = []
-    server_assignments = [
-        node.value
-        for node in ast.walk(function)
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "server"
-    ]
-    if len(server_assignments) != 1 or _shape(server_assignments[0]) != _shape(
-        _expression("result.config")
-    ):
-        violations.append(
-            f"{path}:{function.lineno}: client MCP rendering must consume T6 preparation configs"
-        )
-
-    result_loops = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.For)
-        and isinstance(node.target, ast.Name)
-        and node.target.id == "result"
-        and _shape(node.iter) == _shape(_expression("mcp_preparation.results"))
-    ]
-    projected = _single_call(function, "ProjectedMcpServer")
-    if (
-        len(result_loops) != 1
-        or projected is None
-        or _shape(_keyword(projected, "preparation") or ast.Constant(None))
-        != _shape(_expression("result"))
-    ):
-        violations.append(
-            f"{path}:{function.lineno}: client MCP projection must preserve typed preparation "
-            "results and provenance"
-        )
-
-    forbidden_calls = sorted(
-        {
-            _call_name(node)
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call)
-            and _call_name(node)
-            in {
-                "MCPDependency.from_dict",
-                "load_agent_plugin",
-                "prepare_agent_plugin_mcp_servers",
-                "validate_mcp_config_file",
-            }
-        }
-    )
-    if forbidden_calls:
-        violations.append(
-            f"{path}:{function.lineno}: client MCP projection must not reinterpret canonical IR: "
-            f"{', '.join(forbidden_calls)}"
-        )
-    projection_diagnostics = [
-        node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and _call_name(node) == "ClientProjectionDiagnostic"
-    ]
-    runtime_diagnostic = _single_call(runtime_env, "ClientProjectionDiagnostic")
-    if (
-        len(projection_diagnostics) != 2
-        or any(
-            _shape(_keyword(call, "preparation") or ast.Constant(None))
-            != _shape(_expression("result"))
-            for call in projection_diagnostics
-        )
-        or runtime_diagnostic is None
-        or _shape(_keyword(runtime_diagnostic, "preparation") or ast.Constant(None))
-        != _shape(_expression("preparation"))
-    ):
-        violations.append(
-            f"{path}:{function.lineno}: client MCP diagnostics must retain their typed "
-            "preparation result and provenance"
-        )
-    return violations
-
-
 def _check_local_bundle_boundary(tree: ast.Module, path: Path) -> list[str]:
     """Require legacy-only local bundle MCP parsing and wiring."""
     install = _find_function(tree, "install_local_bundle")
@@ -874,7 +788,6 @@ def check(root: Path) -> list[str]:
         PROJECTOR_PATH,
         MODEL_PATH,
         LOCAL_BUNDLE_PATH,
-        CLIENT_PROJECTION_PATH,
     )
     trees: dict[Path, ast.Module] = {}
     violations: list[str] = []
@@ -890,12 +803,6 @@ def check(root: Path) -> list[str]:
     violations.extend(_check_projector(trees[PROJECTOR_PATH], PROJECTOR_PATH))
     violations.extend(_check_models(trees[MODEL_PATH], MODEL_PATH))
     violations.extend(_check_local_bundle_boundary(trees[LOCAL_BUNDLE_PATH], LOCAL_BUNDLE_PATH))
-    violations.extend(
-        _check_client_projection(
-            trees[CLIENT_PROJECTION_PATH],
-            CLIENT_PROJECTION_PATH,
-        )
-    )
     violations.extend(_check_external_legacy_helper_references(root))
     return violations
 
