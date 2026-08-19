@@ -164,7 +164,15 @@ def test_agent_bundle_writes_portable_core_and_valid_docs(tmp_path: Path) -> Non
     _validate(_MCP_SCHEMA_PATH, mcp_json)
     assert "extensions" not in plugin_json
     assert lockfile["pack"]["format"] == "agent-plugin"
-    assert any("non-portable primitives" in warning for warning in result.warnings)
+    dropped_warnings = [w for w in result.warnings if "non-portable primitives" in w]
+    assert dropped_warnings
+    # The single dropped-surface warning must name every non-portable primitive
+    # dropped from the portable core, including hooks (collected on a separate
+    # channel from skills/agents/commands/instructions/extensions).
+    assert all(
+        surface in dropped_warnings[0]
+        for surface in ("agents", "commands", "instructions", "extensions", "hooks")
+    )
     loaded = load_agent_plugin(bundle)
     assert loaded.identity.name == "agent-pack"
     assert loaded.identity.version == "1.2.3"
@@ -176,6 +184,37 @@ def test_agent_bundle_writes_portable_core_and_valid_docs(tmp_path: Path) -> Non
     assert loaded.components.mcp_servers[0].executables[0].declaration == "tool"
     assert loaded.components.mcp_servers[0].executables[0].asset is None
     assert loaded.apm_extension is None
+
+
+def test_agent_bundle_explicit_includes_warns_when_dropping_hooks(tmp_path: Path) -> None:
+    """An explicit includes list that lists a hook must warn that hooks drop."""
+    project = tmp_path / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    project.joinpath("apm.yml").write_text(
+        "name: agent-pack\nversion: 1.2.3\ndescription: Includes hook drop test\n"
+        "includes:\n  - .apm/skills/demo/SKILL.md\n  - .apm/hooks/hooks.json\n",
+        encoding="utf-8",
+    )
+    _write_lockfile(project)
+    (project / ".apm" / "skills" / "demo").mkdir(parents=True, exist_ok=True)
+    (project / ".apm" / "skills" / "demo" / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n\nUse the demo skill.\n",
+        encoding="utf-8",
+    )
+    (project / ".apm" / "hooks").mkdir(parents=True, exist_ok=True)
+    (project / ".apm" / "hooks" / "hooks.json").write_text(
+        json.dumps({"preCommit": [{"command": "lint"}]}),
+        encoding="utf-8",
+    )
+
+    result = export_agent_plugin_bundle(project, tmp_path / "build")
+
+    assert not (result.bundle_path / "hooks").exists()
+    dropped_warnings = [w for w in result.warnings if "non-portable primitives" in w]
+    assert dropped_warnings
+    assert "hooks" in dropped_warnings[0]
+    loaded = load_agent_plugin(result.bundle_path)
+    assert [skill.directory_name for skill in loaded.components.skills] == ["demo"]
 
 
 def test_agent_bundle_round_trip_accepts_symlinked_output_ancestor(tmp_path: Path) -> None:

@@ -71,6 +71,23 @@ def _portable_components(
     return retained, dropped
 
 
+def _apm_hooks_present(apm_dir: Path) -> bool:
+    """Report whether ``.apm/hooks/`` carries a hook document.
+
+    Hooks are not representable by the portable Agent Plugins v1 core and are
+    collected on a separate channel from :func:`_portable_components`, so this
+    probe lets the caller fold ``hooks`` into the single dropped-surface warning
+    without opening or parsing the files.
+    """
+    hooks_dir = apm_dir / "hooks"
+    if not hooks_dir.is_dir():
+        return False
+    return any(
+        entry.is_file() and entry.suffix == ".json" and not entry.is_symlink()
+        for entry in hooks_dir.iterdir()
+    )
+
+
 def _copy_optional_root_file(project_root: Path, bundle_dir: Path, name: str) -> str | None:
     source = project_root / name
     if not source.is_file() or source.is_symlink():
@@ -325,14 +342,18 @@ def export_agent_plugin_bundle(
 
     own_apm_dir = project_root / ".apm"
     if isinstance(package.includes, list):
-        own_components, _root_hooks = _collect_explicit_local_components(
+        own_components, root_hooks = _collect_explicit_local_components(
             project_root, package.includes
         )
         own_components, own_dropped = _portable_components(own_components)
         dropped_surfaces |= own_dropped
+        if root_hooks:
+            dropped_surfaces.add("hooks")
     else:
         own_components, own_dropped = _portable_components(_collect_apm_components(own_apm_dir))
         dropped_surfaces |= own_dropped
+        if _apm_hooks_present(own_apm_dir):
+            dropped_surfaces.add("hooks")
         if own_apm_dir.is_dir():
             _warn_skipped_root_components(project_root, logger)
         else:
