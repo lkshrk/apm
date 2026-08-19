@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def _checker() -> ModuleType:
     root = Path(__file__).parents[3]
@@ -99,6 +101,17 @@ def test_missing_component_identity_validation_is_rejected(tmp_path: Path) -> No
     assert any("component validation is missing" in message for message in _messages(root))
 
 
+def test_missing_executable_declaration_validation_is_rejected(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace("            or not component.declaration\n", "            or False\n", 1)
+    )
+
+    assert any("component validation is missing" in message for message in _messages(root))
+
+
 def test_missing_plugin_name_validation_is_rejected(tmp_path: Path) -> None:
     root = _contract_root(tmp_path)
     owner = root / "src/apm_cli/security/executables.py"
@@ -121,6 +134,85 @@ def test_missing_content_digest_validation_is_rejected(tmp_path: Path) -> None:
     )
 
     assert any("source-fact validation is missing" in message for message in _messages(root))
+
+
+def test_missing_asset_digest_validation_is_rejected(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace(
+            "    digest = component.asset_sha256\n",
+            '    digest = ""\n',
+            1,
+        )
+    )
+
+    assert any("executable asset validation is missing" in message for message in _messages(root))
+
+
+def test_missing_asset_failure_is_rejected(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace(
+            "            FAILURE_MISSING_ASSET,\n",
+            "            FAILURE_INVALID_PROVENANCE,\n",
+            1,
+        )
+    )
+
+    assert any("asset validation must fail closed" in message for message in _messages(root))
+
+
+def test_external_and_missing_asset_state_cannot_be_collapsed(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace(
+            "    if relative is None and asset is None:\n",
+            "    if asset is None:\n",
+            1,
+        )
+    )
+
+    assert any(
+        "distinguish external, missing, and verified assets" in message
+        for message in _messages(root)
+    )
+
+
+def test_verified_asset_path_binding_cannot_be_removed(tmp_path: Path) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(text.replace("asset.path == relative", "True", 1))
+
+    assert any("must bind their canonical path facts" in message for message in _messages(root))
+
+
+@pytest.mark.parametrize("forbidden_call", ("rglob", "read_text", "open_verified_asset"))
+def test_canonical_inventory_cannot_rediscover_or_reopen_files(
+    tmp_path: Path,
+    forbidden_call: str,
+) -> None:
+    root = _contract_root(tmp_path)
+    owner = root / "src/apm_cli/security/executables.py"
+    text = owner.read_text()
+    owner.write_text(
+        text.replace(
+            '    plugin_root = Path(getattr(plugin, "root", Path(".")))\n',
+            '    plugin_root = Path(getattr(plugin, "root", Path(".")))\n'
+            f"    plugin_root.{forbidden_call}('*')\n",
+            1,
+        )
+    )
+
+    assert any(
+        "cannot rediscover, reparse, or reopen files" in message for message in _messages(root)
+    )
 
 
 def test_implicit_gate_disabled_approval_mutation_is_rejected(tmp_path: Path) -> None:

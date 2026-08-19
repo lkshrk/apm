@@ -46,9 +46,40 @@ REQUIRED_COMPONENT_VALIDATION = {
     "args",
     "cwd",
     "provenance",
+    "declaration",
+}
+REQUIRED_ASSET_VALIDATION = {
+    "asset_state",
+    "plugin_relative_path",
+    "asset_sha256",
+    "asset_size",
+    "asset_executable_mode",
 }
 REQUIRED_CONTEXT_VALIDATION = {"plugin_name", "plugin_version", "explicit_consent"}
 REQUIRED_SOURCE_VALIDATION = EXPECTED_SOURCE_FIELDS
+INVENTORY_FUNCTIONS = {
+    "inventory_agent_plugin_executables",
+    "_canonical_provenance",
+    "_asset_classification",
+    "_asset_component",
+    "_declared_executable_component",
+    "_append_declared_executables",
+    "_append_file_component_assets",
+    "_append_unreferenced_assets",
+}
+FORBIDDEN_INVENTORY_CALLS = {
+    "glob",
+    "iterdir",
+    "load_agent_plugin",
+    "loads",
+    "open",
+    "open_verified_asset",
+    "parse",
+    "read_bytes",
+    "read_text",
+    "rglob",
+    "walk",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +167,90 @@ def _call_name(call: ast.Call) -> str | None:
     return None
 
 
+def _none_comparison_signatures(node: ast.AST | None) -> set[frozenset[tuple[str, str]]]:
+    """Return name/None comparisons grouped by each conditional expression."""
+    if node is None:
+        return set()
+    signatures: set[frozenset[tuple[str, str]]] = set()
+    for condition in ast.walk(node):
+        if not isinstance(condition, ast.If):
+            continue
+        comparisons: set[tuple[str, str]] = set()
+        for child in ast.walk(condition.test):
+            if (
+                isinstance(child, ast.Compare)
+                and isinstance(child.left, ast.Name)
+                and len(child.ops) == 1
+                and len(child.comparators) == 1
+                and isinstance(child.comparators[0], ast.Constant)
+                and child.comparators[0].value is None
+                and isinstance(child.ops[0], ast.Is | ast.IsNot)
+            ):
+                comparisons.add((child.left.id, type(child.ops[0]).__name__))
+        if comparisons:
+            signatures.add(frozenset(comparisons))
+    return signatures
+
+
+def _assigns_attribute(
+    node: ast.AST | None,
+    *,
+    target_name: str,
+    owner_name: str,
+    attribute_name: str,
+) -> bool:
+    """Return whether a local is assigned from the required canonical fact."""
+    if node is None:
+        return False
+    return any(
+        isinstance(child, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == target_name for target in child.targets
+        )
+        and isinstance(child.value, ast.Attribute)
+        and isinstance(child.value.value, ast.Name)
+        and child.value.value.id == owner_name
+        and child.value.attr == attribute_name
+        for child in ast.walk(node)
+    )
+
+
+def _has_name_attribute_comparison(
+    node: ast.AST | None,
+    *,
+    name: str,
+    operator: type[ast.cmpop],
+    owner: str,
+    attribute: str,
+) -> bool:
+    """Return whether a conditional binds a local to a canonical attribute."""
+    if node is None:
+        return False
+    for child in ast.walk(node):
+        if (
+            not isinstance(child, ast.Compare)
+            or len(child.ops) != 1
+            or not isinstance(child.ops[0], operator)
+            or len(child.comparators) != 1
+        ):
+            continue
+        pairs = (
+            (child.left, child.comparators[0]),
+            (child.comparators[0], child.left),
+        )
+        if any(
+            isinstance(local, ast.Name)
+            and local.id == name
+            and isinstance(fact, ast.Attribute)
+            and isinstance(fact.value, ast.Name)
+            and fact.value.id == owner
+            and fact.attr == attribute
+            for local, fact in pairs
+        ):
+            return True
+    return False
+
+
 def check_root(root: Path) -> list[Violation]:
     """Return trust-owner violations under *root*."""
     violations: list[Violation] = []
@@ -214,6 +329,95 @@ def check_root(root: Path) -> list[Violation]:
                 "source-fact validation is missing: " + ", ".join(missing_source_fields),
             )
         )
+    asset_validator = _definition(owner_tree, "_validate_executable_asset_facts")
+    asset_validation = _loaded_attributes(asset_validator, "component")
+    missing_asset_fields = sorted(REQUIRED_ASSET_VALIDATION - asset_validation)
+    if missing_asset_fields or not _assigns_attribute(
+        asset_validator,
+        target_name="digest",
+        owner_name="component",
+        attribute_name="asset_sha256",
+    ):
+        violations.append(
+            Violation(
+                OWNER_PATH,
+                getattr(asset_validator, "lineno", 1),
+                "executable asset validation is missing"
+                + (": " + ", ".join(missing_asset_fields) if missing_asset_fields else ""),
+            )
+        )
+    asset_validator_names = {
+        child.id
+        for child in ast.walk(asset_validator)
+        if asset_validator is not None
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+    }
+    required_asset_fail_closed_names = {
+        "ASSET_STATE_EXTERNAL",
+        "ASSET_STATE_MISSING",
+        "ASSET_STATE_VERIFIED",
+        "FAILURE_MISSING_ASSET",
+    }
+    if not required_asset_fail_closed_names <= asset_validator_names:
+        violations.append(
+            Violation(
+                OWNER_PATH,
+                getattr(asset_validator, "lineno", 1),
+                "asset validation must fail closed for external, missing, and verified states",
+            )
+        )
+    state_owner = _definition(owner_tree, "_declared_executable_component")
+    required_state_signatures = {
+        frozenset({("relative", "Is"), ("asset", "Is")}),
+        frozenset({("relative", "IsNot"), ("asset", "Is")}),
+        frozenset({("relative", "IsNot"), ("asset", "IsNot")}),
+    }
+    if not required_state_signatures <= _none_comparison_signatures(state_owner):
+        violations.append(
+            Violation(
+                OWNER_PATH,
+                getattr(state_owner, "lineno", 1),
+                "canonical executable states must distinguish external, missing, and verified assets",
+            )
+        )
+    if not _has_name_attribute_comparison(
+        state_owner,
+        name="relative",
+        operator=ast.Eq,
+        owner="asset",
+        attribute="path",
+    ):
+        violations.append(
+            Violation(
+                OWNER_PATH,
+                getattr(state_owner, "lineno", 1),
+                "verified executable assets must bind their canonical path facts",
+            )
+        )
+    for function_name in sorted(INVENTORY_FUNCTIONS):
+        definition = _definition(owner_tree, function_name)
+        if definition is None:
+            violations.append(
+                Violation(OWNER_PATH, 1, f"canonical inventory helper is missing: {function_name}")
+            )
+            continue
+        forbidden = sorted(
+            {
+                name
+                for child in ast.walk(definition)
+                if isinstance(child, ast.Call)
+                and (name := _call_name(child)) in FORBIDDEN_INVENTORY_CALLS
+            }
+        )
+        if forbidden:
+            violations.append(
+                Violation(
+                    OWNER_PATH,
+                    getattr(definition, "lineno", 1),
+                    "canonical executable inventory cannot rediscover, reparse, or reopen files: "
+                    + ", ".join(forbidden),
+                )
+            )
     resolver = _definition(owner_tree, DECISION_OWNER)
     resolver_names = {
         child.id

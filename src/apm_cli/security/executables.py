@@ -21,8 +21,13 @@ import fnmatch
 import os
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any
+
+from apm_cli.utils.path_security import PathTraversalError, validate_path_segments
+
+if TYPE_CHECKING:
+    from apm_cli.agent_plugins.ir import AgentPluginAsset, AgentPluginExecutable
 
 # Executable type constants used as keys in the allowExecutables block.
 EXEC_TYPE_HOOKS = "hooks"
@@ -210,14 +215,30 @@ EXEC_CLASS_DECLARATIVE = "declarative"
 EXEC_CLASS_UNKNOWN = "unknown"
 
 COMPONENT_KIND_SKILL = "skill"
+COMPONENT_KIND_SKILL_ASSET = "skill-asset"
 COMPONENT_KIND_MCP_STDIO = "mcp-stdio"
 COMPONENT_KIND_MCP_REMOTE = "mcp-remote"
 COMPONENT_KIND_MCP_UNKNOWN = "mcp-unknown"
+COMPONENT_KIND_APM_AGENT = "apm-agent"
+COMPONENT_KIND_APM_COMMAND = "apm-command"
+COMPONENT_KIND_APM_INSTRUCTION = "apm-instruction"
+COMPONENT_KIND_APM_EXTENSION = "apm-extension"
+COMPONENT_KIND_APM_HOOK = "apm-hook"
+COMPONENT_KIND_APM_LSP = "apm-lsp"
+
+ASSET_STATE_NONE = "none"
+ASSET_STATE_EXTERNAL = "external"
+ASSET_STATE_MISSING = "missing"
+ASSET_STATE_VERIFIED = "verified"
 
 FAILURE_POLICY_DENIED = "policy-denied"
 FAILURE_APPROVAL_REQUIRED = "approval-required"
 FAILURE_INVALID_PROVENANCE = "invalid-provenance"
 FAILURE_INVALID_COMPONENT = "invalid-component"
+FAILURE_MISSING_ASSET = "missing-asset"
+
+_DECLARATIVE_ASSET_SUFFIXES = frozenset({".json", ".md", ".txt", ".yaml", ".yml"})
+_EXECUTABLE_LIKE_SUFFIXES = frozenset({".bat", ".cmd", ".exe", ".js", ".mjs", ".ps1", ".py", ".sh"})
 
 
 @dataclass(frozen=True)
@@ -295,6 +316,12 @@ class ExecutableComponent:
     args: tuple[str, ...]
     cwd: str | None
     provenance: str
+    declaration: str | None = None
+    asset_state: str = ASSET_STATE_NONE
+    plugin_relative_path: str | None = None
+    asset_sha256: str | None = None
+    asset_size: int | None = None
+    asset_executable_mode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -535,64 +562,195 @@ def build_approval_key(package_name: str, version: str) -> str:
 def inventory_agent_plugin_executables(plugin: Any) -> AgentPluginExecInventory:
     """Classify executable-bearing surfaces represented by canonical plugin IR.
 
-    Agent Plugins v1 skills and remote MCP transports are declarative; stdio
-    MCP servers are executable. Extension and safe-file facts that are not yet
-    represented by the canonical IR are deliberately not rediscovered from
-    filesystem ingress here.
+    This function consumes only immutable loader facts. It never opens,
+    reparses, or searches the plugin root. Agent Plugin assets are classified
+    from their canonical path, digest, size, mode, and declaration provenance.
     """
     identity = getattr(plugin, "identity", None)
     plugin_name = str(getattr(identity, "name", "") or "")
     plugin_version = str(getattr(identity, "version", "") or "")
     plugin_key = build_approval_key(plugin_name, plugin_version)
+    plugin_root = Path(getattr(plugin, "root", Path(".")))
     components: list[ExecutableComponent] = []
     failures: list[ExecComponentFailure] = []
 
     for skill in getattr(getattr(plugin, "components", None), "skills", ()):
-        directory_name = str(getattr(skill, "directory_name", "") or "")
-        components.append(
-            ExecutableComponent(
-                plugin_key=plugin_key,
-                kind=COMPONENT_KIND_SKILL,
-                name=str(getattr(skill, "name", "") or ""),
-                classification=EXEC_CLASS_DECLARATIVE,
-                exec_type=None,
-                command=None,
-                args=(),
-                cwd=None,
-                provenance=f"skills/{directory_name}/SKILL.md" if directory_name else "",
+        skill_name = str(getattr(skill, "name", "") or "")
+        assets = tuple(getattr(skill, "assets", ()) or ())
+        if not assets:
+            failures.append(
+                _component_failure(
+                    plugin_key,
+                    COMPONENT_KIND_SKILL,
+                    skill_name,
+                    FAILURE_INVALID_COMPONENT,
+                    f"Canonical skill {skill_name!r} has no asset inventory",
+                )
             )
-        )
+        for asset in assets:
+            components.append(
+                _asset_component(
+                    plugin_root,
+                    plugin_key,
+                    kind=COMPONENT_KIND_SKILL_ASSET,
+                    name=f"{skill_name}:{asset.path}",
+                    asset=asset,
+                    classification=_asset_classification(
+                        asset,
+                        executable_root_segment="scripts",
+                    ),
+                    exec_type=EXEC_TYPE_BIN,
+                )
+            )
 
     for server in getattr(getattr(plugin, "components", None), "mcp_servers", ()):
         server_type = str(getattr(getattr(server, "server_type", None), "value", "") or "")
         executable = server_type == "stdio"
         declarative = server_type in {"streamable-http", "sse"}
-        pointer = str(getattr(getattr(server, "provenance", None), "json_pointer", "") or "")
+        server_name = str(getattr(server, "name", "") or "")
+        server_executables = tuple(getattr(server, "executables", ()) or ())
+        if executable:
+            if not server_executables:
+                failures.append(
+                    _component_failure(
+                        plugin_key,
+                        COMPONENT_KIND_MCP_STDIO,
+                        server_name,
+                        FAILURE_INVALID_COMPONENT,
+                        f"Canonical stdio MCP server {server_name!r} has no executable fact",
+                    )
+                )
+            for executable_fact in server_executables:
+                components.append(
+                    _declared_executable_component(
+                        plugin_root,
+                        plugin_key,
+                        kind=COMPONENT_KIND_MCP_STDIO,
+                        name=server_name,
+                        exec_type=EXEC_TYPE_MCP,
+                        executable=executable_fact,
+                        command=getattr(server, "command", None),
+                        args=tuple(getattr(server, "args", ()) or ()),
+                        cwd=getattr(server, "cwd", None),
+                    )
+                )
+            continue
+        if declarative and server_executables:
+            failures.append(
+                _component_failure(
+                    plugin_key,
+                    COMPONENT_KIND_MCP_REMOTE if declarative else COMPONENT_KIND_MCP_UNKNOWN,
+                    server_name,
+                    FAILURE_INVALID_COMPONENT,
+                    f"Non-stdio MCP server {server_name!r} carries unexpected executable facts",
+                )
+            )
         components.append(
             ExecutableComponent(
                 plugin_key=plugin_key,
-                kind=(
-                    COMPONENT_KIND_MCP_STDIO
-                    if executable
-                    else COMPONENT_KIND_MCP_REMOTE
-                    if declarative
-                    else COMPONENT_KIND_MCP_UNKNOWN
+                kind=COMPONENT_KIND_MCP_REMOTE if declarative else COMPONENT_KIND_MCP_UNKNOWN,
+                name=server_name,
+                classification=EXEC_CLASS_DECLARATIVE if declarative else EXEC_CLASS_UNKNOWN,
+                exec_type=None,
+                command=None,
+                args=(),
+                cwd=None,
+                provenance=_canonical_provenance(
+                    plugin_root,
+                    getattr(server, "provenance", None),
                 ),
-                name=str(getattr(server, "name", "") or ""),
-                classification=(
-                    EXEC_CLASS_EXECUTABLE
-                    if executable
-                    else EXEC_CLASS_DECLARATIVE
-                    if declarative
-                    else EXEC_CLASS_UNKNOWN
-                ),
-                exec_type=EXEC_TYPE_MCP if executable else None,
-                command=getattr(server, "command", None),
-                args=tuple(getattr(server, "args", ()) or ()),
-                cwd=getattr(server, "cwd", None),
-                provenance=f"mcp.json#{pointer}" if pointer else "",
             )
         )
+
+    apm_components = getattr(plugin, "apm_components", None)
+    if apm_components is not None:
+        for field_name, kind in (
+            ("agents", COMPONENT_KIND_APM_AGENT),
+            ("commands", COMPONENT_KIND_APM_COMMAND),
+            ("instructions", COMPONENT_KIND_APM_INSTRUCTION),
+        ):
+            file_component = getattr(apm_components, field_name, None)
+            if file_component is not None:
+                _append_file_component_assets(
+                    plugin_root,
+                    plugin_key,
+                    file_component,
+                    kind=kind,
+                    exec_type=EXEC_TYPE_BIN,
+                    components=components,
+                )
+
+        extension_component = getattr(apm_components, "extensions", None)
+        if extension_component is not None:
+            _append_file_component_assets(
+                plugin_root,
+                plugin_key,
+                extension_component,
+                kind=COMPONENT_KIND_APM_EXTENSION,
+                exec_type=EXEC_TYPE_CANVAS,
+                components=components,
+                executable_suffixes=frozenset({".js", ".mjs"}),
+            )
+
+        hook_component = getattr(apm_components, "hooks", None)
+        if hook_component is not None:
+            hook_executables = tuple(getattr(hook_component, "executables", ()) or ())
+            _append_declared_executables(
+                plugin_root,
+                plugin_key,
+                hook_executables,
+                kind=COMPONENT_KIND_APM_HOOK,
+                name="hooks",
+                exec_type=EXEC_TYPE_HOOKS,
+                components=components,
+            )
+            _append_unreferenced_assets(
+                plugin_root,
+                plugin_key,
+                tuple(getattr(hook_component, "assets", ()) or ()),
+                hook_executables,
+                kind=COMPONENT_KIND_APM_HOOK,
+                exec_type=EXEC_TYPE_HOOKS,
+                components=components,
+            )
+
+        lsp_component = getattr(apm_components, "lsp", None)
+        if lsp_component is not None:
+            lsp_executables: list[AgentPluginExecutable] = []
+            for server in tuple(getattr(lsp_component, "servers", ()) or ()):
+                server_executables = tuple(getattr(server, "executables", ()) or ())
+                server_name = str(getattr(server, "name", "") or "")
+                if not server_executables:
+                    failures.append(
+                        _component_failure(
+                            plugin_key,
+                            COMPONENT_KIND_APM_LSP,
+                            server_name,
+                            FAILURE_INVALID_COMPONENT,
+                            f"Canonical LSP server {server_name!r} has no executable facts",
+                        )
+                    )
+                lsp_executables.extend(server_executables)
+                _append_declared_executables(
+                    plugin_root,
+                    plugin_key,
+                    server_executables,
+                    kind=COMPONENT_KIND_APM_LSP,
+                    name=server_name,
+                    exec_type=EXEC_TYPE_LSP,
+                    components=components,
+                    command=getattr(server, "command", None),
+                    args=tuple(getattr(server, "args", ()) or ()),
+                )
+            _append_unreferenced_assets(
+                plugin_root,
+                plugin_key,
+                tuple(getattr(lsp_component, "assets", ()) or ()),
+                tuple(lsp_executables),
+                kind=COMPONENT_KIND_APM_LSP,
+                exec_type=EXEC_TYPE_LSP,
+                components=components,
+            )
 
     return AgentPluginExecInventory(
         components=tuple(
@@ -619,6 +777,204 @@ def inventory_agent_plugin_executables(plugin: Any) -> AgentPluginExecInventory:
             )
         ),
     )
+
+
+def _canonical_provenance(plugin_root: Path, provenance: Any) -> str:
+    """Return exact logical provenance without resolving or reopening its path."""
+    source_path = getattr(provenance, "path", None)
+    if not isinstance(source_path, Path):
+        return ""
+    try:
+        relative = source_path.relative_to(plugin_root).as_posix()
+    except ValueError:
+        return ""
+    pointer = str(getattr(provenance, "json_pointer", "") or "")
+    return f"{relative}#{pointer}" if pointer else relative
+
+
+def _asset_classification(
+    asset: AgentPluginAsset,
+    *,
+    executable_root_segment: str | None = None,
+    executable_suffixes: frozenset[str] = _EXECUTABLE_LIKE_SUFFIXES,
+) -> str:
+    """Classify one immutable asset fact without reading its content."""
+    path = PurePosixPath(asset.path)
+    if (
+        asset.executable_mode
+        or (executable_root_segment is not None and executable_root_segment in path.parts)
+        or path.suffix.lower() in executable_suffixes
+    ):
+        return EXEC_CLASS_EXECUTABLE
+    if path.suffix.lower() in _DECLARATIVE_ASSET_SUFFIXES:
+        return EXEC_CLASS_DECLARATIVE
+    return EXEC_CLASS_UNKNOWN
+
+
+def _asset_component(
+    plugin_root: Path,
+    plugin_key: str,
+    *,
+    kind: str,
+    name: str,
+    asset: AgentPluginAsset,
+    classification: str,
+    exec_type: str,
+) -> ExecutableComponent:
+    """Build one component solely from a verified immutable asset fact."""
+    executable = classification == EXEC_CLASS_EXECUTABLE
+    return ExecutableComponent(
+        plugin_key=plugin_key,
+        kind=kind,
+        name=name,
+        classification=classification,
+        exec_type=exec_type if executable else None,
+        command=f"./{asset.path}" if executable else None,
+        args=(),
+        cwd=None,
+        provenance=_canonical_provenance(plugin_root, asset.source),
+        declaration=f"./{asset.path}" if executable else None,
+        asset_state=ASSET_STATE_VERIFIED,
+        plugin_relative_path=asset.path,
+        asset_sha256=asset.sha256,
+        asset_size=asset.size,
+        asset_executable_mode=asset.executable_mode,
+    )
+
+
+def _declared_executable_component(
+    plugin_root: Path,
+    plugin_key: str,
+    *,
+    kind: str,
+    name: str,
+    exec_type: str,
+    executable: AgentPluginExecutable,
+    command: str | None = None,
+    args: tuple[str, ...] = (),
+    cwd: str | None = None,
+) -> ExecutableComponent:
+    """Preserve external, missing, and verified declaration states exactly."""
+    relative = executable.plugin_relative_path
+    asset = executable.asset
+    if relative is None and asset is None:
+        asset_state = ASSET_STATE_EXTERNAL
+    elif relative is not None and asset is None:
+        asset_state = ASSET_STATE_MISSING
+    elif relative is not None and asset is not None and asset.path == relative:
+        asset_state = ASSET_STATE_VERIFIED
+    else:
+        asset_state = ASSET_STATE_NONE
+    component_name = f"{name}:{relative or executable.declaration}"
+    return ExecutableComponent(
+        plugin_key=plugin_key,
+        kind=kind,
+        name=component_name,
+        classification=EXEC_CLASS_EXECUTABLE,
+        exec_type=exec_type,
+        command=command or executable.declaration,
+        args=args,
+        cwd=cwd,
+        provenance=_canonical_provenance(plugin_root, executable.provenance),
+        declaration=executable.declaration,
+        asset_state=asset_state,
+        plugin_relative_path=relative,
+        asset_sha256=asset.sha256 if asset is not None else None,
+        asset_size=asset.size if asset is not None else None,
+        asset_executable_mode=asset.executable_mode if asset is not None else None,
+    )
+
+
+def _append_declared_executables(
+    plugin_root: Path,
+    plugin_key: str,
+    executables: tuple[AgentPluginExecutable, ...],
+    *,
+    kind: str,
+    name: str,
+    exec_type: str,
+    components: list[ExecutableComponent],
+    command: str | None = None,
+    args: tuple[str, ...] = (),
+    cwd: str | None = None,
+) -> None:
+    """Append canonical declaration facts without consulting the filesystem."""
+    for executable in executables:
+        components.append(
+            _declared_executable_component(
+                plugin_root,
+                plugin_key,
+                kind=kind,
+                name=name,
+                exec_type=exec_type,
+                executable=executable,
+                command=command,
+                args=args,
+                cwd=cwd,
+            )
+        )
+
+
+def _append_file_component_assets(
+    plugin_root: Path,
+    plugin_key: str,
+    file_component: Any,
+    *,
+    kind: str,
+    exec_type: str,
+    components: list[ExecutableComponent],
+    executable_suffixes: frozenset[str] = _EXECUTABLE_LIKE_SUFFIXES,
+) -> None:
+    """Append exact APM extension asset facts with conservative classification."""
+    component_name = str(getattr(file_component, "name", "") or "")
+    for asset in tuple(getattr(file_component, "assets", ()) or ()):
+        components.append(
+            _asset_component(
+                plugin_root,
+                plugin_key,
+                kind=kind,
+                name=f"{component_name}:{asset.path}",
+                asset=asset,
+                classification=_asset_classification(
+                    asset,
+                    executable_suffixes=executable_suffixes,
+                ),
+                exec_type=exec_type,
+            )
+        )
+
+
+def _append_unreferenced_assets(
+    plugin_root: Path,
+    plugin_key: str,
+    assets: tuple[AgentPluginAsset, ...],
+    executables: tuple[AgentPluginExecutable, ...],
+    *,
+    kind: str,
+    exec_type: str,
+    components: list[ExecutableComponent],
+) -> None:
+    """Append declaration documents while rejecting unknown unreferenced code."""
+    referenced = {
+        executable.asset.path for executable in executables if executable.asset is not None
+    }
+    for asset in assets:
+        if asset.path in referenced:
+            continue
+        classification = _asset_classification(asset)
+        if classification == EXEC_CLASS_EXECUTABLE:
+            classification = EXEC_CLASS_UNKNOWN
+        components.append(
+            _asset_component(
+                plugin_root,
+                plugin_key,
+                kind=kind,
+                name=asset.path,
+                asset=asset,
+                classification=classification,
+                exec_type=exec_type,
+            )
+        )
 
 
 def _component_failure(
@@ -765,7 +1121,6 @@ def _validate_exec_decision_context(
         or not component.name
         or not component.kind
         or not component.provenance
-        or component.provenance == "<outside-plugin-root>"
     ):
         return _component_failure(
             component.plugin_key,
@@ -773,6 +1128,14 @@ def _validate_exec_decision_context(
             component.name,
             FAILURE_INVALID_COMPONENT,
             "Executable trust requires canonical plugin identity, version, component identity, and provenance",
+        )
+    if not _is_valid_component_provenance(component.provenance):
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Executable trust requires safe plugin-relative declaration provenance",
         )
     if component.classification not in {
         EXEC_CLASS_EXECUTABLE,
@@ -789,6 +1152,7 @@ def _validate_exec_decision_context(
         if (
             component.exec_type not in ALL_EXEC_TYPES
             or not component.command
+            or not component.declaration
             or not all(isinstance(argument, str) for argument in component.args)
             or (component.cwd is not None and not isinstance(component.cwd, str))
         ):
@@ -799,6 +1163,9 @@ def _validate_exec_decision_context(
                 FAILURE_INVALID_COMPONENT,
                 "Executable components require a recognized type, command, args, and cwd",
             )
+        asset_failure = _validate_executable_asset_facts(component)
+        if asset_failure is not None:
+            return asset_failure
     if not isinstance(source.canonical_source, str) or not source.canonical_source.strip():
         return _component_failure(
             component.plugin_key,
@@ -832,6 +1199,109 @@ def _validate_exec_decision_context(
             component.name,
             FAILURE_INVALID_PROVENANCE,
             "Failed integrity or signature verification cannot be bypassed",
+        )
+    return None
+
+
+def _is_valid_component_provenance(provenance: str) -> bool:
+    """Validate one logical source path and optional JSON pointer."""
+    source_path, separator, pointer = provenance.partition("#")
+    if (
+        not source_path
+        or PurePosixPath(source_path).is_absolute()
+        or (separator and (not pointer or not pointer.startswith("/")))
+    ):
+        return False
+    try:
+        validate_path_segments(
+            source_path,
+            context="Agent Plugin component provenance",
+            reject_empty=True,
+        )
+    except PathTraversalError:
+        return False
+    return True
+
+
+def _validate_executable_asset_facts(
+    component: ExecutableComponent,
+) -> ExecComponentFailure | None:
+    """Validate the canonical external/missing/verified executable state."""
+    if component.asset_state == ASSET_STATE_EXTERNAL:
+        if (
+            component.plugin_relative_path is not None
+            or component.asset_sha256 is not None
+            or component.asset_size is not None
+            or component.asset_executable_mode is not None
+        ):
+            return _component_failure(
+                component.plugin_key,
+                component.kind,
+                component.name,
+                FAILURE_INVALID_PROVENANCE,
+                "External executable facts must not claim package asset integrity",
+            )
+        return None
+
+    if component.asset_state == ASSET_STATE_MISSING:
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_MISSING_ASSET,
+            "Declared package executable is missing its verified asset",
+        )
+
+    if component.asset_state != ASSET_STATE_VERIFIED:
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Executable asset state must be external, missing, or verified",
+        )
+
+    relative = component.plugin_relative_path
+    try:
+        if not isinstance(relative, str) or not relative or PurePosixPath(relative).is_absolute():
+            raise PathTraversalError("invalid canonical asset path")
+        validate_path_segments(
+            relative,
+            context="Agent Plugin executable asset path",
+            reject_empty=True,
+        )
+    except PathTraversalError:
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Verified executable requires a safe plugin-relative asset path",
+        )
+
+    digest = component.asset_sha256
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not isinstance(component.asset_size, int)
+        or isinstance(component.asset_size, bool)
+        or component.asset_size < 0
+        or (
+            component.asset_executable_mode is not None
+            and (
+                not isinstance(component.asset_executable_mode, int)
+                or isinstance(component.asset_executable_mode, bool)
+                or not 0 <= component.asset_executable_mode <= 0o777
+            )
+        )
+    ):
+        return _component_failure(
+            component.plugin_key,
+            component.kind,
+            component.name,
+            FAILURE_INVALID_PROVENANCE,
+            "Verified executable requires canonical digest, size, and mode facts",
         )
     return None
 
