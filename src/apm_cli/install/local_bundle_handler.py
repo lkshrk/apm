@@ -595,10 +595,8 @@ def _filter_bundle_executables(
 
 
 def _bundle_owner_key(bundle_info) -> str:
-    """Return the version-independent service owner for a local bundle."""
-    from .agent_plugin_runtime import stable_agent_plugin_id
-
-    return stable_agent_plugin_id(bundle_info)
+    """Return the version-independent service owner for a legacy local bundle."""
+    return bundle_info.package_id
 
 
 def _require_legacy_bundle_mcp_format(bundle_format: str) -> None:

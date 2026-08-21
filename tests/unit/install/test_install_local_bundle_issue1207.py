@@ -487,6 +487,15 @@ class TestBundleMcpWiring:
     itself is never deployed verbatim.
     """
 
+    def test_legacy_bundle_owner_uses_detected_package_identity(self, tmp_path: Path) -> None:
+        from apm_cli.install.local_bundle_handler import _bundle_owner_key
+
+        bundle = _build_bundle(tmp_path, plugin_id="stable-legacy-bundle")
+        bundle_info = _bundle_info(bundle)
+        bundle_info.package_id = "stable-legacy-bundle"
+
+        assert _bundle_owner_key(bundle_info) == "stable-legacy-bundle"
+
     def test_parse_legacy_bundle_mcp_servers_anthropic_format(self, tmp_path: Path) -> None:
         from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
 
