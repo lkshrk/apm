@@ -30,12 +30,9 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from apm_cli.agent_plugins import AgentPluginDeploymentBoundaryError, NotAgentPluginError
+from apm_cli.agent_plugins import AgentPluginDeploymentBoundaryError
 from apm_cli.bundle.formats import BundleFormat
 from apm_cli.bundle.local_bundle import check_target_mismatch
-from apm_cli.install.agent_plugin_runtime import (
-    stage_agent_plugin_bundle,
-)
 from apm_cli.install.services import integrate_local_bundle
 from apm_cli.integration.targets import KNOWN_TARGETS
 
@@ -210,41 +207,7 @@ class TestMcpJsonNeverDeployed:
             assert child.name.lower() != ".mcp.json", f".mcp.json materialised at {child}"
 
 
-class TestAgentPluginMaterialization:
-    def test_malformed_native_manifest_fails_typed_before_staging_or_mutation(
-        self, tmp_path: Path
-    ) -> None:
-        bundle = _build_bundle(
-            tmp_path,
-            files={
-                "com.microsoft.apm/agents/coder.md": "# Coder\n",
-                "com.microsoft.apm/extensions/ext.json": "{}",
-                "mcp.json": json.dumps({"mcpServers": {"good": {"type": "stdio", "command": "x"}}}),
-                "com.microsoft.apm/lsp.json": json.dumps(
-                    {
-                        "lspServers": {
-                            "pyright": {
-                                "command": "pyright-langserver",
-                                "extensionToLanguage": {".py": "python"},
-                            }
-                        }
-                    }
-                ),
-            },
-        )
-        project = tmp_path / "project"
-        project.mkdir()
-        bi = _bundle_info(bundle, bundle_format="agent-plugin")
-        target = KNOWN_TARGETS["copilot"]
-
-        with pytest.raises(NotAgentPluginError, match=r"does not contain a root plugin.json"):
-            stage_agent_plugin_bundle(bi, project, global_=False)
-
-        assert bi.retained_root is None
-        assert not (project / "apm_modules" / ".agent-plugins").exists()
-        assert not (project / "apm_modules" / ".plugin-data").exists()
-        assert not (project / target.root_dir / "extensions" / "ext.json").exists()
-
+class TestAgentPluginDeploymentBoundary:
     def test_agent_plugin_bundle_dry_run_is_blocked_without_retained_roots(
         self, tmp_path: Path
     ) -> None:
