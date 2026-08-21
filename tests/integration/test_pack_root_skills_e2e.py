@@ -67,7 +67,10 @@ def test_pack_empty_dependencies_creates_bundle_and_copilot_manifest(
     project = tmp_path / "empty-dependencies"
     skill = project / "skills" / "root-skill"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# Root skill\n", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\nname: root-skill\ndescription: Root skill fixture\n---\n# Root skill\n",
+        encoding="utf-8",
+    )
     (project / "apm.yml").write_text(
         "name: empty-dependencies\n"
         "version: 1.0.0\n"
