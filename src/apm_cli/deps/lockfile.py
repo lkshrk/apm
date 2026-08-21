@@ -48,6 +48,19 @@ class UnsupportedLockfileVersionError(LockfileFormatError):
     """Raised when a lockfile declares a version this client cannot read."""
 
 
+def require_supported_lockfile_version(data: object) -> str:
+    """Return a supported declared version or fail closed."""
+    if not isinstance(data, dict):
+        raise LockfileFormatError("Lockfile root must be a mapping")
+    version = data.get("lockfile_version", "1")
+    if not isinstance(version, str) or version not in SUPPORTED_LOCKFILE_VERSIONS:
+        supported = ", ".join(sorted(SUPPORTED_LOCKFILE_VERSIONS))
+        raise UnsupportedLockfileVersionError(
+            f"Unsupported lockfile version {version!r}; supported versions: {supported}"
+        )
+    return version
+
+
 def _validate_lockfile_container(data: object) -> dict[str, Any]:
     """Validate version and top-level container shapes before construction."""
     if not isinstance(data, dict):
@@ -55,12 +68,7 @@ def _validate_lockfile_container(data: object) -> dict[str, Any]:
     data = dict(data)
     # Pre-versioned lockfiles are a supported legacy v1 migration input.
     # Explicit unknown/newer versions still fail closed below.
-    version = data.get("lockfile_version", "1")
-    if not isinstance(version, str) or version not in SUPPORTED_LOCKFILE_VERSIONS:
-        supported = ", ".join(sorted(SUPPORTED_LOCKFILE_VERSIONS))
-        raise UnsupportedLockfileVersionError(
-            f"Unsupported lockfile version {version!r}; supported versions: {supported}"
-        )
+    require_supported_lockfile_version(data)
     list_fields = (
         "dependencies",
         "deployments",

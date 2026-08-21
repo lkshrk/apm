@@ -106,8 +106,6 @@ def _bundle_info(bundle_dir: Path, *, bundle_format: str = "claude-plugin"):
         package_id="ai",
         pack_targets=[lock.get("pack", {}).get("target", "all")],
         format=bundle_format,
-        retained_root=None,
-        data_root=None,
         temp_dir=None,
     )
 
@@ -550,54 +548,6 @@ class TestBundleMcpWiring:
             bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
         )
         assert {d.name for d in deps} == {"good"}
-
-    def test_parse_legacy_bundle_mcp_servers_materializes_placeholders_and_cwd(
-        self, tmp_path: Path
-    ) -> None:
-        from apm_cli.install.local_bundle_handler import _parse_legacy_bundle_mcp_servers
-
-        bundle = tmp_path / "apm-home" / "agent-plugins" / "agent-123"
-        data_root = tmp_path / "apm-home" / "plugin-data" / "agent-123"
-        bundle.mkdir(parents=True)
-        data_root.mkdir(parents=True)
-        (bundle / "mcp.json").write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "tool": {
-                            "type": "stdio",
-                            "command": "./bin/tool",
-                            "cwd": "./run",
-                            "args": ["--root", "${PLUGIN_ROOT}", "--data", "${PLUGIN_DATA}"],
-                            "env": {"ROOT": "${PLUGIN_ROOT}", "DATA": "${PLUGIN_DATA}"},
-                        }
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        deps = _parse_legacy_bundle_mcp_servers(
-            bundle,
-            bundle_format=BundleFormat.CLAUDE_PLUGIN.value,
-            data_root=data_root,
-        )
-        assert len(deps) == 1
-        dep = deps[0]
-        assert dep.command == str((bundle / "bin" / "tool").resolve())
-        assert dep.cwd == str((bundle / "run").resolve())
-        assert dep.args == [
-            "--root",
-            str(bundle),
-            "--data",
-            str(data_root),
-        ]
-        assert dep.env == {
-            "ROOT": str(bundle),
-            "DATA": str(data_root),
-            "PLUGIN_ROOT": str(bundle),
-            "PLUGIN_DATA": str(data_root),
-        }
 
     def test_parse_legacy_bundle_mcp_servers_missing_or_malformed_returns_empty(
         self, tmp_path: Path

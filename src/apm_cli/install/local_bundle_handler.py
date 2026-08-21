@@ -145,7 +145,6 @@ def install_local_bundle(
             _parse_legacy_bundle_mcp_servers(
                 bundle_info.source_dir,
                 bundle_format=bundle_info.format,
-                data_root=bundle_info.data_root,
             )
             if bundle_mcp_declared and bundle_info.source_dir is not None
             else []
@@ -389,8 +388,6 @@ def _parse_legacy_bundle_mcp_servers(
     bundle_dir: Path,
     *,
     bundle_format: str,
-    data_root: Path | None = None,
-    runtime_root: Path | None = None,
 ) -> list[MCPDependency]:
     """Parse legacy bundle MCP metadata into self-defined dependencies.
 
@@ -403,8 +400,6 @@ def _parse_legacy_bundle_mcp_servers(
     from urllib.parse import urlparse
 
     from apm_cli.models.dependency.mcp import MCPDependency
-
-    from ..utils.path_security import PathTraversalError, ensure_path_within
 
     # Case-insensitive lookup mirrors the rest of the bundle metadata
     # filtering (HFS+/NTFS case folding).
@@ -433,71 +428,6 @@ def _parse_legacy_bundle_mcp_servers(
     if not isinstance(servers, dict):
         return []
 
-    bundle_root = (runtime_root or bundle_dir).resolve()
-    retained_layout = runtime_root is not None or bundle_root.parent.name in {
-        ".agent-plugins",
-        "agent-plugins",
-    }
-    if data_root is not None:
-        data_root = data_root.resolve()
-    elif retained_layout:
-        data_root = bundle_root.parent.parent / ".plugin-data" / bundle_root.name
-
-    def _expand_legacy_placeholders(value: Any) -> Any:
-        if isinstance(value, str):
-            expanded = value.replace("${PLUGIN_ROOT}", str(bundle_root))
-            if data_root is not None:
-                expanded = expanded.replace("${PLUGIN_DATA}", str(data_root))
-            return expanded
-        if isinstance(value, list):
-            return [_expand_legacy_placeholders(item) for item in value]
-        if isinstance(value, dict):
-            return {key: _expand_legacy_placeholders(item) for key, item in value.items()}
-        return value
-
-    def _materialize_legacy_server_config(
-        server_value: dict[str, Any],
-    ) -> dict[str, Any] | None:
-        from ..models.dependency.mcp import TrustedEnvLiteral
-
-        if not retained_layout:
-            return server_value
-        materialized = dict(server_value)
-        command = materialized.get("command")
-        if isinstance(command, str) and command.startswith("./"):
-            command_path = (bundle_root / command).resolve()
-            try:
-                ensure_path_within(command_path, bundle_root)
-            except PathTraversalError:
-                return None
-            materialized["command"] = str(command_path)
-        cwd = materialized.get("cwd")
-        if isinstance(cwd, str):
-            cwd_value = cwd
-            if cwd_value.startswith("./"):
-                cwd_path = (bundle_root / cwd_value).resolve()
-                try:
-                    ensure_path_within(cwd_path, bundle_root)
-                except PathTraversalError:
-                    return None
-                materialized["cwd"] = str(cwd_path)
-            else:
-                materialized["cwd"] = cwd_value.replace("${PLUGIN_ROOT}", str(bundle_root))
-                if data_root is not None:
-                    materialized["cwd"] = materialized["cwd"].replace(
-                        "${PLUGIN_DATA}", str(data_root)
-                    )
-        for key in ("args", "env"):
-            if key in materialized:
-                materialized[key] = _expand_legacy_placeholders(materialized[key])
-        env = materialized.get("env")
-        materialized["env"] = {
-            **(env if isinstance(env, dict) else {}),
-            "PLUGIN_ROOT": TrustedEnvLiteral(str(bundle_root)),
-            "PLUGIN_DATA": TrustedEnvLiteral(str(data_root)),
-        }
-        return materialized
-
     out: list[MCPDependency] = []
     for name, cfg in servers.items():
         if not isinstance(name, str) or not isinstance(cfg, dict):
@@ -513,9 +443,6 @@ def _parse_legacy_bundle_mcp_servers(
                 continue
             if parsed.username or parsed.password or parsed.fragment:
                 continue
-        spec = _materialize_legacy_server_config(spec)
-        if spec is None:
-            continue
         spec["name"] = name
         spec["registry"] = False
         try:

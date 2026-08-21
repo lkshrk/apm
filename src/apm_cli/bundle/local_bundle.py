@@ -124,12 +124,6 @@ class LocalBundleInfo:
             ``lockfile["pack"]["target"]``.  Empty list when unknown.
         format: Bundle format family for the bundle root.
         agent_plugin: Canonical IR for an admitted Agent Plugin bundle.
-        retained_root: Stable materialization root when the bundle has been
-            copied into a retained install cache, else ``None``.
-        data_root: Stable bundle data directory when materialized, else
-            ``None``.
-        source_identity: Stable local source path used to isolate plugin state
-            from another source with the same manifest name.
         is_archive: ``True`` when the source path was a ``.zip`` or ``.tar.gz``.
         temp_dir: Extraction directory for tarballs (caller must clean up).
             ``None`` for directory bundles.
@@ -142,9 +136,6 @@ class LocalBundleInfo:
     pack_targets: list[str] = field(default_factory=list)
     format: str = BundleFormat.CLAUDE_PLUGIN.value
     agent_plugin: AgentPlugin | None = None
-    retained_root: Path | None = None
-    data_root: Path | None = None
-    source_identity: str = ""
     is_archive: bool = False
     temp_dir: Path | None = None
 
@@ -203,7 +194,12 @@ def _read_bundle_lockfile(bundle_dir: Path) -> dict[str, Any] | None:
         data = load_yaml_str(lf_path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    from ..deps.lockfile import require_supported_lockfile_version
+
+    require_supported_lockfile_version(data)
+    return data
 
 
 def _extract_pack_targets(lockfile: dict[str, Any] | None) -> list[str]:
@@ -226,7 +222,6 @@ def _build_info(
     *,
     is_archive: bool,
     temp_dir: Path | None,
-    source_identity: str,
 ) -> LocalBundleInfo:
     _reject_metadata_collisions(bundle_dir)
     manifest_path = bundle_dir / "plugin.json"
@@ -261,7 +256,6 @@ def _build_info(
         pack_targets=_extract_pack_targets(lockfile),
         format=bundle_format,
         agent_plugin=agent_plugin,
-        source_identity=source_identity,
         is_archive=is_archive,
         temp_dir=temp_dir,
     )
@@ -348,7 +342,6 @@ def _extract_zip_bundle(path: Path) -> LocalBundleInfo | None:
             bundle_root,
             is_archive=True,
             temp_dir=temp_dir,
-            source_identity=str(path.resolve()),
         )
     except Exception:
         shutil.rmtree(temp_dir, ignore_errors=True)
@@ -379,7 +372,6 @@ def detect_local_bundle(path: Path) -> LocalBundleInfo | None:
             path,
             is_archive=False,
             temp_dir=None,
-            source_identity=str(path.resolve()),
         )
 
     if path.is_file() and path.name.lower().endswith(".zip"):
@@ -401,7 +393,6 @@ def detect_local_bundle(path: Path) -> LocalBundleInfo | None:
                 bundle_root,
                 is_archive=True,
                 temp_dir=temp_dir,
-                source_identity=str(path.resolve()),
             )
         except Exception:
             shutil.rmtree(temp_dir, ignore_errors=True)

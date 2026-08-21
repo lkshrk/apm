@@ -20,6 +20,7 @@ import yaml
 
 from apm_cli.agent_plugins import PLUGIN_SCHEMA_ID
 from apm_cli.bundle.formats import BundleFormat
+from apm_cli.deps.lockfile import UnsupportedLockfileVersionError
 
 # ---------------------------------------------------------------------------
 # The import below WILL fail until production code lands.  That is intentional
@@ -167,6 +168,51 @@ class TestDetectLocalBundle:
         result = detect_local_bundle(tarball)
         assert result is not None
         assert result.is_archive is True
+
+    @pytest.mark.parametrize("version", ["1", "2"])
+    @pytest.mark.parametrize("source_kind", ["directory", "tar", "zip"])
+    def test_detect_accepts_supported_lockfile_versions(
+        self, tmp_path: Path, version: str, source_kind: str
+    ) -> None:
+        bundle = _make_plugin_bundle(tmp_path / "source")
+        lock_path = bundle / "apm.lock.yaml"
+        lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+        lock["lockfile_version"] = version
+        lock_path.write_text(yaml.safe_dump(lock), encoding="utf-8")
+        source = {
+            "directory": bundle,
+            "tar": _make_plugin_tarball(tmp_path / "tar", bundle),
+            "zip": _make_plugin_zip(tmp_path / "zip", bundle),
+        }[source_kind]
+
+        result = detect_local_bundle(source)
+
+        assert result is not None
+        assert result.lockfile is not None
+        assert result.lockfile["lockfile_version"] == version
+        if result.temp_dir is not None:
+            shutil.rmtree(result.temp_dir)
+
+    @pytest.mark.parametrize("source_kind", ["directory", "tar", "zip"])
+    def test_detect_rejects_unsupported_lockfile_version(
+        self, tmp_path: Path, source_kind: str
+    ) -> None:
+        bundle = _make_plugin_bundle(tmp_path / "source")
+        lock_path = bundle / "apm.lock.yaml"
+        lock = yaml.safe_load(lock_path.read_text(encoding="utf-8"))
+        lock["lockfile_version"] = "3"
+        lock_path.write_text(yaml.safe_dump(lock), encoding="utf-8")
+        source = {
+            "directory": bundle,
+            "tar": _make_plugin_tarball(tmp_path / "tar", bundle),
+            "zip": _make_plugin_zip(tmp_path / "zip", bundle),
+        }[source_kind]
+
+        with pytest.raises(
+            UnsupportedLockfileVersionError,
+            match=r"Unsupported lockfile version '3'; supported versions: 1, 2",
+        ):
+            detect_local_bundle(source)
 
     def test_detect_returns_none_for_non_bundle(self, tmp_path: Path) -> None:
         """A directory without plugin.json is not a bundle."""

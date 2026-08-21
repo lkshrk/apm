@@ -14,6 +14,58 @@ from types import ModuleType
 import pytest
 
 
+def test_removed_agent_plugin_lifecycle_tombstone_passes() -> None:
+    root = Path(__file__).parents[2]
+    result = subprocess.run(
+        (sys.executable, "scripts/check_removed_agent_plugin_lifecycle.py", "--root", str(root)),
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected"),
+    [
+        (
+            "src/apm_cli/install/agent_plugin_state.py",
+            '"""Restored state module."""\n',
+            "removed lifecycle module exists",
+        ),
+        (
+            "src/apm_cli/probe.py",
+            "installed_plugins = []\n",
+            "removed lifecycle symbol 'installed_plugins'",
+        ),
+    ],
+)
+def test_removed_agent_plugin_lifecycle_tombstone_rejects_mutation(
+    tmp_path: Path, relative_path: str, source: str, expected: str
+) -> None:
+    root = Path(__file__).parents[2]
+    destination = tmp_path / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(source, encoding="utf-8")
+
+    result = subprocess.run(
+        (
+            sys.executable,
+            str(root / "scripts/check_removed_agent_plugin_lifecycle.py"),
+            "--root",
+            str(tmp_path),
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert expected in result.stdout
+
+
 def test_agent_plugin_contract_has_single_owner() -> None:
     """Native Agent Plugin interpretation must route through its loader."""
     root = Path(__file__).parents[2]
