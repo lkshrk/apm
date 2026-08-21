@@ -461,7 +461,7 @@ def test_agent_plugin_component_ir_mutations_are_killed(
             "src/apm_cli/install/local_bundle_handler.py",
             "    enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
             "    pass  # native local bundle accepted",
-            "native local bundles must fail before staging or deployment",
+            "native local bundles must fail before resolution or deployment",
         ),
         (
             "src/apm_cli/install/services.py",

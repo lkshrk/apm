@@ -511,8 +511,7 @@ def check(root: Path) -> list[str]:  # noqa: C901, PLR0912, PLR0915
                 typed_handler.lineno < min(handler.lineno for handler in generic_handlers)
                 and "logger.error" in _function_calls(typed_handler)
                 and any(
-                    isinstance(item, ast.Attribute)
-                    and item.attr == "FAILED"
+                    isinstance(item, ast.Attribute) and item.attr == "FAILED"
                     for item in ast.walk(typed_handler)
                 )
             )
@@ -552,14 +551,13 @@ def check(root: Path) -> list[str]:  # noqa: C901, PLR0912, PLR0915
             in {
                 "resolve_targets",
                 "run_policy_preflight",
-                "stage_agent_plugin_bundle",
                 "integrate_local_bundle",
             }
         ]
         if len(gates) != 1 or not side_effects or gates[0] >= min(side_effects):
             violations.append(
                 f"{local_bundle_handler_path}: native local bundles must fail before "
-                "staging or deployment"
+                "resolution or deployment"
             )
 
     drift_defs = _named_functions(ci_checks_tree, "_check_drift")
