@@ -27,7 +27,7 @@ from ..init import _perform_init
     help="Comma-separated target list (skip prompt, write directly)",
 )
 @click.option(
-    "--plugin", "plugin_flag", is_flag=True, help="Explicitly scaffold native Agent Plugins v1"
+    "--plugin", "plugin_flag", is_flag=True, help="Explicitly scaffold portable Agent Plugins v1"
 )
 @click.option(
     "--claude-plugin",

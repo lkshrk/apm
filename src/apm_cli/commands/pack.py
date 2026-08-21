@@ -39,7 +39,7 @@ Examples:
 
   # Bundle only (most common -- just dependencies: in apm.yml):
   apm pack                              # Legacy Claude plugin bundle (current default)
-  apm pack --plugin --archive           # Native Agent Plugins v1 bundle
+  apm pack --plugin --archive           # Portable Agent Plugins v1 bundle
   apm pack --format apm -o ./dist       # Legacy APM bundle layout
 
   # Marketplace only (marketplace: in apm.yml, no dependencies:):
@@ -156,7 +156,7 @@ def _parse_marketplace_filter(
     "select_plugin",
     is_flag=True,
     default=False,
-    help="Select native Agent Plugins v1 bundle output.",
+    help="Select portable Agent Plugins v1 bundle output.",
 )
 @click.option(
     "--claude-plugin",

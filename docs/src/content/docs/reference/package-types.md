@@ -195,9 +195,10 @@ the rest.
 
 ## Plugin collection (`plugin.json`)
 
-A Claude-native plugin layout. A `plugin.json` with no `$schema` field (or a
-`$schema` outside the Agent Plugins prefix) is detected as this layout. APM
-dissects the plugin artifacts and maps them into runtime directories.
+A Claude-native plugin layout. A `plugin.json` with no `$schema` field is
+detected as this layout. APM dissects the plugin artifacts and maps them into
+runtime directories. A schema-bearing manifest never falls through to this
+legacy route.
 
 ```
 my-plugin/
@@ -233,11 +234,10 @@ of `apm pack` and `apm plugin init`.
 
 A `plugin.json` that declares `"$schema"` under the Agent Plugins v1 schema
 prefix is a distinct package type from the Claude plugin collection above.
-Only schema version `1.0.0` is recognized; any other version under that
-prefix is a hard error before install proceeds. A `plugin.json` with no
-`$schema` field, or a `$schema` outside the Agent Plugins prefix, is not
-detected as an Agent Plugin -- it falls through to the Claude plugin
-collection handling above.
+Only the exact `1.0.0` schema is recognized. Another Agent Plugins version is
+a typed unsupported-version error. A foreign or non-string `$schema` is a
+typed manifest error. Only a `plugin.json` with no `$schema` falls through to
+the Claude plugin collection above.
 
 ```
 my-plugin/
