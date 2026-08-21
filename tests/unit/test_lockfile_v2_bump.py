@@ -7,7 +7,13 @@ never uses the registry keeps lockfile_version "1" forever (§2.1.4).
 
 from __future__ import annotations
 
-from apm_cli.deps.lockfile import LockedDependency, LockFile
+import pytest
+
+from apm_cli.deps.lockfile import (
+    LockedDependency,
+    LockFile,
+    UnsupportedLockfileVersionError,
+)
 from apm_cli.deps.registry.resolver import RegistryResolution
 from apm_cli.models.dependency.reference import DependencyReference
 
@@ -77,6 +83,19 @@ class TestVersionFieldStaysInSync:
         out = lock.to_yaml()
         assert lock.lockfile_version == "2"  # to_yaml self-healed
         assert "lockfile_version: '2'" in out
+
+
+def test_v3_lockfile_fails_closed_as_unsupported() -> None:
+    with pytest.raises(
+        UnsupportedLockfileVersionError,
+        match=r"Unsupported lockfile version '3'; supported versions: 1, 2",
+    ):
+        LockFile.from_yaml(
+            "lockfile_version: '3'\n"
+            "dependencies: []\n"
+            "installed_plugins:\n"
+            "  - identity: stable-plugin\n"
+        )
 
 
 class TestSchemaBumpOpportunistic:

@@ -113,10 +113,7 @@ class DeploymentLedgerCodec:
         """Return the canonical owner universe for one lockfile transition."""
         excluded = frozenset(excluded_dependency_keys)
         dependencies = {owner for owner in lockfile.dependencies if owner not in excluded}
-        plugin_owners = {
-            record.owner_key for record in getattr(lockfile, "installed_plugins", {}).values()
-        }
-        return frozenset({".", _LOCAL_BUNDLE_OWNER, *dependencies, *plugin_owners})
+        return frozenset({".", _LOCAL_BUNDLE_OWNER, *dependencies})
 
     @staticmethod
     def prepare_owner_replacement(
