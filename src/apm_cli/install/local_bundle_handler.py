@@ -127,40 +127,38 @@ def install_local_bundle(
 
             targets = apply_legacy_skill_paths(targets)
 
-        is_agent_plugin = getattr(bundle_info, "format", "") == BundleFormat.AGENT_PLUGIN.value
         bundle_mcp_deps: list[MCPDependency] = []
-        if not is_agent_plugin:
-            bundle_mcp_declared = False
-            if bundle_info.lockfile is not None:
-                pack = bundle_info.lockfile.get("pack") or {}
-                bundle_files = pack.get("bundle_files") or {}
-                if isinstance(bundle_files, dict):
-                    bundle_mcp_declared = any(
-                        str(path).lower() in {".mcp.json", "mcp.json"} for path in bundle_files
-                    )
-            elif bundle_info.source_dir is not None:
+        bundle_mcp_declared = False
+        if bundle_info.lockfile is not None:
+            pack = bundle_info.lockfile.get("pack") or {}
+            bundle_files = pack.get("bundle_files") or {}
+            if isinstance(bundle_files, dict):
                 bundle_mcp_declared = any(
-                    path.is_file() and path.name.lower() in {".mcp.json", "mcp.json"}
-                    for path in bundle_info.source_dir.iterdir()
+                    str(path).lower() in {".mcp.json", "mcp.json"} for path in bundle_files
                 )
-            bundle_mcp_deps = (
-                _parse_legacy_bundle_mcp_servers(
-                    bundle_info.source_dir,
-                    bundle_format=bundle_info.format,
-                    data_root=bundle_info.data_root,
-                )
-                if bundle_mcp_declared and bundle_info.source_dir is not None
-                else []
+        elif bundle_info.source_dir is not None:
+            bundle_mcp_declared = any(
+                path.is_file() and path.name.lower() in {".mcp.json", "mcp.json"}
+                for path in bundle_info.source_dir.iterdir()
             )
-            bundle_mcp_deps = _filter_bundle_executables(
-                bundle_mcp_deps,
-                bundle_info=bundle_info,
-                allow_executables=allow_executables,
-                exec_type="mcp",
-                logger=logger,
+        bundle_mcp_deps = (
+            _parse_legacy_bundle_mcp_servers(
+                bundle_info.source_dir,
+                bundle_format=bundle_info.format,
+                data_root=bundle_info.data_root,
             )
+            if bundle_mcp_declared and bundle_info.source_dir is not None
+            else []
+        )
+        bundle_mcp_deps = _filter_bundle_executables(
+            bundle_mcp_deps,
+            bundle_info=bundle_info,
+            allow_executables=allow_executables,
+            exec_type="mcp",
+            logger=logger,
+        )
         bundle_lsp_deps = (
-            _parse_bundle_lsp_servers(bundle_info.source_dir, agent_plugin=is_agent_plugin)
+            _parse_bundle_lsp_servers(bundle_info.source_dir)
             if bundle_info.source_dir is not None
             else []
         )
@@ -206,7 +204,7 @@ def install_local_bundle(
                 "Bundle has no apm.lock.yaml -- skipping integrity check. "
                 "This bundle was produced by an older APM version."
             )
-        elif not is_agent_plugin:
+        else:
             errors = verify_bundle_integrity(bundle_info.source_dir, bundle_info.lockfile)
             if errors:
                 logger.error("Bundle integrity check failed:")
@@ -214,35 +212,6 @@ def install_local_bundle(
                     logger.error_detail(err)
                 raise click.Abort()
             logger.verbose_detail("Bundle integrity verified")
-
-        if is_agent_plugin and not dry_run:
-            from .agent_plugin_runtime import stage_agent_plugin_bundle
-
-            bundle_info = stage_agent_plugin_bundle(
-                bundle_info=bundle_info,
-                project_root=project_root,
-                global_=global_,
-            )
-            if bundle_info.lockfile is not None:
-                errors = verify_bundle_integrity(bundle_info.source_dir, bundle_info.lockfile)
-                if errors:
-                    logger.error("Bundle integrity check failed:")
-                    for err in errors:
-                        logger.error_detail(err)
-                    raise click.Abort()
-                logger.verbose_detail("Bundle integrity verified against owned staging")
-            bundle_lsp_deps = _parse_bundle_lsp_servers(
-                bundle_info.source_dir,
-                agent_plugin=True,
-                runtime_root=bundle_info.retained_root,
-            )
-            bundle_lsp_deps = _filter_bundle_executables(
-                bundle_lsp_deps,
-                bundle_info=bundle_info,
-                allow_executables=allow_executables,
-                exec_type="lsp",
-                logger=logger,
-            )
 
         # Warn on bundle/install target mismatch.
         warning = check_target_mismatch(
@@ -295,7 +264,7 @@ def install_local_bundle(
                 logger.tree_item(f)
             return
 
-        if not is_agent_plugin and bundle_mcp_present and bundle_info.source_dir is not None:
+        if bundle_mcp_present and bundle_info.source_dir is not None:
             _wire_legacy_bundle_mcp_servers(
                 bundle_format=bundle_info.format,
                 targets=targets,
@@ -306,7 +275,7 @@ def install_local_bundle(
                 deps=bundle_mcp_deps,
                 owner=_bundle_owner_key(bundle_info),
             )
-        if (bundle_lsp_deps or is_agent_plugin) and bundle_info.source_dir is not None:
+        if bundle_lsp_deps and bundle_info.source_dir is not None:
             _wire_bundle_lsp_servers(
                 bundle_dir=bundle_info.source_dir,
                 targets=targets,
@@ -388,11 +357,6 @@ def install_local_bundle(
 
             lockfile.write(lockfile_path)
 
-        if is_agent_plugin:
-            from .agent_plugin_runtime import commit_agent_plugin_bundle
-
-            bundle_info = commit_agent_plugin_bundle(bundle_info)
-
         msg = f"Installed {len(deployed)} file(s) from local bundle"
         if skipped:
             msg += f" ({skipped} skipped)"
@@ -416,13 +380,6 @@ def install_local_bundle(
         # conventions, and ``MCPIntegrator.install`` handles per-target
         # dispatch (same code path used for ``apm.yml mcp_dependencies``).
     finally:
-        if (
-            getattr(bundle_info, "format", "") == BundleFormat.AGENT_PLUGIN.value
-            and bundle_info.retained_root is not None
-        ):
-            from .agent_plugin_runtime import discard_staged_agent_plugin_bundle
-
-            discard_staged_agent_plugin_bundle(bundle_info)
         # Tarball cleanup (caller-owned per LocalBundleInfo contract).
         if bundle_info.temp_dir is not None and bundle_info.temp_dir.exists():
             shutil.rmtree(bundle_info.temp_dir, ignore_errors=True)
@@ -676,51 +633,31 @@ def _wire_legacy_bundle_mcp_servers(
 
 def _parse_bundle_lsp_servers(
     bundle_dir: Path,
-    *,
-    agent_plugin: bool = False,
-    runtime_root: Path | None = None,
 ):
     """Parse ``<bundle>/lsp.json`` or ``<bundle>/com.microsoft.apm/lsp.json`` into LSP deps."""
     from apm_cli.models.dependency.lsp import LSPDependency
-    from apm_cli.utils.path_security import PathTraversalError, ensure_path_within
 
     lsp_path: Path | None = None
-    if agent_plugin:
-        candidate = bundle_dir / COM_MICROSOFT_APM_NAMESPACE / "lsp.json"
-        if candidate.is_file() and not candidate.is_symlink():
-            lsp_path = candidate
-    else:
-        for entry in bundle_dir.iterdir() if bundle_dir.is_dir() else []:
-            if (
-                entry.is_file()
-                and not entry.is_symlink()
-                and entry.name.lower() in {"lsp.json", ".lsp.json"}
-            ):
-                lsp_path = entry
+    for entry in bundle_dir.iterdir() if bundle_dir.is_dir() else []:
+        if (
+            entry.is_file()
+            and not entry.is_symlink()
+            and entry.name.lower() in {"lsp.json", ".lsp.json"}
+        ):
+            lsp_path = entry
+            break
+        if entry.is_dir() and entry.name == COM_MICROSOFT_APM_NAMESPACE:
+            candidate = entry / "lsp.json"
+            if candidate.is_file() and not candidate.is_symlink():
+                lsp_path = candidate
                 break
-            if entry.is_dir() and entry.name == COM_MICROSOFT_APM_NAMESPACE:
-                candidate = entry / "lsp.json"
-                if candidate.is_file() and not candidate.is_symlink():
-                    lsp_path = candidate
-                    break
     if lsp_path is None:
         return []
 
-    if agent_plugin:
-        from apm_cli.agent_plugins import validate_lsp_extension_file
-
-        try:
-            validation = validate_lsp_extension_file(lsp_path)
-        except (OSError, ValueError):
-            return []
-        if not validation.is_valid or validation.normalized is None:
-            return []
-        data = validation.normalized
-    else:
-        try:
-            data = json.loads(lsp_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, RecursionError):
-            return []
+    try:
+        data = json.loads(lsp_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return []
     if not isinstance(data, dict):
         return []
     servers = data.get("lspServers")
@@ -734,15 +671,6 @@ def _parse_bundle_lsp_servers(
         if not isinstance(name, str) or not isinstance(cfg, dict):
             continue
         spec = dict(cfg)
-        command = spec.get("command")
-        if agent_plugin and isinstance(command, str) and command.startswith("./"):
-            command_root = (runtime_root or bundle_dir).resolve()
-            command_path = (command_root / command).resolve()
-            try:
-                ensure_path_within(command_path, command_root)
-            except PathTraversalError:
-                continue
-            spec["command"] = str(command_path)
         spec["name"] = name
         try:
             out.append(LSPDependency.from_dict(spec))
