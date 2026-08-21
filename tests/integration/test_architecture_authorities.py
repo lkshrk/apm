@@ -55,6 +55,11 @@ def test_removed_agent_plugin_lifecycle_tombstone_passes() -> None:
             "class InstalledPluginRecordCodec:\n    pass\n",
             "removed lifecycle symbol 'InstalledPluginRecordCodec'",
         ),
+        (
+            "src/apm_cli/probe.py",
+            "def replace_installed_plugins():\n    pass\n",
+            "removed lifecycle symbol 'replace_installed_plugins'",
+        ),
     ],
 )
 def test_removed_agent_plugin_lifecycle_tombstone_rejects_mutation(

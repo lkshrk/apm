@@ -13,7 +13,6 @@ REMOVED_PATHS = (
 )
 
 REMOVED_SYMBOLS = (
-    "AgentPluginLayout",
     "AgentPluginRootLayout",
     "InstalledPluginComponentFact",
     "InstalledPluginRecord",
@@ -28,6 +27,7 @@ REMOVED_SYMBOLS = (
     "prepare_installed_plugin_state",
     "project_installed_plugin_record",
     "remove_installed_plugin_root",
+    "replace_installed_plugins",
     "resolve_agent_plugin_roots",
     "resolve_installed_plugin_record_roots",
     "stable_agent_plugin_id",
