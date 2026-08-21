@@ -14,17 +14,24 @@ REMOVED_PATHS = (
 
 REMOVED_SYMBOLS = (
     "AgentPluginLayout",
-    "InstalledPluginCodec",
+    "AgentPluginRootLayout",
     "InstalledPluginComponentFact",
     "InstalledPluginRecord",
-    "commit_staged_agent_plugin",
-    "discard_staged_agent_plugin",
+    "InstalledPluginRecordCodec",
+    "PreparedAgentPluginRoot",
+    "PreparedInstalledPluginState",
+    "commit_agent_plugin_bundle",
+    "discard_staged_agent_plugin_bundle",
     "installed_plugins",
-    "load_installed_plugin_state",
-    "materialize_agent_plugin",
+    "materialize_agent_plugin_bundle",
+    "prepare_agent_plugin_root",
+    "prepare_installed_plugin_state",
+    "project_installed_plugin_record",
+    "remove_installed_plugin_root",
+    "resolve_agent_plugin_roots",
+    "resolve_installed_plugin_record_roots",
     "stable_agent_plugin_id",
     "stage_agent_plugin_bundle",
-    "write_installed_plugin_state",
 )
 
 REMOVED_LOCAL_BUNDLE_FIELDS = (

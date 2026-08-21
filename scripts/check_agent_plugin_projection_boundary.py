@@ -538,12 +538,27 @@ def check(root: Path) -> list[str]:  # noqa: C901, PLR0912, PLR0915
             f"{local_bundle_handler_path}: local bundle handler must have one install owner"
         )
     else:
+        handler = local_bundle_handlers[0]
         calls = [
             (_call_name(node), node.lineno)
-            for node in ast.walk(local_bundle_handlers[0])
+            for node in ast.walk(handler)
             if isinstance(node, ast.Call)
         ]
         gates = [line for name, line in calls if name == "enforce_agent_plugin_deployment_boundary"]
+        gate_tries = [
+            statement
+            for statement in handler.body
+            if isinstance(statement, ast.Try)
+            and "enforce_agent_plugin_deployment_boundary" in _function_calls(statement)
+        ]
+        unconditional_gate = (
+            len(gate_tries) == 1
+            and bool(gate_tries[0].body)
+            and _is_call_statement(
+                gate_tries[0].body[0],
+                "enforce_agent_plugin_deployment_boundary",
+            )
+        )
         side_effects = [
             line
             for name, line in calls
@@ -554,7 +569,12 @@ def check(root: Path) -> list[str]:  # noqa: C901, PLR0912, PLR0915
                 "integrate_local_bundle",
             }
         ]
-        if len(gates) != 1 or not side_effects or gates[0] >= min(side_effects):
+        if (
+            len(gates) != 1
+            or not unconditional_gate
+            or not side_effects
+            or gates[0] >= min(side_effects)
+        ):
             violations.append(
                 f"{local_bundle_handler_path}: native local bundles must fail before "
                 "resolution or deployment"

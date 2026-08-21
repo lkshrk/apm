@@ -40,6 +40,21 @@ def test_removed_agent_plugin_lifecycle_tombstone_passes() -> None:
             "installed_plugins = []\n",
             "removed lifecycle symbol 'installed_plugins'",
         ),
+        (
+            "src/apm_cli/probe.py",
+            "def commit_agent_plugin_bundle():\n    pass\n",
+            "removed lifecycle symbol 'commit_agent_plugin_bundle'",
+        ),
+        (
+            "src/apm_cli/probe.py",
+            "class PreparedInstalledPluginState:\n    pass\n",
+            "removed lifecycle symbol 'PreparedInstalledPluginState'",
+        ),
+        (
+            "src/apm_cli/probe.py",
+            "class InstalledPluginRecordCodec:\n    pass\n",
+            "removed lifecycle symbol 'InstalledPluginRecordCodec'",
+        ),
     ],
 )
 def test_removed_agent_plugin_lifecycle_tombstone_rejects_mutation(
@@ -513,6 +528,13 @@ def test_agent_plugin_component_ir_mutations_are_killed(
             "src/apm_cli/install/local_bundle_handler.py",
             "    enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
             "    pass  # native local bundle accepted",
+            "native local bundles must fail before resolution or deployment",
+        ),
+        (
+            "src/apm_cli/install/local_bundle_handler.py",
+            "        enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
+            "        if bundle_info.format == BundleFormat.AGENT_PLUGIN.value:\n"
+            "            enforce_agent_plugin_deployment_boundary(bundle_info=bundle_info)",
             "native local bundles must fail before resolution or deployment",
         ),
         (
