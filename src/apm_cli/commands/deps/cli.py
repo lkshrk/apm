@@ -8,6 +8,8 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import click
 
+from apm_cli.install.locking import serialized_lifecycle
+
 # Import existing APM components
 from ...constants import APM_MODULES_DIR, APM_YML_FILENAME, SKILL_MD_FILENAME
 from ...core.command_logger import CommandLogger
@@ -856,6 +858,7 @@ def tree(global_):
     "--dry-run", is_flag=True, default=False, help="Show what would be removed without removing"
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt")
+@serialized_lifecycle
 def clean(dry_run: bool, yes: bool):
     """Remove entire apm_modules/ directory."""
     logger = CommandLogger("deps-clean")
@@ -955,6 +958,7 @@ def clean(dry_run: bool, yes: bool):
         "need per-client skill layouts."
     ),
 )
+@serialized_lifecycle
 def update(packages, verbose, force, target, parallel_downloads, global_, legacy_skill_paths):
     """Update APM dependencies to latest git refs.
 

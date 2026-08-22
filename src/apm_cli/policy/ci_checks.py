@@ -13,8 +13,9 @@ Exit-code contract (consumed by the ``apm audit --ci`` command):
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence  # noqa: UP035
+from typing import TYPE_CHECKING, Sequence, cast  # noqa: UP035
 
 from ..core.deployment_ledger import DEPLOYMENT_OWNER_REMEDIATION
 from ..deps.lockfile import _SELF_KEY, LEGACY_LOCKFILE_NAME, LOCKFILE_NAME
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
     from ..deps.lockfile import LockFile
     from ..install.audit_replay import PreparedCiAuditReplay
     from ..install.drift import DriftFinding
+    from ..integration.targets import TargetProfile
+    from ..models.apm_package import APMPackage
 
 _logger = logging.getLogger(__name__)
 
@@ -189,9 +192,35 @@ def _filter_gitignored(project_root: Path, rel_paths: list[str]) -> list[str]:
         return rel_paths
 
 
+def _resolve_deployed_file_path(
+    value: str,
+    project_root: Path,
+    targets: Sequence[TargetProfile],
+) -> Path | None:
+    """Resolve a lock path only within the workspace or a live target root."""
+    from ..integration.base_integrator import BaseIntegrator
+    from ..utils.path_security import PathTraversalError, ensure_path_within
+
+    candidate = Path(value.rstrip("/"))
+    if not candidate.is_absolute():
+        if not BaseIntegrator.validate_deploy_path(candidate.as_posix(), project_root):
+            return None
+        return project_root / candidate
+    for target in targets:
+        deploy_root = getattr(target, "managed_deploy_root", None)
+        if deploy_root is None:
+            continue
+        try:
+            return ensure_path_within(candidate, deploy_root)
+        except PathTraversalError:
+            continue
+    return None
+
+
 def _check_deployed_files_present(
     project_root: Path,
     lock: LockFile,
+    targets: Sequence[TargetProfile] = (),
 ) -> CheckResult:
     """Verify all files listed in lockfile deployed_files exist on disk.
 
@@ -200,15 +229,12 @@ def _check_deployed_files_present(
     count.  This prevents false positives on fresh checkouts of repos that
     gitignore one or more deploy directories.
     """
-    from ..integration.base_integrator import BaseIntegrator
-
     missing: list[str] = []
     for _dep_key, dep in lock.dependencies.items():
         for rel_path in dep.deployed_files:
-            safe_path = rel_path.rstrip("/")
-            if not BaseIntegrator.validate_deploy_path(safe_path, project_root):
-                continue  # skip unsafe paths silently
-            abs_path = project_root / rel_path
+            abs_path = _resolve_deployed_file_path(rel_path, project_root, targets)
+            if abs_path is None:
+                continue
             if not abs_path.exists():
                 missing.append(rel_path)
 
@@ -412,6 +438,7 @@ def _check_config_consistency(
 def _check_content_integrity(
     project_root: Path,
     lock: LockFile,
+    targets: Sequence[TargetProfile] = (),
 ) -> CheckResult:
     """Check deployed files for critical hidden Unicode and hash drift.
 
@@ -466,10 +493,6 @@ def _check_content_integrity(
 
     # Per-file hash verification across canonical deployment records.
     hash_mismatches: list[tuple] = []  # (dep_key, rel_path, expected, actual)
-    # Local import: matches the scoping pattern used in
-    # _check_deployed_files_present (line 131); avoids cycles.
-    from ..integration.base_integrator import BaseIntegrator as _BaseIntegrator
-
     for record in ledger.records.values():
         expected_hash = record.content_hash
         if expected_hash is None:
@@ -478,12 +501,14 @@ def _check_content_integrity(
         if locator.kind == LocatorKind.URI:
             continue
         if locator.kind == LocatorKind.PROJECT_RELATIVE:
-            safe_rel = locator.value.rstrip("/")
-            if not _BaseIntegrator.validate_deploy_path(safe_rel, project_root):
+            file_path = _resolve_deployed_file_path(locator.value, project_root, targets)
+            if file_path is None:
                 continue
-            file_path = project_root / safe_rel
         else:
-            target = KNOWN_TARGETS.get(locator.target)
+            target = next(
+                (candidate for candidate in targets if candidate.name == locator.target),
+                KNOWN_TARGETS.get(locator.target),
+            )
             if target is None:
                 continue
             try:
@@ -614,24 +639,30 @@ def _check_drift(
     then the audit remains non-blocking so CI does not red-mark a
     fresh checkout that has never installed.
     """
+    from ..core.scope import get_workspace_deploy_root
     from ..deps.lockfile import get_lockfile_path
     from ..deps.path_anchoring import LocalResolutionError
+    from ..install.audit_target_roots import external_replay_root
     from ..install.drift import (
         CacheMissError,
         CheckLogger,
         ReplayConfig,
+        _read_apm_yml_target,
         diff_scratch_against_project,
         run_replay,
     )
     from ..integration.targets import resolve_targets
 
     logger = CheckLogger(verbose=verbose)
+    deployment_root = get_workspace_deploy_root(project_root)
+    user_scope = deployment_root != project_root.resolve()
     if prepared_replay is None:
         config = ReplayConfig(
             project_root=project_root,
             lockfile_path=get_lockfile_path(project_root),
             targets=frozenset(targets) if targets else None,
             cache_only=cache_only,
+            user_scope=user_scope,
         )
 
         try:
@@ -669,7 +700,11 @@ def _check_drift(
                 ),
                 [],
             )
-        resolved_targets = resolve_targets(project_root)
+        resolved_targets = resolve_targets(
+            project_root,
+            user_scope=user_scope,
+            explicit_target=_read_apm_yml_target(project_root),
+        )
         tracked_files = None
     else:
         scratch = prepared_replay.scratch_root
@@ -679,13 +714,29 @@ def _check_drift(
     logger.diff_start()
     if targets:
         resolved_targets = [t for t in resolved_targets if t.name in set(targets)]
+    project_targets = [target for target in resolved_targets if target.managed_deploy_root is None]
     findings = diff_scratch_against_project(
         scratch,
-        project_root,
+        deployment_root,
         lockfile,
-        resolved_targets,
+        project_targets,
         tracked_files=tracked_files,
     )
+    for target in resolved_targets:
+        live_root = target.managed_deploy_root
+        if live_root is None:
+            continue
+        comparison_target = replace(target, root_dir=".", resolved_deploy_root=None)
+        external_findings = diff_scratch_against_project(
+            external_replay_root(scratch, target),
+            live_root,
+            lockfile,
+            [comparison_target],
+            absolute_claims_only=True,
+        )
+        findings.extend(
+            replace(finding, path=str(live_root / finding.path)) for finding in external_findings
+        )
 
     if not findings:
         logger.clean()
@@ -731,16 +782,27 @@ def run_baseline_checks(
     failure (``passed=False``); otherwise it is an advisory warning only.
     Returns :class:`CIAuditResult` with individual check results.
     """
+    from ..core.scope import get_workspace_deploy_root
     from ..deps.lockfile import LockFile, get_lockfile_path
     from ._shared import _parse_apm_yml_safe
 
     result = CIAuditResult()
+    deployment_root = get_workspace_deploy_root(project_root)
+    user_scope = deployment_root != project_root.resolve()
+    from ..install.drift import _read_apm_yml_target
+    from ..integration.targets import resolve_targets
+
+    resolved_targets = resolve_targets(
+        deployment_root,
+        user_scope=user_scope,
+        explicit_target=_read_apm_yml_target(project_root),
+    )
     apm_yml_path = project_root / "apm.yml"
 
     # Parse manifest ONCE -- this function owns parse-error handling.
-    manifest = None
+    manifest: APMPackage | None = None
     if apm_yml_path.exists():
-        manifest = _parse_apm_yml_safe(apm_yml_path, result)
+        manifest = cast("APMPackage | None", _parse_apm_yml_safe(apm_yml_path, result))
         if manifest is None:
             return result
 
@@ -776,7 +838,7 @@ def run_baseline_checks(
         return result
 
     lock = LockFile.read(lockfile_path)
-    if lock is None:
+    if lock is None or manifest is None:
         return result
 
     def _run(check: CheckResult) -> bool:
@@ -805,7 +867,7 @@ def run_baseline_checks(
         return result
 
     # Check 4: Deployed files present
-    if _run(_check_deployed_files_present(project_root, lock)):
+    if _run(_check_deployed_files_present(deployment_root, lock, resolved_targets)):
         return result
 
     # Check 5: No orphaned packages
@@ -828,7 +890,7 @@ def run_baseline_checks(
         return result
 
     # Check 8: Content integrity
-    if _run(_check_content_integrity(project_root, lock)):
+    if _run(_check_content_integrity(deployment_root, lock, resolved_targets)):
         return result
 
     # Check 9: Includes consent (advisory; never hard-fails)

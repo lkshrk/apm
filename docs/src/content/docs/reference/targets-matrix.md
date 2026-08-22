@@ -41,15 +41,15 @@ instructions, prompts, agents, and hooks use `.github/`, while skills use
 `.agents/skills/`. The IntelliJ-specific adapter configures MCP only.
 
 `copilot-cowork` (Microsoft 365 Copilot), `copilot-app` (GitHub Copilot
-desktop App), `grok-cloud` (xAI Grok Cloud), `openclaw` (OpenClaw agent
-runtime), and `hermes` are gated behind experimental flags and not listed
-above. See [Experimental](../experimental/).
+desktop App), `grok-cloud` (xAI Grok Cloud), and `openclaw` (OpenClaw agent
+runtime) are gated behind experimental flags and not listed above. Hermes is
+stable but explicit-only. See [Experimental](../experimental/).
 
 ## Post-install instruction compilation
 
 After a project install stages dependency instructions, the APM CLI requires a
-separate root-context compile for `codex`, `gemini`, and `opencode`, plus
-experimental `hermes` when enabled. It emits the
+separate root-context compile for `codex`, `gemini`, `opencode`, and `hermes`.
+It emits the
 [`req-tg-007`](../../specs/openapm-v01/#req-tg-007) reminder for those targets.
 All other targets in this matrix either deploy instructions as native per-file
 rules, do not support dependency instructions, or have no verified

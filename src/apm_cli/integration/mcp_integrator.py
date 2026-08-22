@@ -12,9 +12,11 @@ The existing adapters (client/, package_manager/) and registry operations
 from __future__ import annotations
 
 import builtins
+import contextlib
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import warnings
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import tomlkit
+import yaml
 from tomlkit.exceptions import TOMLKitError
 
 from apm_cli.core.null_logger import NullCommandLogger
@@ -35,7 +38,7 @@ from apm_cli.integration.mcp_config_view import (
     _get_server_provenance,
 )
 from apm_cli.runtime.utils import find_runtime_binary
-from apm_cli.utils.atomic_io import atomic_write_text, write_text_lf
+from apm_cli.utils.atomic_io import atomic_write_text
 from apm_cli.utils.console import (
     _get_console,  # noqa: F401 -- re-exported; mcp_integrator_install imports this via lazy import
     _rich_error,
@@ -43,6 +46,7 @@ from apm_cli.utils.console import (
     _rich_success,
     _rich_warning,
 )
+from apm_cli.utils.yaml_io import load_yaml, yaml_to_str
 
 if TYPE_CHECKING:
     from apm_cli.core.command_logger import CommandLogger
@@ -97,7 +101,11 @@ def _clean_json_mcp_config(
         return 0
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            raise ValueError(f"{label} root must be a mapping")
         servers = config.get(servers_key, {})
+        if not isinstance(servers, dict):
+            raise ValueError(f"{label} {servers_key} must be a mapping")
         removed = [n for n in stale_names if n in servers]
         for name in removed:
             del servers[name]
@@ -105,7 +113,7 @@ def _clean_json_mcp_config(
             text = json.dumps(config, indent=2)
             if trailing_newline:
                 text += "\n"
-            write_text_lf(config_path, text)
+            atomic_write_text(config_path, text, new_file_mode=0o600)
             for name in removed:
                 msg = f"Removed stale MCP server '{name}' from {label}"
                 if use_rich:
@@ -114,6 +122,47 @@ def _clean_json_mcp_config(
                     logger.progress(msg)
         return len(removed)
     except Exception as exc:
+        _log.debug("Failed to clean stale MCP servers from %s", label, exc_info=True)
+        if fail_on_write_error:
+            from apm_cli.install.errors import RequiredIntegrationError
+
+            raise RequiredIntegrationError(
+                f"MCP cleanup failed for {label}. Check the config path and permissions, then retry."
+            ) from exc
+        return 0
+
+
+def _clean_hermes_mcp_config(
+    config_path: Path,
+    stale_names: builtins.set,
+    logger,
+    fail_on_write_error: bool = False,
+) -> int:
+    """Atomically remove stale servers from Hermes' YAML config."""
+    label = "Hermes config.yaml"
+    if not config_path.exists():
+        return 0
+    try:
+        config = load_yaml(config_path)
+        if config is None:
+            config = {}
+        if not isinstance(config, dict):
+            raise ValueError("Hermes config root must be a mapping")
+        servers = config.get("mcp_servers", {})
+        if not isinstance(servers, dict):
+            raise ValueError("Hermes mcp_servers must be a mapping")
+        removed = [name for name in stale_names if name in servers]
+        for name in removed:
+            del servers[name]
+        if removed:
+            config["mcp_servers"] = servers
+            atomic_write_text(config_path, yaml_to_str(config), new_file_mode=0o600)
+            with contextlib.suppress(OSError, NotImplementedError):
+                os.chmod(config_path, 0o600)
+            for name in removed:
+                logger.progress(f"Removed stale MCP server '{name}' from {label}")
+        return len(removed)
+    except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as exc:
         _log.debug("Failed to clean stale MCP servers from %s", label, exc_info=True)
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
@@ -152,7 +201,7 @@ def _clean_toml_mcp_config(
         config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
         servers = config.get("mcp_servers", {})
         if not isinstance(servers, MutableMapping):
-            return 0
+            raise ValueError("mcp_servers must be a table")
         removed = [n for n in stale_names if n in servers]
         for name in removed:
             del servers[name]
@@ -165,7 +214,7 @@ def _clean_toml_mcp_config(
                 elif logger is not None:
                     logger.progress(msg)
         return len(removed)
-    except (OSError, TOMLKitError, UnicodeDecodeError) as exc:
+    except (OSError, TOMLKitError, UnicodeDecodeError, ValueError) as exc:
         _log.debug("Failed to clean stale MCP servers from %s", label, exc_info=True)
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
@@ -204,16 +253,20 @@ def _clean_claude_config(
         return 0
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-        if is_user_scope and not isinstance(config, dict):
-            return 0
+        if not isinstance(config, dict):
+            raise ValueError(f"{label} root must be a mapping")
         servers = config.get("mcpServers", {})
         if not isinstance(servers, dict):
-            servers = {}
+            raise ValueError(f"{label} mcpServers must be a mapping")
         removed = [n for n in stale_names if n in servers]
         for name in removed:
             del servers[name]
         if removed:
-            write_text_lf(config_path, json.dumps(config, indent=2) + "\n")
+            atomic_write_text(
+                config_path,
+                json.dumps(config, indent=2) + "\n",
+                new_file_mode=0o600,
+            )
             for name in removed:
                 logger.progress(f"Removed stale MCP server '{name}' from {label}")
         return len(removed)
@@ -725,16 +778,41 @@ class MCPIntegrator:
                 fail_on_write_error=fail_on_write_error,
             )
 
-        # Clean .agents/mcp_config.json (only if .agents/ directory exists)
+        # Clean the scope-resolved Antigravity mcp_config.json.
         if "antigravity" in target_runtimes:
-            if (project_root_path / ".agents").is_dir():
-                _clean_json_mcp_config(
-                    project_root_path / ".agents" / "mcp_config.json",
-                    expanded_stale,
-                    logger,
-                    ".agents/mcp_config.json",
-                    fail_on_write_error=fail_on_write_error,
-                )
+            from apm_cli.factory import ClientFactory
+
+            antigravity_cfg = Path(
+                ClientFactory.create_client(
+                    "antigravity",
+                    project_root=project_root_path,
+                    user_scope=user_scope or scope is InstallScope.USER,
+                ).get_config_path()
+            )
+            _clean_json_mcp_config(
+                antigravity_cfg,
+                expanded_stale,
+                logger,
+                "Antigravity MCP config",
+                fail_on_write_error=fail_on_write_error,
+            )
+
+        if "hermes" in target_runtimes:
+            from apm_cli.factory import ClientFactory
+
+            hermes_cfg = Path(
+                ClientFactory.create_client(
+                    "hermes",
+                    project_root=project_root_path,
+                    user_scope=user_scope or scope is InstallScope.USER,
+                ).get_config_path()
+            )
+            _clean_hermes_mcp_config(
+                hermes_cfg,
+                expanded_stale,
+                logger,
+                fail_on_write_error=fail_on_write_error,
+            )
 
         # Clean Claude Code project .mcp.json (only if .claude/ directory exists)
         if clean_claude_project:
