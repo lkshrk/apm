@@ -22,7 +22,6 @@ from apm_cli.agent_plugins import (
     read_json_document,
     supports_mcp_schema_id,
     supports_plugin_schema_id,
-    validate_lsp_extension_document,
     validate_mcp_config_document,
     validate_plugin_manifest_document,
 )
@@ -452,83 +451,6 @@ class TestLocalMcpValidation:
         assert result.is_valid is True
         assert result.normalized is not None
         assert result.normalized["mcpServers"]["tool"]["args"] == args
-
-
-class TestLspExtensionValidation:
-    """The APM LSP extension is bounded by one strict validator."""
-
-    def test_relative_command_and_mapping_are_valid(self) -> None:
-        result = validate_lsp_extension_document(
-            {
-                "lspServers": {
-                    "pyright": {
-                        "command": "./bin/pyright",
-                        "extensionToLanguage": {".py": "python"},
-                    }
-                }
-            }
-        )
-
-        assert result.is_valid is True
-
-    def test_literal_secret_env_is_rejected(self) -> None:
-        result = validate_lsp_extension_document(
-            {
-                "lspServers": {
-                    "pyright": {
-                        "command": "pyright",
-                        "extensionToLanguage": {".py": "python"},
-                        "env": {"API_TOKEN": "literal"},
-                    }
-                }
-            }
-        )
-
-        assert result.is_valid is False
-        assert any("literal secret" in error for error in result.errors)
-
-    @pytest.mark.parametrize(
-        "invalid_config",
-        [
-            {"extensionToLanguage": {".bad": "bad"}},
-            {
-                "command": "bad",
-                "args": 1,
-                "extensionToLanguage": {".bad": "bad"},
-            },
-            {
-                "command": "bad",
-                "env": [],
-                "extensionToLanguage": {".bad": "bad"},
-            },
-            {
-                "command": "bad",
-                "startupTimeout": "slow",
-                "extensionToLanguage": {".bad": "bad"},
-            },
-        ],
-    )
-    def test_loader_mode_isolates_invalid_server(
-        self,
-        invalid_config: dict[str, object],
-    ) -> None:
-        result = validate_lsp_extension_document(
-            {
-                "lspServers": {
-                    "good": {
-                        "command": "pyright",
-                        "extensionToLanguage": {".py": "python"},
-                    },
-                    "bad": invalid_config,
-                }
-            },
-            isolate_invalid_servers=True,
-        )
-
-        assert result.is_valid is True
-        assert result.normalized is not None
-        assert tuple(result.normalized["lspServers"]) == ("good",)
-        assert any("bad" in warning for warning in result.warnings)
 
 
 class TestFileLoading:

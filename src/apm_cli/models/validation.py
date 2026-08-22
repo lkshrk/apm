@@ -104,6 +104,7 @@ class ValidationResult:
     package: APMPackage | None = None
     agent_plugin: AgentPlugin | None = None
     package_type: PackageType | None = None  # APM_PACKAGE, CLAUDE_SKILL, or HYBRID
+    legacy_metadata_only: bool = False
 
     def __init__(self):
         self.is_valid = True
@@ -112,6 +113,7 @@ class ValidationResult:
         self.package = None
         self.agent_plugin = None
         self.package_type = None
+        self.legacy_metadata_only = False
 
     def add_error(self, error: str) -> None:
         """Add a validation error."""
@@ -392,6 +394,7 @@ def validate_apm_package(
             if apm_path.exists() and not apm_path.is_dir():
                 result.add_error(".apm must be a directory")
             else:
+                result.legacy_metadata_only = not apm_path.exists()
                 result.add_error(
                     f"Not a valid APM package: {package_path.name} has apm.yml but "
                     "is missing the required .apm/ directory. "
@@ -489,10 +492,7 @@ def _validate_agent_plugin(
     result.package = package
     for diagnostic in plugin.diagnostics:
         message = f"{diagnostic.code}: {diagnostic.message}"
-        if diagnostic.severity.value == "error":
-            result.add_warning(message)
-        else:
-            result.add_warning(message)
+        result.add_warning(message)
     result.package_type = PackageType.AGENT_PLUGIN
     return result
 

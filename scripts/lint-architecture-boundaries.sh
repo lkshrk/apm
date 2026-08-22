@@ -51,6 +51,29 @@ fi
 if ! python3 scripts/check_removed_agent_plugin_lifecycle.py --root "$ROOT"; then
     violations=$((violations + 1))
 fi
+install_wrapper_defaults=$(python3 - <<'PY'
+import ast
+from pathlib import Path
+
+tree = ast.parse(Path("src/apm_cli/commands/install.py").read_text(encoding="utf-8"))
+wrapper = next(
+    node
+    for node in tree.body
+    if isinstance(node, ast.FunctionDef) and node.name == "_install_apm_dependencies"
+)
+positional = wrapper.args.args[-len(wrapper.args.defaults):]
+allowed = {"update_refs", "verbose", "only_packages"}
+print(",".join(arg.arg for arg in positional if arg.arg not in allowed))
+PY
+)
+if [ -n "$install_wrapper_defaults" ] \
+    || ! grep -q 'request = InstallRequest(' src/apm_cli/commands/install.py \
+    || ! grep -q '^[[:space:]]*trust_bin: bool | None = None$' \
+        src/apm_cli/install/request.py; then
+    echo "[x] Install invocation defaults must remain owned by InstallRequest"
+    [ -n "$install_wrapper_defaults" ] && echo "$install_wrapper_defaults"
+    violations=$((violations + 1))
+fi
 effective_target_owner="src/apm_cli/core/target_detection.py"
 effective_target_definition_count=$(grep -Ec \
     '^def resolve_effective_target_decision\(' "$effective_target_owner" || true)

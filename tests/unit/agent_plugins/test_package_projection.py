@@ -107,6 +107,20 @@ def test_native_validation_projects_ir_without_filesystem_mutation(tmp_path: Pat
     assert after == before
 
 
+def test_native_validation_isolates_component_error(tmp_path: Path) -> None:
+    _write_plugin(tmp_path)
+    invalid_skill = tmp_path / "skills" / "invalid"
+    invalid_skill.mkdir(parents=True)
+    (invalid_skill / "skill.md").write_text("# Wrong manifest name\n", encoding="utf-8")
+
+    result = validate_apm_package(tmp_path)
+
+    assert result.is_valid is True
+    assert any(warning.startswith("skill.manifest.missing:") for warning in result.warnings)
+    assert result.agent_plugin is not None
+    assert result.agent_plugin.components.skills == ()
+
+
 def test_projection_never_rescans_component_files(
     tmp_path: Path,
     monkeypatch,

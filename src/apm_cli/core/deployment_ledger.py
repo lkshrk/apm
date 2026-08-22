@@ -57,15 +57,6 @@ class DeploymentOwnerViolation:
     invalid_active_owner: str | None
 
 
-@dataclass(frozen=True)
-class DeploymentOwnerReplacement:
-    """Prepared replace-only transition for one deployment owner."""
-
-    owner: str
-    prior: DeploymentLedger
-    replacement: DeploymentLedger
-
-
 def _require_local_bundle_hash(path: str, content_hash: str | None) -> None:
     """Reject imperative provenance without one canonical SHA-256 digest."""
     digest = (
@@ -114,97 +105,6 @@ class DeploymentLedgerCodec:
         excluded = frozenset(excluded_dependency_keys)
         dependencies = {owner for owner in lockfile.dependencies if owner not in excluded}
         return frozenset({".", _LOCAL_BUNDLE_OWNER, *dependencies})
-
-    @staticmethod
-    def prepare_owner_replacement(
-        ledger: DeploymentLedger,
-        owner: str,
-        owned_records: Collection[DeploymentRecord],
-    ) -> DeploymentOwnerReplacement:
-        """Prepare exact owner replacement while preserving unrelated claims."""
-        if not owner:
-            raise ValueError("Deployment owner replacement requires a non-empty owner")
-        prior_ledger = DeploymentLedger(records=dict(ledger.records))
-        desired_records: dict[str, DeploymentRecord] = {}
-        for desired in owned_records:
-            if desired.locator.key in desired_records:
-                raise ValueError(f"Duplicate deployment replacement locator: {desired.locator.key}")
-            if desired.active_owner != owner or owner not in desired.owners:
-                raise ValueError("Replacement records must make the replaced owner active")
-            desired_records[desired.locator.key] = desired
-
-        records = dict(prior_ledger.records)
-        for key, prior in tuple(records.items()):
-            if owner not in prior.owners:
-                continue
-            surviving_owners = tuple(item for item in prior.owners if item != owner)
-            if not surviving_owners:
-                records.pop(key, None)
-                continue
-            if prior.active_owner == owner and key not in desired_records:
-                raise ValueError(
-                    "Cannot replace an active shared deployment owner without "
-                    "verified survivor materialization"
-                )
-            active_owner = (
-                surviving_owners[-1] if prior.active_owner == owner else prior.active_owner
-            )
-            records[key] = DeploymentRecord(
-                locator=prior.locator,
-                owners=surviving_owners,
-                active_owner=active_owner,
-                content_hash=prior.content_hash,
-            )
-
-        for desired in desired_records.values():
-            prior = records.get(desired.locator.key)
-            active_prior = prior_ledger.records.get(desired.locator.key)
-            if active_prior is not None and active_prior.active_owner != owner:
-                raise ValueError(
-                    "Cannot replace a deployment locator actively owned by an unrelated owner"
-                )
-            unrelated = tuple(item for item in prior.owners if item != owner) if prior else ()
-            records[desired.locator.key] = DeploymentRecord(
-                locator=desired.locator,
-                owners=(*unrelated, owner),
-                active_owner=owner,
-                content_hash=desired.content_hash,
-            )
-        return DeploymentOwnerReplacement(
-            owner=owner,
-            prior=prior_ledger,
-            replacement=DeploymentLedger(records=records),
-        )
-
-    @staticmethod
-    def validate_owner_rollback(
-        lockfile: LockFile,
-        transition: DeploymentOwnerReplacement,
-    ) -> None:
-        """Fail before filesystem rollback when the committed ledger drifted."""
-        current = DeploymentLedgerCodec.from_lockfile(lockfile)
-        if current != transition.replacement:
-            raise RuntimeError("Deployment ledger changed after owner replacement commit")
-
-    @staticmethod
-    def commit_owner_replacement(
-        lockfile: LockFile,
-        transition: DeploymentOwnerReplacement,
-    ) -> None:
-        """Commit a prepared owner replacement if the prior ledger is unchanged."""
-        current = DeploymentLedgerCodec.from_lockfile(lockfile)
-        if current != transition.prior:
-            raise RuntimeError("Deployment ledger changed after owner replacement preparation")
-        DeploymentLedgerCodec.apply_to_lockfile(transition.replacement, lockfile)
-
-    @staticmethod
-    def rollback_owner_replacement(
-        lockfile: LockFile,
-        transition: DeploymentOwnerReplacement,
-    ) -> None:
-        """Restore the exact prior ledger after a committed replacement."""
-        DeploymentLedgerCodec.validate_owner_rollback(lockfile, transition)
-        DeploymentLedgerCodec.apply_to_lockfile(transition.prior, lockfile)
 
     @staticmethod
     def owner_reference_violations(

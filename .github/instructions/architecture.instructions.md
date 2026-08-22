@@ -50,6 +50,7 @@ semicolon-delimited, and specific to the file(s) that own the fact.
 | Target-scoped deployed-file contraction | install/manifest_reconcile.py (reconcile_target_deployed_files) | `src/apm_cli/install/manifest_reconcile.py` |
 | Install success / failure outcome | the canonical install-outcome path | `src/apm_cli/install/outcome.py` |
 | Frozen install mutation eligibility | install/service.py (InstallService) | `src/apm_cli/install/service.py` |
+| Install invocation option defaults | install/request.py (InstallRequest) | `src/apm_cli/install/request.py`; `src/apm_cli/commands/install.py` |
 | Neutral hook source grammar and shape -> per-target native | hook_contract.py (HOOK_COMMAND_KEYS, parse_hook_source, _entries_to_ir) + per-target renderers | `src/apm_cli/hook_contract.py`; `src/apm_cli/integration/hook_ir.py`; `src/apm_cli/integration/hook_native_formats.py`; `src/apm_cli/integration/hook_integrator.py`; `src/apm_cli/integration/hook_ownership.py` |
 | File-level deploy / sync / cleanup | BaseIntegrator (see integrators.instructions.md) | `src/apm_cli/integration/base_integrator.py` |
 | Windows stable executable path | install.ps1 ($currentDir / $currentExe) | `install.ps1` |

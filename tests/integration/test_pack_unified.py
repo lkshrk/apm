@@ -170,6 +170,21 @@ class TestPackUnified:
         assert (bundle / ".mcp.json").exists()
         assert not (bundle / "com.microsoft.apm").exists()
 
+    def test_pack_default_succeeds_without_lockfile(self, runner, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_apm_yml(
+            tmp_path,
+            "name: no-lock\nversion: 1.0.0\ndescription: No lockfile fixture\ntarget: claude\n",
+        )
+
+        result = runner.invoke(pack_cmd, [])
+
+        assert result.exit_code == 0, result.output
+        manifest = json.loads(
+            (tmp_path / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        assert "$schema" not in manifest
+
     def test_pack_explicit_agent_plugin_round_trips(self, runner, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         _write_agent_block_yml(tmp_path, nonportable=False)

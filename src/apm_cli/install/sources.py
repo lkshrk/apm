@@ -178,12 +178,15 @@ class LocalDependencySource(DependencySource):
     def acquire(self) -> Materialization | None:
         from apm_cli.agent_plugins.errors import AgentPluginError
         from apm_cli.bundle.local_bundle import route_agent_plugin_package
+        from apm_cli.constants import APM_YML_FILENAME
         from apm_cli.core.scope import InstallScope
         from apm_cli.deps.installed_package import InstalledPackage
         from apm_cli.install.phases.local_content import _copy_local_package
         from apm_cli.models.apm_package import (
+            APMPackage,
             GitReferenceType,
             PackageInfo,
+            PackageType,
             ResolvedReference,
         )
         from apm_cli.models.validation import validate_apm_package
@@ -267,10 +270,22 @@ class LocalDependencySource(DependencySource):
             install_path,
             source_path=original_src,
         )
-        if not validation.is_valid or validation.package is None:
+        if validation.is_valid and validation.package is not None:
+            local_pkg = validation.package
+            pkg_type = validation.package_type
+        elif native_detection is not None:
+            details = "; ".join(validation.errors) or "validator returned no package"
+            raise DirectDependencyError(f"Local Agent Plugin is invalid: {details}")
+        elif validation.legacy_metadata_only:
+            local_apm_yml = install_path / APM_YML_FILENAME
+            local_pkg = APMPackage.from_apm_yml(
+                local_apm_yml,
+                source_path=original_src,
+            )
+            pkg_type = PackageType.APM_PACKAGE
+        else:
             details = "; ".join(validation.errors) or "validator returned no package"
             raise DirectDependencyError(f"Local package is invalid: {details}")
-        local_pkg = validation.package
         if not local_pkg.source:
             local_pkg.source = dep_ref.local_path
 
@@ -286,7 +301,7 @@ class LocalDependencySource(DependencySource):
             resolved_reference=local_ref,
             installed_at=datetime.now().isoformat(),
             dependency_ref=dep_ref,
-            package_type=validation.package_type,
+            package_type=pkg_type,
         )
 
         # Record for lockfile

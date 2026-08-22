@@ -27,6 +27,32 @@ def test_removed_agent_plugin_lifecycle_tombstone_passes() -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_install_request_defaults_have_single_owner() -> None:
+    """The Click compatibility wrapper must not redeclare request defaults."""
+    root = Path(__file__).parents[2]
+    command_source = (root / "src/apm_cli/commands/install.py").read_text(encoding="utf-8")
+    request_source = (root / "src/apm_cli/install/request.py").read_text(encoding="utf-8")
+    guard = (root / "scripts/lint-architecture-boundaries.sh").read_text(encoding="utf-8")
+    architecture = (root / ".github/instructions/architecture.instructions.md").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(command_source)
+    wrapper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_install_apm_dependencies"
+    )
+    positional = wrapper.args.args[-len(wrapper.args.defaults) :]
+
+    assert {arg.arg for arg in positional} == {"update_refs", "verbose", "only_packages"}
+    assert "request = InstallRequest(" in command_source
+    assert "trust_bin: bool | None = None" in request_source
+    assert "Install invocation defaults must remain owned by InstallRequest" in guard
+    assert "| Install invocation option defaults | install/request.py (InstallRequest) |" in (
+        architecture
+    )
+
+
 @pytest.mark.parametrize(
     ("relative_path", "source", "expected"),
     [

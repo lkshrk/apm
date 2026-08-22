@@ -250,6 +250,26 @@ class TestLocalDependencySourceAcquire:
 
         assert not (install_path / "apm.yml").exists()
 
+    def test_invalid_apm_path_does_not_enter_legacy_fallback(self, tmp_path: Path) -> None:
+        """A malformed .apm path remains invalid despite a root apm.yml."""
+        from apm_cli.install.errors import DirectDependencyError
+        from apm_cli.install.sources import LocalDependencySource
+
+        ctx = _make_ctx(project_root=tmp_path)
+        dep_ref = _make_dep_ref(is_local=True, local_path=str(tmp_path), reference=None)
+        install_path = tmp_path / "install"
+        install_path.mkdir()
+        (install_path / "apm.yml").write_text("name: invalid\nversion: 1.0.0\n")
+        (install_path / ".apm").write_text("not a directory\n")
+
+        with patch(
+            "apm_cli.install.phases.local_content._copy_local_package",
+            return_value=install_path,
+        ):
+            source = LocalDependencySource(ctx, dep_ref, install_path, "owner/pkg")
+            with pytest.raises(DirectDependencyError, match=r"\.apm must be a directory"):
+                source.acquire()
+
     def test_success_with_apm_yml(self, tmp_path: Path) -> None:
         """Success path: apm.yml present → APMPackage.from_apm_yml called."""
         ctx = _make_ctx(project_root=tmp_path)

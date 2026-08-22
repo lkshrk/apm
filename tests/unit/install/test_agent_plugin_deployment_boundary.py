@@ -69,7 +69,9 @@ def _write_adversarial_agent_plugin(root: Path, outside: Path) -> PackageInfo:
         encoding="utf-8",
     )
     files = {
-        "skills/native/SKILL.md": "---\nname: native\ndescription: blocked\n---\n",
+        "skills/native/SKILL.md": (
+            "---\nname: native\ndescription: blocked\n---\n\nUse the native plugin.\n"
+        ),
         "bin/native": "#!/bin/sh\nexit 0\n",
         "agents/native.md": "agent\n",
         "commands/native.md": "command\n",

@@ -307,7 +307,13 @@ class PluginManifestProducer:
             (options.project_root / relative).exists()
             for relative in (".apm", "skills", "mcp.json", ".mcp.json", ".lsp.json")
         )
-        if targets and set(targets) <= {"claude"} and not ecosystems and not has_agent_sources:
+        if (
+            coerce_bundle_format(options.bundle_format) is BundleFormat.AGENT_PLUGIN
+            and targets
+            and set(targets) <= {"claude"}
+            and not ecosystems
+            and not has_agent_sources
+        ):
             raise BuildError(
                 "The selected targets only request Claude plugin metadata, but Agent Plugin "
                 "output is active. Run 'apm pack --claude-plugin' for the historical Claude "

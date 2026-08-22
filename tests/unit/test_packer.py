@@ -301,7 +301,7 @@ class TestPackBundle:
         out = tmp_path / "build"
 
         with pytest.raises(FileNotFoundError, match="apm.lock.yaml not found"):  # noqa: RUF043
-            pack_bundle(project, out)
+            pack_bundle(project, out, fmt="apm")
 
     def test_pack_missing_deployed_file(self, tmp_path):
         project = tmp_path / "project"

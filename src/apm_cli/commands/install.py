@@ -1872,6 +1872,7 @@ def _install_apm_packages(ctx, outcome):
                 skill_subset=ctx.skill_subset,
                 skill_subset_from_cli=ctx.skill_subset_from_cli,
                 refresh=ctx.refresh,
+                trust_bin=ctx.trust_bin,
                 transaction=ctx.transaction,
             )
             if not isinstance(install_result, InstallResult):
@@ -2023,35 +2024,13 @@ def _post_install_summary(
 #
 # The real implementation lives in ``apm_cli.install.pipeline`` (F2).
 # ---------------------------------------------------------------------------
-def _install_apm_dependencies(  # noqa: PLR0913
+def _install_apm_dependencies(
     apm_package: "APMPackage",
     update_refs: bool = False,
     verbose: bool = False,
     only_packages: "builtins.list | None" = None,
-    force: bool = False,
-    parallel_downloads: int = 4,
-    logger: "InstallLogger" = None,
-    scope=None,
-    auth_resolver: "AuthResolver" = None,
-    target: str | None = None,
-    target_decision: "EffectiveTargetDecision | None" = None,
-    allow_insecure: bool = False,
-    allow_insecure_hosts=(),
-    marketplace_provenance: dict = None,
-    protocol_pref=None,
-    allow_protocol_fallback: "bool | None" = None,
-    no_policy: bool = False,
-    audit_override: "str | None" = None,
-    skill_subset: "builtins.tuple | None" = None,
-    skill_subset_from_cli: bool = False,
-    legacy_skill_paths: bool = False,
-    trust_transitive_mcp: bool = False,
-    frozen: bool = False,
-    plan_callback=None,
-    refresh: bool = False,
-    lockfile_only: bool = False,
-    transaction: "InstallTransaction | None" = None,
-):
+    **options: Any,
+) -> InstallResult:
     """Thin wrapper -- builds an :class:`InstallRequest` and delegates to
     :class:`apm_cli.install.service.InstallService`.
 
@@ -2071,28 +2050,6 @@ def _install_apm_dependencies(  # noqa: PLR0913
         update_refs=update_refs,
         verbose=verbose,
         only_packages=only_packages,
-        force=force,
-        parallel_downloads=parallel_downloads,
-        logger=logger,
-        scope=scope,
-        auth_resolver=auth_resolver,
-        target=target,
-        target_decision=target_decision,
-        allow_insecure=allow_insecure,
-        allow_insecure_hosts=allow_insecure_hosts,
-        marketplace_provenance=marketplace_provenance,
-        protocol_pref=protocol_pref,
-        allow_protocol_fallback=allow_protocol_fallback,
-        no_policy=no_policy,
-        audit_override=audit_override,
-        skill_subset=skill_subset,
-        skill_subset_from_cli=skill_subset_from_cli,
-        legacy_skill_paths=legacy_skill_paths,
-        trust_transitive_mcp=trust_transitive_mcp,
-        frozen=frozen,
-        plan_callback=plan_callback,
-        refresh=refresh,
-        lockfile_only=lockfile_only,
-        transaction=transaction,
+        **options,
     )
     return InstallService().run(request)
