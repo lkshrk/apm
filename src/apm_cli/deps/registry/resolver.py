@@ -74,6 +74,25 @@ def _clear_install_target(target_path: Path) -> None:
             child.unlink(missing_ok=True)
 
 
+def _route_agent_plugin_or_clean(target_path: Path):
+    """Route *target_path* through Agent Plugin admission; clean up on rejection.
+
+    A rejected Agent Plugin (unsupported or foreign ``$schema``) must not
+    leave the freshly-extracted registry tree on disk -- mirrors the same
+    cleanup-on-reject invariant enforced for the github/artifactory ingress
+    in ``deps/_shared.py::_validate_and_load_package``.
+    """
+    from ...agent_plugins.errors import AgentPluginError
+    from ...utils.file_ops import robust_rmtree
+
+    try:
+        return route_agent_plugin_package(target_path)
+    except AgentPluginError:
+        if target_path.exists():
+            robust_rmtree(target_path, ignore_errors=True)
+        raise
+
+
 def _package_info_from_extracted_registry_tree(
     dep_ref: DependencyReference,
     target_path: Path,
@@ -92,7 +111,7 @@ def _package_info_from_extracted_registry_tree(
                 f"package {dep_ref.repo_url!r} at version {chosen.version}"
             )
 
-    native_detection = route_agent_plugin_package(target_path)
+    native_detection = _route_agent_plugin_or_clean(target_path)
     validation_result = validate_apm_package(
         target_path,
         agent_plugin_detection=native_detection,
@@ -375,7 +394,7 @@ class RegistryPackageResolver:
                     f"package {dep_ref.repo_url!r} at version {version}"
                 )
 
-        native_detection = route_agent_plugin_package(target_path)
+        native_detection = _route_agent_plugin_or_clean(target_path)
         validation_result = validate_apm_package(
             target_path,
             agent_plugin_detection=native_detection,

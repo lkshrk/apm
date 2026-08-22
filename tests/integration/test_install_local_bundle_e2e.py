@@ -974,7 +974,7 @@ class TestLocalInstallAirGap:
 
 class TestInstallLegacyApmFormatBundle:
     """``apm install <legacy-bundle>`` must reject legacy --format apm tarballs
-    with an actionable error pointing at ``apm unpack`` or ``--format plugin``."""
+    with an actionable error pointing at ``apm unpack`` or ``apm pack --claude-plugin``."""
 
     def test_legacy_apm_tarball_rejected_with_actionable_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -982,7 +982,8 @@ class TestInstallLegacyApmFormatBundle:
         """A tarball produced by ``apm pack --format apm --archive`` has
         ``apm.lock.yaml`` at the root but no ``plugin.json``.  The install
         command must reject it with a message that names the legacy format
-        and suggests either repacking or using ``apm unpack``."""
+        and suggests either repacking with the installable Claude-plugin
+        format or using ``apm unpack``."""
         # Build a legacy apm-format bundle directory
         bundle = tmp_path / "test-pkg-0.1.0"
         bundle.mkdir(parents=True)
@@ -1024,7 +1025,12 @@ class TestInstallLegacyApmFormatBundle:
         # The error must mention the legacy format
         assert "--format apm" in result.output or "legacy format" in result.output
         # The error must offer actionable guidance
-        assert "apm unpack" in result.output or "--format plugin" in result.output
+        assert "apm unpack" in result.output
+        # The suggested repack command must actually produce an installable
+        # bundle: '--format plugin' now selects the (non-installable) Agent
+        # Plugins v1 format, so the recovery advice must be the explicit
+        # Claude-plugin alias instead.
+        assert "apm pack --claude-plugin" in result.output
         # No files should be deployed
         assert not (project / ".github" / "copilot-instructions.md").exists()
 

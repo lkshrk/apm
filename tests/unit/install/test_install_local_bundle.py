@@ -698,7 +698,7 @@ class TestPathExistsButNotBundle:
     ) -> None:
         """A tarball packed with --format apm (has apm.lock.yaml, no
         plugin.json) must produce a specific error guiding the user to
-        repack with --format plugin or use apm unpack."""
+        repack with --claude-plugin or use apm unpack."""
         # Build a legacy apm-format bundle (mirrors packer.py fmt="apm" output)
         bundle = tmp_path / "test-pkg-0.1.0"
         bundle.mkdir(parents=True)
@@ -735,7 +735,12 @@ class TestPathExistsButNotBundle:
         assert result.exit_code != 0
         # Must mention the legacy format and offer actionable guidance
         assert "--format apm" in result.output or "legacy format" in result.output
-        assert "apm unpack" in result.output or "--format plugin" in result.output
+        assert "apm unpack" in result.output
+        # The suggested repack command must actually produce an installable
+        # bundle: '--format plugin' now selects the (non-installable) Agent
+        # Plugins v1 format, so the recovery advice must be the explicit
+        # Claude-plugin alias instead.
+        assert "apm pack --claude-plugin" in result.output
 
 
 # ---------------------------------------------------------------------------

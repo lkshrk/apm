@@ -1295,7 +1295,7 @@ def install(  # noqa: C901, PLR0913
                     raise click.UsageError(
                         f"'{packages[0]}' was packed with '--format apm' (legacy format). "
                         "'apm install <bundle>' requires the plugin format. "
-                        "Repack with 'apm pack --format plugin --archive', "
+                        "Repack with 'apm pack --claude-plugin --archive', "
                         "or use 'apm unpack' to deploy the legacy bundle."
                     )
                 raise click.UsageError(

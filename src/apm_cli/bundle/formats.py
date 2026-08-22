@@ -29,6 +29,11 @@ class BundleFormat(str, enum.Enum):
 
 
 PREFERRED_PLUGIN_FORMAT = BundleFormat.CLAUDE_PLUGIN
+# NOTE(reservation #2522-4): flipping PREFERRED_PLUGIN_FORMAT to AGENT_PLUGIN
+# is the single switch that activates agent_plugin_warning() below (currently
+# unreachable while Claude stays the no-flag default). Do not schedule that
+# flip until a real client passes credential-free native-lifecycle
+# qualification; see Section 8.5.5 (req-tg-011) of openapm-v0.1.md.
 
 _CLI_CHOICES = ("plugin", "agent-plugin", "claude", "claude-plugin", "apm")
 _SELECTOR_ALIASES: dict[str, BundleFormat] = {
