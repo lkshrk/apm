@@ -10,6 +10,7 @@ import click
 
 from ...constants import APM_YML_FILENAME
 from ...core.command_logger import CommandLogger
+from ...install.locking import serialized_lifecycle
 from ...models.apm_package import APMPackage
 from .engine import (
     MCPUninstallCleanupError,
@@ -110,6 +111,7 @@ def _abort_if_retained_target_cleanup_paths(retained_cleanup_paths: set[Any], lo
     help="Remove from user scope (~/.apm/) instead of the current project",
 )
 @click.pass_context
+@serialized_lifecycle
 def uninstall(ctx, packages, dry_run, verbose, global_):
     """Remove APM packages from apm.yml and apm_modules (like npm uninstall).
 
@@ -485,18 +487,22 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
 
         mcp_cleanup_error = None
         try:
-            apm_package = APMPackage.from_apm_yml(manifest_path)
-            _cleanup_stale_mcp(
-                apm_package,
-                lockfile,
-                lockfile_path,
-                _pre_uninstall_mcp_servers,
-                modules_dir=get_modules_dir(scope),
-                project_root=deploy_root,
-                user_scope=scope is InstallScope.USER,
-                scope=scope,
-                persist=False,
+            has_mcp_ownership = bool(_pre_uninstall_mcp_servers) or bool(
+                lockfile and lockfile.mcp_target_servers
             )
+            if has_mcp_ownership:
+                apm_package = APMPackage.from_apm_yml(manifest_path)
+                _cleanup_stale_mcp(
+                    apm_package,
+                    lockfile,
+                    lockfile_path,
+                    _pre_uninstall_mcp_servers,
+                    modules_dir=get_modules_dir(scope),
+                    project_root=deploy_root,
+                    user_scope=scope is InstallScope.USER,
+                    scope=scope,
+                    persist=False,
+                )
         except (
             IntelliJConfigError,
             MCPUninstallCleanupError,
@@ -520,10 +526,11 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
             )
             logger.verbose_detail(traceback.format_exc().rstrip())
         except Exception as cleanup_error:
-            logger.warning(
-                f"MCP cleanup during uninstall failed: {type(cleanup_error).__name__}: "
-                f"{cleanup_error}. Package removal completed; run 'apm install' "
-                "to reconcile stale MCP entries."
+            mcp_cleanup_error = cleanup_error
+            logger.error(
+                "Uninstall incomplete: package removal completed, but MCP cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}. Fix the target config, "
+                "then retry so lock ownership can be reconciled."
             )
             logger.verbose_detail(traceback.format_exc().rstrip())
 
@@ -538,7 +545,7 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
         )
         lockfile_updated = lsp_lock_updated or lockfile_updated
 
-        if lockfile and lockfile_updated and lockfile_ready:
+        if lockfile and lockfile_updated and lockfile_ready and mcp_cleanup_error is None:
             try:
                 from .lockfile_state import lockfile_has_persisted_state
 

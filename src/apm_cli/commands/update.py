@@ -82,6 +82,7 @@ from ..install.errors import (
     PolicyViolationError,
     RequiredIntegrationError,
 )
+from ..install.locking import serialized_lifecycle
 from ..install.plan import UpdatePlan, render_plan_text
 from ..utils.console import _rich_echo, _rich_error, _rich_info, _rich_success, _rich_warning
 from ._helpers import UnknownPackageError, _find_apm_yml, resolve_requested_packages
@@ -450,6 +451,7 @@ def _handle_service_only_update(
     ),
 )
 @click.pass_context
+@serialized_lifecycle
 def update(
     ctx: click.Context,
     packages: tuple[str, ...],
@@ -553,6 +555,35 @@ def update(
 
 
 def _run_dep_update(
+    *,
+    assume_yes: bool,
+    dry_run: bool,
+    verbose: bool,
+    project_root: Path | None = None,
+    target: str | list[str] | None = None,
+    scope=None,
+    packages: tuple[str, ...] = (),
+    force: bool = False,
+    parallel_downloads: int = 4,
+) -> None:
+    """Serialize update with every other mutation of the same workspace."""
+    from apm_cli.core.scope import InstallScope
+
+    effective_scope = scope or InstallScope.PROJECT
+    _run_dep_update_locked(
+        assume_yes=assume_yes,
+        dry_run=dry_run,
+        verbose=verbose,
+        project_root=project_root,
+        target=target,
+        scope=effective_scope,
+        packages=packages,
+        force=force,
+        parallel_downloads=parallel_downloads,
+    )
+
+
+def _run_dep_update_locked(
     *,
     assume_yes: bool,
     dry_run: bool,
