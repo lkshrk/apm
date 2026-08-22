@@ -322,7 +322,7 @@ def prune(ctx, dry_run):
             for dep_key in pruned_keys:
                 lockfile.dependencies.pop(dep_key, None)
             DeploymentLedgerCodec.apply_to_lockfile(reconciled.ledger, lockfile)
-            if pruned_keys and lockfile.mcp_servers:
+            if pruned_keys and (lockfile.mcp_servers or lockfile.mcp_target_servers):
                 from .uninstall.engine import _cleanup_stale_mcp
 
                 _cleanup_stale_mcp(
