@@ -1621,6 +1621,7 @@ class TestRegistryPackageResolverDownloadPackage:
         this PR. This covers the download_from_lockfile (locked-version
         replay) call site.
         """
+        from apm_cli.agent_plugins import UnsupportedAgentPluginVersionError
         from apm_cli.deps.registry.resolver import RegistryPackageResolver
 
         archive_data = _make_tar_gz(
@@ -1657,7 +1658,7 @@ class TestRegistryPackageResolverDownloadPackage:
 
         with (
             patch("apm_cli.deps.registry.auth.resolve_for_url") as mock_rfu,
-            pytest.raises(Exception, match="supports only"),
+            pytest.raises(UnsupportedAgentPluginVersionError, match="supports only"),
         ):
             mock_rfu.return_value = _anon_auth()
             resolver.download_from_lockfile(
