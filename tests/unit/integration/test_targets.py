@@ -484,7 +484,7 @@ class TestGrokBuildTarget:
 
 
 class TestHermesTarget:
-    """Registry + scope + flag-gating invariants for the hermes target."""
+    """Registry + scope invariants for the stable explicit-only Hermes target."""
 
     def setup_method(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -503,23 +503,15 @@ class TestHermesTarget:
         assert profile.user_supported is True
         assert profile.user_root_dir == ".hermes"
         assert profile.detect_by_dir is False
-        assert profile.requires_flag == "hermes"
+        assert profile.requires_flag is None
         assert profile.compile_family == "agents"
         assert "skills" in profile.primitives
         assert profile.primitives["skills"].format_id == "skill_standard"
 
-    def test_hermes_requires_flag_gate(self, monkeypatch):
-        import apm_cli.integration.targets as tg
-
-        # Flag OFF -> explicit hermes is filtered out of active targets.
-        monkeypatch.setattr(tg, "_is_flag_enabled", lambda name: False)
-        off = active_targets(self.root, explicit_target="hermes")
-        assert all(p.name != "hermes" for p in off)
-
-        # Flag ON -> explicit hermes resolves.
-        monkeypatch.setattr(tg, "_is_flag_enabled", lambda name: True)
-        on = active_targets(self.root, explicit_target="hermes")
-        assert any(p.name == "hermes" for p in on)
+    @pytest.mark.windows_compat
+    def test_hermes_explicit_target_resolves_without_flag(self):
+        targets = active_targets(self.root, explicit_target="hermes")
+        assert any(p.name == "hermes" for p in targets)
 
     def test_hermes_excluded_from_all(self, monkeypatch):
         import apm_cli.integration.targets as tg

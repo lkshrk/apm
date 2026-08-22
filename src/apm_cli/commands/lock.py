@@ -43,6 +43,8 @@ from pathlib import Path
 
 import click
 
+from apm_cli.install.locking import serialized_lifecycle
+
 from ..core.command_logger import InstallLogger
 from ..core.target_detection import TargetParamType
 from ..export.formats import FORMAT_CYCLONEDX, SUPPORTED_FORMATS
@@ -168,6 +170,7 @@ def lock(
     )
 
 
+@serialized_lifecycle
 def _run_lock(
     *,
     verbose: bool,

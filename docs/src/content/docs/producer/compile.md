@@ -100,7 +100,7 @@ from `all`. Compile uses the Copilot profile for its file primitives and produce
 `AGENTS.md`; IntelliJ-specific integration remains MCP-only. Unknown slugs are
 rejected before any work runs.
 
-Experimental targets (`hermes`, `openclaw`, `copilot-cowork`,
+Experimental targets (`openclaw`, `copilot-cowork`,
 `copilot-app`, `grok-cloud`) are deployment targets for `apm install --target <flag>`
 once enabled via `apm experimental enable <flag>`, and are excluded
 from `--all`. `apm compile` does not emit harness-specific output for

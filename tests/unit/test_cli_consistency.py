@@ -186,17 +186,18 @@ def test_deps_update_target_help_uses_current_catalog():
     assert "apm update" in help_text
 
 
-def test_compile_target_all_exclusion_lists_agent_skills_and_intellij():
-    """Regression for #2451: compile --target help must list agent-skills and intellij
-    as excluded from 'all', consistent with install --target help.
-    """
+def test_compile_target_all_exclusion_lists_explicit_only_targets():
+    """Compile help lists stable explicit-only targets excluded from ``all``."""
     result = CliRunner().invoke(cli, ["compile", "--help"])
 
     assert result.exit_code == 0
     help_text = result.output
     # Assert the full exclusion sentence (normalize whitespace from help-text wrapping)
     normalized = " ".join(help_text.split())
-    assert "excludes agent-skills, antigravity, experimental targets, and intellij" in normalized
+    assert (
+        "excludes agent-skills, antigravity, hermes, experimental targets, and intellij"
+        in normalized
+    )
 
 
 def test_mcp_install_help_lists_target_global_and_trust_transitive():

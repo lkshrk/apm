@@ -70,9 +70,11 @@ TargetType = Literal[
     "codex",
     "gemini",
     "antigravity",
+    "grok-build",
     "windsurf",
     "kiro",
     "agent-skills",
+    "hermes",
     "all",
     "minimal",
 ]
@@ -115,6 +117,7 @@ UserTargetType = Literal[
     "windsurf",
     "kiro",
     "agent-skills",
+    "hermes",
     "all",
     "minimal",
 ]
@@ -164,6 +167,8 @@ def detect_target(  # noqa: PLR0911
             return "grok-build", "explicit --target flag"
         elif explicit_target == "agent-skills":
             return "agent-skills", "explicit --target flag"
+        elif explicit_target == "hermes":
+            return "hermes", "explicit --target flag"
         elif explicit_target == "all":
             return "all", "explicit --target flag"
 
@@ -191,6 +196,8 @@ def detect_target(  # noqa: PLR0911
             return "grok-build", "apm.yml target"
         elif config_target == "agent-skills":
             return "agent-skills", "apm.yml target"
+        elif config_target == "hermes":
+            return "hermes", "apm.yml target"
         elif config_target == "all":
             return "all", "apm.yml target"
 
@@ -414,7 +421,7 @@ def get_target_description(target: UserTargetType) -> str:
         "kiro": "AGENTS.md + .kiro/steering/ + .kiro/skills/ + .kiro/hooks/ + .kiro/settings/mcp.json",
         "agent-skills": ".agents/skills/ only (cross-client shared skills -- no agents, hooks, or commands)",
         "openclaw": ".agents/skills/ (project) or ~/.openclaw/skills/ (--global) -- experimental",
-        "hermes": "AGENTS.md + .agents/skills/ (project) or ~/.hermes/skills/ + config.yaml MCP (--global) -- experimental",
+        "hermes": "AGENTS.md + .agents/skills/ (project) or ~/.hermes/skills/ + config.yaml MCP (--global) (explicit --target only)",
         "all": "AGENTS.md + CLAUDE.md + GEMINI.md + .github/copilot-instructions.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .windsurf/ + .kiro/ + .agents/",
         "minimal": "AGENTS.md only (create .github/, .claude/, or .gemini/ for full integration)",
     }

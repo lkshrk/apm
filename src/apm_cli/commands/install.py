@@ -51,6 +51,7 @@ from apm_cli.install.insecure_policy import (
     _guard_transitive_insecure_dependencies,  # noqa: F401 -- re-exported; test_architecture_invariants checks importability
     _InsecureDependencyInfo,  # noqa: F401 -- re-exported; test_architecture_invariants checks importability
 )
+from apm_cli.install.locking import serialized_lifecycle
 
 # Re-export MCP add/build helpers under their underscore-prefixed legacy
 # names. Aliases live in mcp/writer.py and mcp/entry.py respectively.
@@ -1102,6 +1103,7 @@ def _handle_mcp_install(  # noqa: PLR0913
     ),
 )
 @click.pass_context
+@serialized_lifecycle
 def install(  # noqa: C901, PLR0913
     ctx,
     packages,
@@ -1642,9 +1644,11 @@ def install(  # noqa: C901, PLR0913
         # of how the handler exits (return, sys.exit -> SystemExit,
         # exception). Done first so cwd is back to $PWD before any
         # best-effort summary rendering below.
-        _root_redirect.__exit__(None, None, None)
-        if transaction is not None:
-            transaction.__exit__(*sys.exc_info())
+        try:
+            _root_redirect.__exit__(None, None, None)
+        finally:
+            if transaction is not None:
+                transaction.__exit__(*sys.exc_info())
         # F5 (#1116): render minimal elapsed-time line on exit paths that
         # did not already render the full install summary. Best-effort:
         # never let a render failure mask the original exception/exit.
