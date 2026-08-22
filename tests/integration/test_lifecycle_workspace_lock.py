@@ -108,6 +108,19 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
         ),
         (
             ("install",),
+            (
+                "marketplace",
+                "package",
+                "set",
+                "existing-package",
+                "--version",
+                ">=2.0.0",
+            ),
+            False,
+            False,
+        ),
+        (
+            ("install",),
             ("marketplace", "package", "remove", "existing-package", "--yes"),
             False,
             False,
