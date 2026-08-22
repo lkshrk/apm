@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   consent over marketplace-plugin `bin/` executable deployment. `--trust-bin`
   approves deployment silently; `--no-trust-bin` skips `bin/` even when policy
   permits it. The `allowExecutables` policy gate still takes precedence. (closes #1620)
+- `apm pack --plugin` and `apm plugin init --plugin` now emit strict, portable
+  Agent Plugins 1.0 bundles. The existing no-flag Claude format remains the
+  default; exact-schema Agent Plugins are admitted as whole units and blocked
+  before deployment until a native client lifecycle qualifies, never projected
+  as legacy primitives. (by @sergio-sisternes-epam; closes #2522) (#2654)
+
 ### Fixed
 
 - Windows binary is now Authenticode-signed in the release workflow, eliminating
