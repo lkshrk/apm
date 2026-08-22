@@ -81,6 +81,7 @@ class ReplayConfig:
     parallel_downloads: int = 1
     scratch_root: Path | None = None
     modules_root: Path | None = None
+    user_scope: bool = False
 
 
 @dataclass(frozen=True)
@@ -541,6 +542,7 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
         Surfaced verbatim when a locked dep cannot be materialized.
     """
     from apm_cli.deps.lockfile import _SELF_KEY, LockFile
+    from apm_cli.install.audit_target_roots import replay_target
     from apm_cli.install.services import IntegratorBundle, integrate_package_primitives
     from apm_cli.integration.targets import resolve_targets
     from apm_cli.utils.diagnostics import DiagnosticCollector
@@ -575,8 +577,12 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
     # targets ``copilot,claude,cursor`` would replay only the primary
     # auto-detected target and report the others as ``orphaned``.
     explicit_target = _read_apm_yml_target(project_root)
-    all_targets = resolve_targets(project_root, explicit_target=explicit_target)
-    targets = _filter_targets(all_targets, config.targets)
+    live_targets = resolve_targets(
+        project_root,
+        user_scope=config.user_scope,
+        explicit_target=explicit_target,
+    )
+    targets = [replay_target(target) for target in _filter_targets(live_targets, config.targets)]
     registries: dict[str, str] | None = None
     downloader = None
     registry_resolver = None
@@ -838,6 +844,7 @@ def diff_scratch_against_project(
     targets,
     *,
     tracked_files: frozenset[str] | None = None,
+    absolute_claims_only: bool = False,
 ) -> list[DriftFinding]:
     """Compare the replay scratch tree against the project tree.
 
@@ -871,10 +878,22 @@ def diff_scratch_against_project(
     governed = _governed_root_dirs(targets)
     scratch_files = _walk_managed(scratch_root, governed)
     project_files = _walk_managed(project_root, governed)
-    tracked = _collect_tracked_files(lockfile)
+    from apm_cli.install.audit_target_roots import claims_for_root
+
+    tracked = claims_for_root(
+        _collect_tracked_files(lockfile),
+        project_root,
+        absolute_only=absolute_claims_only,
+    )
     claimed_prefixes = _claimed_prefixes(
         tracked,
-        _collect_hashed_files(lockfile),
+        set(
+            claims_for_root(
+                {path: "" for path in _collect_hashed_files(lockfile)},
+                project_root,
+                absolute_only=absolute_claims_only,
+            )
+        ),
         project_files,
     )
     # Hook merge targets are shared with the user and never claimed in

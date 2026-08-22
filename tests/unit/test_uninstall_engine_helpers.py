@@ -405,6 +405,7 @@ class TestCleanupStaleMcp:
             project_root=None,
             user_scope=False,
             scope=None,
+            fail_on_write_error=True,
         )
         mock_mcp.update_lockfile.assert_called_once()
 
@@ -461,7 +462,87 @@ class TestCleanupStaleMcp:
             project_root=None,
             user_scope=False,
             scope="user",
+            fail_on_write_error=True,
         )
+
+    @pytest.mark.windows_compat
+    def test_cleanup_failure_retains_lock_ownership(self, tmp_path):
+        """Native cleanup must succeed before in-memory ownership is dropped."""
+        from apm_cli.install.errors import RequiredIntegrationError
+
+        apm_package = MagicMock()
+        lockfile = LockFile(
+            mcp_servers=["stale"],
+            mcp_target_servers={"hermes": ["stale"]},
+        )
+        before_servers = list(lockfile.mcp_servers)
+        before_targets = dict(lockfile.mcp_target_servers)
+
+        with patch("apm_cli.commands.uninstall.engine.MCPIntegrator") as mock_mcp:
+            mock_mcp.get_server_names.return_value = set()
+            mock_mcp.remove_stale.side_effect = RequiredIntegrationError("cleanup failed")
+            with pytest.raises(RequiredIntegrationError, match="cleanup failed"):
+                _cleanup_stale_mcp(
+                    apm_package,
+                    lockfile,
+                    tmp_path / "apm.lock.yaml",
+                    {"stale"},
+                    modules_dir=tmp_path / "apm_modules",
+                    persist=False,
+                )
+
+        assert lockfile.mcp_servers == before_servers
+        assert lockfile.mcp_target_servers == before_targets
+
+    @pytest.mark.windows_compat
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_claude_atomic_failure_retains_live_bytes_and_ownership(self, tmp_path, user_scope):
+        """A failed Claude replace cannot precede lock ownership removal."""
+        from types import SimpleNamespace
+
+        from apm_cli.core.scope import InstallScope
+        from apm_cli.install.errors import RequiredIntegrationError
+
+        if not user_scope:
+            (tmp_path / ".claude").mkdir()
+        config_path = tmp_path / (".claude.json" if user_scope else ".mcp.json")
+        original = b'{"mcpServers":{"stale":{"command":"old"}},"theme":"dark"}\n'
+        config_path.write_bytes(original)
+        lockfile = LockFile(
+            mcp_servers=["stale"],
+            mcp_target_servers={"claude": ["stale"]},
+        )
+        before_servers = list(lockfile.mcp_servers)
+        before_targets = dict(lockfile.mcp_target_servers)
+
+        with (
+            patch(
+                "apm_cli.integration.mcp_config_view.CurrentMcpConfigView.derive",
+                return_value=SimpleNamespace(dependencies=[], configs={}, provenance={}),
+            ),
+            patch(
+                "apm_cli.utils.atomic_io._replace_atomic_file",
+                side_effect=OSError("simulated crash"),
+            ),
+            patch("pathlib.Path.home", return_value=tmp_path),
+            pytest.raises(RequiredIntegrationError, match="MCP cleanup failed"),
+        ):
+            _cleanup_stale_mcp(
+                MagicMock(),
+                lockfile,
+                tmp_path / "apm.lock.yaml",
+                {"stale"},
+                modules_dir=tmp_path / "apm_modules",
+                project_root=tmp_path,
+                user_scope=user_scope,
+                scope=InstallScope.USER if user_scope else None,
+                persist=False,
+            )
+
+        assert config_path.read_bytes() == original
+        assert lockfile.mcp_servers == before_servers
+        assert lockfile.mcp_target_servers == before_targets
+        assert list(tmp_path.glob("apm-atomic-*")) == []
 
     def test_get_mcp_dependencies_exception_handled(self, tmp_path):
         """Exception from apm_package.get_mcp_dependencies is swallowed."""

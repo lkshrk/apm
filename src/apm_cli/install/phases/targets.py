@@ -201,15 +201,6 @@ def _check_openclaw_flag_gate(
     _check_experimental_target_hint(explicit, targets, ctx, target_name="openclaw")
 
 
-def _check_hermes_flag_gate(
-    explicit: str | list[str] | None,
-    targets: list,
-    ctx: InstallContext,
-) -> None:
-    """Emit an enable-hint when the user asks for hermes but the flag is OFF."""
-    _check_experimental_target_hint(explicit, targets, ctx, target_name="hermes")
-
-
 def _check_grok_cloud_flag_gate(
     explicit: str | list[str] | None,
     targets: list,
@@ -539,11 +530,10 @@ def run(ctx: InstallContext) -> None:
             ctx.logger.error(str(exc), symbol="cross")
         raise SystemExit(1) from exc
 
-    # Target gating: cowork, copilot-app, openclaw, hermes, grok-cloud.
+    # Target gating: cowork, copilot-app, openclaw, grok-cloud.
     _gate_cowork_target(ctx, _targets, _explicit, _is_user)
     _gate_copilot_app_target(ctx, _targets, _explicit)
     _check_openclaw_flag_gate(_explicit, _targets, ctx)
-    _check_hermes_flag_gate(_explicit, _targets, ctx)
     _check_grok_cloud_flag_gate(_explicit, _targets, ctx)
 
     # Resolve v2 targets for project scope, or set up user-scope dirs.
