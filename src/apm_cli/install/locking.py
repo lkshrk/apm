@@ -55,6 +55,9 @@ def lifecycle_operation() -> Iterator[None]:
     """Serialize one complete APM state mutation."""
     lock = acquire_lifecycle_lock()
     try:
+        from apm_cli.importing.journal import assert_lifecycle_unfenced
+
+        assert_lifecycle_unfenced()
         yield
     finally:
         lock.release()

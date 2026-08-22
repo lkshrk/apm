@@ -33,6 +33,7 @@ from apm_cli.commands.deps import deps
 from apm_cli.commands.doctor import doctor
 from apm_cli.commands.experimental import experimental
 from apm_cli.commands.find import find as find_cmd
+from apm_cli.commands.import_cmd import import_cmd
 from apm_cli.commands.init import init
 from apm_cli.commands.install import install
 from apm_cli.commands.lifecycle import lifecycle
@@ -173,6 +174,7 @@ def cli(ctx, verbose: bool) -> None:
     if (
         not ctx.resilient_parsing
         and ctx.invoked_subcommand is not None
+        and ctx.invoked_subcommand != "import"
         and ctx.command.get_command(ctx, ctx.invoked_subcommand) is not None
     ):
         _check_and_notify_updates()
@@ -200,6 +202,7 @@ cli.add_command(unpack_cmd, name="unpack")
 cli.add_command(publish_cmd, name="publish")
 cli.add_command(init)
 cli.add_command(install)
+cli.add_command(import_cmd, name="import")
 cli.add_command(lock)
 cli.add_command(uninstall)
 cli.add_command(prune)

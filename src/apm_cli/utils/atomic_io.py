@@ -89,3 +89,28 @@ def atomic_write_text(path: Path, data: str, *, new_file_mode: int | None = None
         with contextlib.suppress(OSError):
             os.unlink(tmp_name)
         raise
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, new_file_mode: int | None = None) -> None:
+    """Atomically replace *path* with byte-exact content."""
+    existed = path.exists()
+    existing_mode = stat.S_IMODE(path.stat().st_mode) if existed else None
+    fd, tmp_name = tempfile.mkstemp(prefix="apm-atomic-", dir=str(path.parent))
+    fd_wrapped = False
+    try:
+        mode = existing_mode if existed else new_file_mode
+        if mode is not None and hasattr(os, "fchmod"):
+            with contextlib.suppress(OSError):
+                os.fchmod(fd, mode)
+        fh = os.fdopen(fd, "wb")
+        fd_wrapped = True
+        with fh:
+            fh.write(data)
+        _replace_atomic_file(tmp_name, path)
+    except Exception:
+        if not fd_wrapped:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_name)
+        raise

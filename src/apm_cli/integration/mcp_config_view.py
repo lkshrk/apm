@@ -214,6 +214,14 @@ def _allows_missing_manifest(
     if dependency.package_type == PackageType.SKILL_BUNDLE.value:
         return True
 
+    if (
+        dependency.source == "local"
+        and dependency.package_type == PackageType.CLAUDE_SKILL.value
+        and package_dir.is_dir()
+    ):
+        package_type, _ = detect_package_type(package_dir)
+        return package_type is PackageType.CLAUDE_SKILL
+
     dependency_ref = dependency.to_dependency_ref()
     if not dependency_ref.is_virtual_subdirectory():
         return False

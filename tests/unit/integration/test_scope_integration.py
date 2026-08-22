@@ -225,6 +225,17 @@ class TestCodexUserScope:
             names = {t.name for t in targets}
             assert "codex" in names
 
+    def test_package_deploy_root_honors_codex_home(self, monkeypatch, tmp_path):
+        """Codex package primitives deploy beside the configured Codex state."""
+        custom = tmp_path / "custom-codex"
+        monkeypatch.setenv("CODEX_HOME", str(custom))
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        resolved = KNOWN_TARGETS["codex"].for_scope(user_scope=True)
+
+        assert resolved is not None
+        assert resolved.root_dir == "custom-codex"
+
 
 # -- Claude same-root behavior -----------------------------------------------
 

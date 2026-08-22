@@ -410,11 +410,15 @@ class TargetProfile:
         # Claude Code honors CLAUDE_CONFIG_DIR (default ~/.claude) and Hermes
         # honors HERMES_HOME (default ~/.hermes); mirror that at user scope so
         # `apm install -g` lands where the tool reads.
-        if self.name in ("claude", "hermes"):
+        if self.name in ("claude", "codex", "hermes"):
             import os
             from pathlib import Path
 
-            env_var = "CLAUDE_CONFIG_DIR" if self.name == "claude" else "HERMES_HOME"
+            env_var = {
+                "claude": "CLAUDE_CONFIG_DIR",
+                "codex": "CODEX_HOME",
+                "hermes": "HERMES_HOME",
+            }[self.name]
             env = os.environ.get(env_var, "").strip()
             if env:
                 # ``resolve`` collapses ``..`` so traversal segments cannot

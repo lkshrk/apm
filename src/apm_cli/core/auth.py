@@ -88,6 +88,11 @@ def _redact_secrets(text: str) -> str:
     return _SECRET_RE.sub("[REDACTED]", text)
 
 
+def redact_secrets(text: str) -> str:
+    """Public trust-boundary helper for machine-readable error messages."""
+    return _redact_secrets(text)
+
+
 class SecretRedactionFilter(logging.Filter):
     """Logging filter that redacts secret patterns from all emitted log records.
 

@@ -42,7 +42,7 @@ def ensure_config_exists():
             os.chmod(CONFIG_FILE, 0o600)
 
 
-def get_config():
+def get_config(*, read_only: bool = False):
     """Get the current configuration.
 
     Results are cached for the lifetime of the process.
@@ -53,6 +53,8 @@ def get_config():
     global _config_cache
     if _config_cache is not None:
         return _config_cache
+    if read_only and not os.path.exists(CONFIG_FILE):
+        return {"default_client": "vscode"}
     ensure_config_exists()
     with open(CONFIG_FILE, encoding="utf-8") as f:
         _config_cache = json.load(f)

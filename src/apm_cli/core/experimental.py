@@ -169,7 +169,7 @@ def _get_experimental_section() -> dict:
     """
     from apm_cli.config import get_config
 
-    experimental = get_config().get("experimental", {})
+    experimental = get_config(read_only=True).get("experimental", {})
     return experimental if isinstance(experimental, dict) else {}
 
 
