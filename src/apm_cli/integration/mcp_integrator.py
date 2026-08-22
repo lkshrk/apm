@@ -12,11 +12,9 @@ The existing adapters (client/, package_manager/) and registry operations
 from __future__ import annotations
 
 import builtins
-import contextlib
 import copy
 import json
 import logging
-import os
 import re
 import shutil
 import warnings
@@ -156,8 +154,6 @@ def _clean_hermes_mcp_config(
         if removed:
             config["mcp_servers"] = servers
             atomic_write_text(config_path, yaml_to_str(config), new_file_mode=0o600)
-            with contextlib.suppress(OSError, NotImplementedError):
-                os.chmod(config_path, 0o600)
             for name in removed:
                 logger.progress(f"Removed stale MCP server '{name}' from {label}")
         return len(removed)

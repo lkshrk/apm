@@ -191,7 +191,11 @@ def test_clean_json_strict_malformed_shape_preserves_original(tmp_path):
 
 
 @pytest.mark.windows_compat
-def test_remove_stale_hermes_preserves_unrelated_yaml(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", [0o640, 0o644])
+def test_remove_stale_hermes_preserves_unrelated_yaml(tmp_path, monkeypatch, mode):
+    import os
+    import stat
+
     import yaml
 
     from apm_cli.integration.mcp_integrator import MCPIntegrator
@@ -204,6 +208,8 @@ def test_remove_stale_hermes_preserves_unrelated_yaml(tmp_path, monkeypatch):
         "  user-authored:\n    command: keep\n",
         encoding="utf-8",
     )
+    if os.name != "nt":
+        config_path.chmod(mode)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     MCPIntegrator.remove_stale(
@@ -217,11 +223,16 @@ def test_remove_stale_hermes_preserves_unrelated_yaml(tmp_path, monkeypatch):
     assert config["model"]["provider"] == "openai"
     assert "stale" not in config["mcp_servers"]
     assert config["mcp_servers"]["user-authored"]["command"] == "keep"
+    if os.name != "nt":
+        assert stat.S_IMODE(config_path.stat().st_mode) == mode
 
 
 @pytest.mark.windows_compat
 @pytest.mark.parametrize("failure", ["malformed", "atomic"])
 def test_remove_stale_hermes_failure_preserves_live_bytes(tmp_path, monkeypatch, failure):
+    import os
+    import stat
+
     from apm_cli.install.errors import RequiredIntegrationError
     from apm_cli.integration.mcp_integrator import MCPIntegrator
 
@@ -234,6 +245,9 @@ def test_remove_stale_hermes_failure_preserves_live_bytes(tmp_path, monkeypatch,
         else b"mcp_servers:\n  stale:\n    command: old\nSECRET_TOKEN: keep\n"
     )
     config_path.write_bytes(original)
+    if os.name != "nt":
+        config_path.chmod(0o640)
+    original_stat = config_path.stat()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     replace = (
@@ -253,6 +267,10 @@ def test_remove_stale_hermes_failure_preserves_live_bytes(tmp_path, monkeypatch,
         )
 
     assert config_path.read_bytes() == original
+    preserved_stat = config_path.stat()
+    assert stat.S_IMODE(preserved_stat.st_mode) == stat.S_IMODE(original_stat.st_mode)
+    assert preserved_stat.st_uid == original_stat.st_uid
+    assert preserved_stat.st_gid == original_stat.st_gid
     assert list(hermes_home.glob("apm-atomic-*")) == []
 
 
