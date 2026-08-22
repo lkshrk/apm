@@ -29,12 +29,21 @@ def _validate_and_load_package(
 
     Raises:
         RuntimeError: If the package is invalid or metadata is missing.
+        AgentPluginError: If *target_path* is a rejected Agent Plugin
+            (unsupported or foreign schema); *target_path* is cleaned up
+            before this propagates.
     """
+    from ..agent_plugins.errors import AgentPluginError
     from ..bundle.local_bundle import route_agent_plugin_package
     from ..utils.file_ops import robust_rmtree
 
     if target_path.is_dir():
-        route_agent_plugin_package(target_path)
+        try:
+            route_agent_plugin_package(target_path)
+        except AgentPluginError:
+            if target_path.exists():
+                robust_rmtree(target_path, ignore_errors=True)
+            raise
     if not validation_result.is_valid:
         if target_path.exists():
             robust_rmtree(target_path, ignore_errors=True)

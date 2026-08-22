@@ -534,7 +534,6 @@ def _extract_lsp_servers(plugin_path: Path, manifest: dict[str, Any]) -> dict[st
 
     When ``lspServers`` is absent and ``lsp.json`` / ``.lsp.json`` exists at
     plugin root, read it as the default (matches Claude Code auto-discovery).
-    read it as the default (matches Claude Code auto-discovery).
 
     Security: symlinks are skipped, JSON parse errors are logged as warnings.
 

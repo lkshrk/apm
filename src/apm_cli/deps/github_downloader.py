@@ -1844,6 +1844,8 @@ class GitHubPackageDownloader:
                     _rmtree(target_path)
                     target_path.mkdir(parents=True, exist_ok=True)
             except AgentPluginError:
+                if target_path.exists():
+                    _rmtree(target_path)
                 raise
             except Exception:
                 # Any cache failure -> fall back to network clone.
