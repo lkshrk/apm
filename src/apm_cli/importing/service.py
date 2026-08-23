@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 import yaml
 
 from apm_cli.install.locking import lifecycle_operation
+from apm_cli.integration.targets import KNOWN_TARGETS
 from apm_cli.utils.atomic_io import atomic_write_text
 from apm_cli.utils.yaml_io import dump_yaml_roundtrip, load_yaml, yaml_to_str
 
@@ -60,6 +61,19 @@ _ENV_PLACEHOLDER = re.compile(r"^(?:\$\{(?:env:)?[A-Z_][A-Z0-9_]*\}|<[A-Z_][A-Z0
 _SECRET_KEYS = frozenset({"token", "password", "secret", "authorization", "api_key", "apikey"})
 _MAX_SNAPSHOT_FILES = 10_000
 _MAX_SNAPSHOT_BYTES = 100 * 1024 * 1024
+_UNMANAGED_NATIVE_CLIENTS = (
+    "copilot",
+    "cursor",
+    "kiro",
+    "opencode",
+    "gemini",
+    "grok-build",
+    "antigravity",
+    "windsurf",
+    "openclaw",
+    "hermes",
+    "copilot-app",
+)
 _EMPTY_RESOLUTION = {
     "decision": "",
     "selected_origin_id": "",
@@ -243,6 +257,64 @@ def _root_path(target: str) -> Path:
             .resolve(strict=False)
         )
     raise ImportProtocolError(f"unsupported source target: {target}")
+
+
+def _user_target_root(target: str) -> Path | None:
+    profile = KNOWN_TARGETS[target].for_scope(user_scope=True)
+    if profile is None:
+        return None
+    if profile.resolved_deploy_root is not None:
+        return profile.resolved_deploy_root.resolve(strict=False)
+    root = Path(profile.root_dir).expanduser()
+    return (root if root.is_absolute() else Path.home() / root).resolve(strict=False)
+
+
+def _discover_unmanaged_clients() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    preimages: list[dict[str, Any]] = []
+    for target in _UNMANAGED_NATIVE_CLIENTS:
+        root = _user_target_root(target)
+        if root is None or not root.exists():
+            continue
+        if root.is_dir():
+            try:
+                if next(root.iterdir(), None) is None:
+                    continue
+            except OSError as exc:
+                raise ImportProtocolError(f"cannot inspect {target} client root") from exc
+        info = root.lstat()
+        fingerprint = _digest({"unmanaged_client": target, "root": str(root)})
+        preimage_id = _digest({"path": str(root), "kind": "unmanaged-client-root"})[:24]
+        preimage = {
+            "id": preimage_id,
+            "absolute_path": str(root),
+            "kind": "directory" if root.is_dir() else "file",
+            "size": info.st_size,
+            "mode": stat.S_IMODE(info.st_mode),
+            "content_fingerprint": fingerprint,
+        }
+        candidate = {
+            "id": _digest({"unmanaged_client": target, "root": str(root)})[:32],
+            "kind": "unsupported",
+            "name": target,
+            "root_id": f"{target}-config",
+            "source_handle": f"unmanaged-client:{target}",
+            "source_target": [target],
+            "provenance": "native-unmanaged",
+            "payload": {
+                "client": target,
+                "source": "secured-path",
+                "unsupported_reason": "native-import-decoder-unavailable",
+                "leave_unmanaged_available": True,
+            },
+            "content_fingerprint": fingerprint,
+            "source_preimage_ids": [preimage_id],
+            "executable_paths": [],
+            "secret_blocked": False,
+        }
+        preimages.append(preimage)
+        candidates.append(candidate)
+    return candidates, preimages
 
 
 def _load_structured(path: Path) -> Any:
@@ -597,10 +669,20 @@ def _validate_candidate_envelope(data: Any) -> dict[str, Any]:
 
 
 def _validate_preimages(data: dict[str, Any]) -> None:
+    unmanaged_preimages = {
+        preimage_id
+        for candidate in data["candidates"]
+        if candidate.get("provenance") == "native-unmanaged"
+        for preimage_id in candidate["source_preimage_ids"]
+    }
     for expected in data["source_preimages"]:
         path = Path(expected["absolute_path"])
         if not path.is_absolute():
             raise ImportProtocolError("source preimage path must be absolute")
+        if expected["id"] in unmanaged_preimages:
+            if not path.exists() or path.is_symlink():
+                raise ImportProtocolError(f"stale unmanaged client root: {path}")
+            continue
         current = _preimage(path)
         for field in ("id", "kind", "size", "mode", "content_fingerprint"):
             if current[field] != expected[field]:
@@ -696,6 +778,12 @@ def _plan(
         key = (candidate["kind"], candidate["name"], candidate["content_fingerprint"])
         if candidate.get("payload", {}).get("disposition") == "excluded":
             classification, action, reasons = "excluded", "retain", ["legacy-negative-state"]
+        elif candidate["id"] in exclusions:
+            excluded = exclusions[candidate["id"]]
+            if _exclusion_matches(excluded, candidate, candidate["source_target"]):
+                classification, action, reasons = "excluded", "retain", ["durable-exclusion"]
+            else:
+                classification, action, reasons = "needs-choice", "block", ["excluded-changed"]
         elif (
             candidate.get("payload", {}).get("target_resolution_required") is True
             and candidate.get("payload", {}).get("unsupported_reason") == "conditional-group-host"
@@ -718,12 +806,6 @@ def _plan(
                     *(f"executable:{path}" for path in sorted(candidate["executable_paths"])),
                 ],
             )
-        elif candidate["id"] in exclusions:
-            excluded = exclusions[candidate["id"]]
-            if _exclusion_matches(excluded, candidate, candidate["source_target"]):
-                classification, action, reasons = "excluded", "retain", ["durable-exclusion"]
-            else:
-                classification, action, reasons = "needs-choice", "block", ["excluded-changed"]
         elif candidate["id"] in managed:
             classification, action, reasons = (
                 "already-managed",
@@ -766,7 +848,7 @@ def _plan(
             ),
         }
         item["id"] = item_id
-        if classification in {"secret-blocked", "conflict"} or (
+        if classification in {"secret-blocked", "conflict", "unsupported"} or (
             classification == "needs-choice"
             and any(reason in {"legacy-unscoped-targets", "excluded-changed"} for reason in reasons)
         ):
@@ -864,6 +946,18 @@ def _effective_targets(item: dict[str, Any]) -> list[str]:
             f"reviewed plan still contains blockers: item requires explicit approved targets: {item['id']}"
         )
     return sorted(effective)
+
+
+def _validate_resolution_preflight(plan: dict[str, Any]) -> None:
+    for item in plan.get("items", []):
+        if (
+            item.get("classification") == "unsupported"
+            and item.get("resolution", {}).get("decision") != "exclude"
+        ):
+            raise ImportProtocolError(
+                "unsupported native client requires explicit leave-unmanaged decision: "
+                f"{item['id']}"
+            )
 
 
 def _apply_env_bindings(payload: Any, bindings: dict[str, str]) -> Any:
@@ -1489,6 +1583,9 @@ class ImportService:
                     discovered, preimages = _discover_target(source)
                     candidates_by_id.update((item["id"], item) for item in discovered)
                     preimages_by_id.update((item["id"], item) for item in preimages)
+                unmanaged, unmanaged_preimages = _discover_unmanaged_clients()
+                candidates_by_id.update((item["id"], item) for item in unmanaged)
+                preimages_by_id.update((item["id"], item) for item in unmanaged_preimages)
                 data["sources"] = sorted(set(data["sources"]) | set(sources))
                 data["source_preimages"] = sorted(
                     preimages_by_id.values(), key=lambda value: value["id"]
@@ -1512,6 +1609,9 @@ class ImportService:
                 candidates, preimages = _discover_target(source)
                 all_candidates.extend(candidates)
                 all_preimages.extend(preimages)
+            unmanaged, unmanaged_preimages = _discover_unmanaged_clients()
+            all_candidates.extend(unmanaged)
+            all_preimages.extend(unmanaged_preimages)
             preimages_by_id = {item["id"]: item for item in all_preimages}
             data = {
                 "schema_version": SCHEMA_VERSION,
@@ -1542,6 +1642,7 @@ class ImportService:
         _validate_plan_identity(raw_plan)
         for item in raw_plan.get("items", []):
             _effective_targets(item)
+        _validate_resolution_preflight(raw_plan)
         operation = str(raw_plan.get("operation_id", ""))
         with allow_operation(operation), lifecycle_operation():
             return self._apply_locked(**kwargs)
@@ -1579,6 +1680,7 @@ class ImportService:
             )
         if coordinator == "standalone" and (omni_preimage_set or token):
             raise ImportProtocolError("standalone apply rejects external commit fields")
+        _validate_resolution_preflight(plan)
         _validate_preimages(candidates)
         if existing:
             expected_binding = {
@@ -1651,7 +1753,8 @@ class ImportService:
                 imported_plugins: list[tuple[dict[str, Any], Path]] = []
                 effective_install_targets: set[str] = set()
                 for item in plan["items"]:
-                    decision = item["resolution"].get("decision") or (
+                    explicit_decision = item["resolution"].get("decision")
+                    decision = explicit_decision or (
                         "exclude"
                         if item["classification"] == "excluded"
                         else "import"

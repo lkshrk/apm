@@ -1081,6 +1081,112 @@ def test_exclusion_requires_matching_identity_scope_targets_and_fingerprint(monk
     assert [entry["id"] for entry in remaining] == ["foreign"]
 
 
+def test_unmanaged_native_clients_require_explicit_durable_exclusion(monkeypatch, tmp_path):
+    from apm_cli.importing import service as importing
+
+    home = _home(monkeypatch, tmp_path)
+    for relative in (".cursor/settings.json", ".kiro/settings/mcp.json"):
+        path = home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+    (home / ".codeium" / "windsurf").mkdir(parents=True)
+    protocol = tmp_path / "protocol"
+    candidates_path = protocol / "candidates.json"
+    plan_path = protocol / "plan.json"
+    plan = ImportService().scan(
+        sources=("claude", "codex"),
+        candidate_file=candidates_path,
+        plan_json=plan_path,
+        coordinator="standalone",
+    )
+    unmanaged = [item for item in plan["items"] if item["classification"] == "unsupported"]
+    assert {item["name"] for item in unmanaged} == {"cursor", "kiro"}
+    assert {blocker["item_id"] for blocker in plan["blockers"]} == {
+        item["id"] for item in unmanaged
+    }
+    candidates = json.loads(candidates_path.read_text(encoding="utf-8"))
+    schema_root = Path(__file__).parents[3] / "src" / "apm_cli" / "schemas"
+    Draft202012Validator(
+        json.loads((schema_root / "import-candidates-v1.json").read_text(encoding="utf-8"))
+    ).validate(candidates)
+    reviewed = importing._plan(
+        candidates,
+        {item["id"]: {**item["resolution"], "decision": "exclude"} for item in unmanaged},
+    )
+    plan_path.write_text(json.dumps(reviewed), encoding="utf-8")
+    plan_path.chmod(0o600)
+    (home / ".cursor" / "changed-after-review").write_text("still unmanaged", encoding="utf-8")
+    monkeypatch.setattr(importing, "_install_manifest", lambda *_args: None)
+    monkeypatch.setattr(importing, "_audit_import", lambda *_args: None)
+    ImportService().apply(
+        candidate_file=candidates_path,
+        plan_file=plan_path,
+        coordinator="standalone",
+        omni_preimage_set=None,
+        token=None,
+    )
+    assert {entry["name"] for entry in ImportService().list_exclusions()} == {
+        "cursor",
+        "kiro",
+    }
+    replay = ImportService().scan(
+        sources=("claude", "codex"),
+        candidate_file=candidates_path,
+        plan_json=plan_path,
+        coordinator="standalone",
+    )
+    assert replay["summary"] == {"excluded": 2}
+    assert replay["blockers"] == []
+
+
+def test_unmanaged_native_client_cannot_be_silently_reused(monkeypatch, tmp_path):
+    from apm_cli.importing import service as importing
+
+    home = _home(monkeypatch, tmp_path)
+    cursor = home / ".cursor"
+    cursor.mkdir()
+    (cursor / "settings.json").write_text("{}", encoding="utf-8")
+    candidates = tmp_path / "protocol" / "candidates.json"
+    plan = tmp_path / "protocol" / "plan.json"
+    ImportService().scan(
+        sources=("claude", "codex"),
+        candidate_file=candidates,
+        plan_json=plan,
+        coordinator="standalone",
+    )
+    before = sorted(
+        (
+            path.relative_to(home).as_posix(),
+            path.lstat().st_mode,
+            path.lstat().st_mtime_ns,
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in home.rglob("*")
+    )
+    monkeypatch.setattr(importing, "_install_manifest", lambda *_args: None)
+    monkeypatch.setattr(importing, "_audit_import", lambda *_args: None)
+    with pytest.raises(ImportProtocolError, match="leave-unmanaged"):
+        ImportService().apply(
+            candidate_file=candidates,
+            plan_file=plan,
+            coordinator="standalone",
+            omni_preimage_set=None,
+            token=None,
+        )
+    after = sorted(
+        (
+            path.relative_to(home).as_posix(),
+            path.lstat().st_mode,
+            path.lstat().st_mtime_ns,
+            path.read_bytes() if path.is_file() else None,
+        )
+        for path in home.rglob("*")
+    )
+    assert after == before
+    assert not (home / ".apm").exists()
+    assert ImportService().list_exclusions() == []
+
+
 def test_snapshot_rejects_source_change_during_copy(monkeypatch, tmp_path):
     from apm_cli.importing import service as importing
 
