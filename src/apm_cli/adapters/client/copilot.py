@@ -13,6 +13,8 @@ from typing import ClassVar
 import click
 
 from ...core.token_manager import GitHubTokenManager
+from ...registry.client import SimpleRegistryClient
+from ...registry.integration import RegistryIntegration
 from ...utils.console import _rich_warning
 from ...utils.github_host import is_github_hostname
 from ._mcp_runtime_args import process_v01_value_hint_arg
@@ -98,6 +100,19 @@ class CopilotClientAdapter(MCPClientAdapter):
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
         self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def get_config_path(self):
         """Get the path to the Copilot CLI MCP configuration file.

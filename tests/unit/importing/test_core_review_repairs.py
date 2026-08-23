@@ -18,6 +18,7 @@ from apm_cli.importing.discovery import mapping_root, user_scope_mappings
 from apm_cli.importing.plugin_discovery import PluginImport
 from apm_cli.importing.service import ImportService
 from apm_cli.integration.targets import KNOWN_TARGETS
+from apm_cli.utils.content_hash import compute_file_hash
 
 
 def _home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -322,7 +323,7 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
     skill.write_text("skill\n", encoding="utf-8")
     plugin.write_text('{"name":"demo-plugin"}\n', encoding="utf-8")
     canvas.write_text("export default {}\n", encoding="utf-8")
-    hook.write_text('{"hooks":{"PreToolUse":[]}}\n', encoding="utf-8")
+    hook.write_bytes(b'{"hooks":{"PreToolUse":[]}}\r\n')
     if os.name != "nt":
         canvas.chmod(0o755)
     mcp.write_text(
@@ -349,9 +350,7 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
     }
     paths = sorted(item.relative_to(home).as_posix() for item in claimed_files)
     lock.local_deployed_files = paths
-    lock.local_deployed_file_hashes = {
-        path: "sha256:" + service._file_hash(home / path) for path in paths
-    }
+    lock.local_deployed_file_hashes = {path: compute_file_hash(home / path) for path in paths}
     apm = home / ".apm"
     apm.mkdir()
     mcp_candidates = [item for item in envelope["candidates"] if item["kind"] == "mcp"]

@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
+from ...registry.client import SimpleRegistryClient
+from ...registry.integration import RegistryIntegration
 from ...utils.atomic_io import atomic_write_text
 from ...utils.console import _rich_success, _rich_warning
 from ...utils.path_security import PathTraversalError
@@ -57,6 +59,19 @@ class CodexClientAdapter(MCPClientAdapter):
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
         self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def _get_codex_dir(self) -> Path:
         """Return the root directory used for Codex config in the current scope."""

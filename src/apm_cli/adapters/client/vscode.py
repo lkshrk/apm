@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 
 from ...core.docker_args import DockerArgsProcessor
+from ...registry.client import SimpleRegistryClient
+from ...registry.integration import RegistryIntegration
 from ...utils.console import _rich_warning
 from .base import (
     _ENV_VAR_RE,
@@ -56,6 +58,19 @@ class VSCodeClientAdapter(MCPClientAdapter):
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
         self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def get_config_path(self, logger=None):
         """Get the path to the VSCode MCP configuration file in the repository.

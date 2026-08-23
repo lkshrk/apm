@@ -351,6 +351,10 @@ class MCPClientAdapter(ABC):
     @cached_property
     def registry_client(self):
         """Create the network/cache client only when an install path needs it."""
+        return self._create_registry_client()
+
+    def _create_registry_client(self):
+        """Construct the registry client behind the lazy public attribute."""
         from ...registry.client import SimpleRegistryClient
 
         return SimpleRegistryClient(self._registry_url)
@@ -358,6 +362,10 @@ class MCPClientAdapter(ABC):
     @cached_property
     def registry_integration(self):
         """Create the legacy registry integration only on first use."""
+        return self._create_registry_integration()
+
+    def _create_registry_integration(self):
+        """Construct the registry integration behind the lazy public attribute."""
         from ...registry.integration import RegistryIntegration
 
         return RegistryIntegration(self._registry_url)
