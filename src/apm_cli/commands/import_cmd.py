@@ -129,9 +129,6 @@ def import_cmd(
     candidate_path = _path(candidate_file, "--candidate-file", required=bool(apply_plan))
     plan_path = _path(plan_json, "--plan-json")
     service = ImportService()
-    from apm_cli.utils.console import set_console_stderr
-
-    set_console_stderr(True)
     try:
         if apply_plan:
             apply_path = _path(apply_plan, "--apply-plan", required=True)
@@ -163,9 +160,7 @@ def import_cmd(
         else:
             _emit_plan(result)
     except (ImportProtocolError, OSError, ValueError) as exc:
-        set_console_stderr(False)
         _fail(exc, operation_id=locals().get("operation"))
-    set_console_stderr(False)
 
 
 @import_cmd.command("status", help="Read one import operation without mutation")
