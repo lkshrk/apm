@@ -1,0 +1,88 @@
+name: Import Onboarding
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    branches: [main]
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  import-unit:
+    name: Import Unit (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --python ${{ env.PYTHON_VERSION }} --frozen --extra dev
+      - run: uv run --frozen --extra dev pytest tests/unit/importing -n auto --dist worksteal
+
+  import-transaction:
+    name: Import Transaction (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --python ${{ env.PYTHON_VERSION }} --frozen --extra dev
+      - run: uv run --frozen --extra dev pytest tests/integration/test_import_cli.py -v --strict-markers
+
+  import-platform-contracts:
+    name: Import Platform Contracts (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: macOS
+          - os: windows-latest
+            platform: Windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv sync --python ${{ env.PYTHON_VERSION }} --frozen --extra dev
+      - run: uv run --frozen --extra dev pytest tests/unit/importing tests/integration/test_import_cli.py -v --strict-markers
+
+  import-wheel-smoke:
+    name: Import Wheel Smoke (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: uv build --python ${{ env.PYTHON_VERSION }} --wheel
+      - name: Install wheel in a clean environment
+        run: |
+          uv venv "$RUNNER_TEMP/apm-import-wheel"
+          uv pip install --python "$RUNNER_TEMP/apm-import-wheel/bin/python" dist/*.whl
+          HOME="$RUNNER_TEMP/apm-import-home" \
+            "$RUNNER_TEMP/apm-import-wheel/bin/apm" import --global --from claude --from codex --format json \
+            > "$RUNNER_TEMP/import-plan.json"
+          "$RUNNER_TEMP/apm-import-wheel/bin/python" - <<'PY'
+          import importlib.resources
+          import json
+          import os
+
+          result = json.load(open(os.environ["RUNNER_TEMP"] + "/import-plan.json", encoding="utf-8"))
+          assert result["ok"] is True
+          assert result["kind"] == "import-plan"
+          assert result["plan"]["schema_version"] == 1
+          schemas = importlib.resources.files("apm_cli").joinpath("schemas")
+          assert schemas.joinpath("import-candidates-v1.json").is_file()
+          assert schemas.joinpath("import-plan-v1.json").is_file()
+          assert schemas.joinpath("import-result-v1.json").is_file()
+          assert schemas.joinpath("import-envelope-v1.json").is_file()
+          PY

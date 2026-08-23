@@ -11,6 +11,7 @@ from __future__ import annotations
 import click
 
 from ...core.target_detection import TargetParamType
+from ...install.locking import serialized_lifecycle
 from ..init import _perform_init
 
 
@@ -27,6 +28,7 @@ from ..init import _perform_init
     help="Comma-separated target list (skip prompt, write directly)",
 )
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed output")
+@serialized_lifecycle
 def init(project_name, yes, target_flag, verbose):
     """Initialize a plugin (like ``cargo new --lib``).
 

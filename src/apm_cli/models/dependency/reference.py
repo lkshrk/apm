@@ -715,7 +715,7 @@ class DependencyReference(ProviderCoordinateMixin):
         Args:
             entry: Dictionary with 'git', 'path', or 'marketplace' key.
                    Marketplace entries support 'name', 'marketplace', and
-                   optional 'version' (semver range) fields.
+                   optional 'version' (semver range) and 'targets' fields.
 
         Returns:
             DependencyReference: Parsed dependency reference
@@ -731,7 +731,7 @@ class DependencyReference(ProviderCoordinateMixin):
                 raise ValueError(
                     f"Ambiguous dependency: 'marketplace' cannot be combined with '{joined}'"
                 )
-            _MARKETPLACE_KEYS = {"name", "marketplace", "version"}
+            _MARKETPLACE_KEYS = {"name", "marketplace", "version", "targets"}
             unknown = set(entry.keys()) - _MARKETPLACE_KEYS
             if unknown:
                 raise ValueError(
@@ -761,13 +761,15 @@ class DependencyReference(ProviderCoordinateMixin):
                 if not isinstance(version_spec, str) or not version_spec.strip():
                     raise ValueError("'version' field must be a non-empty string")
                 version_spec = version_spec.strip()
-            return cls(
+            dependency = cls(
                 repo_url=f"_marketplace/{marketplace}/{name}",
                 is_marketplace=True,
                 marketplace_name=marketplace,
                 marketplace_plugin_name=name,
                 marketplace_version_spec=version_spec,
             )
+            apply_optional_dependency_fields(dependency, entry)
+            return dependency
 
         # Object-form registry package — design §3.2.
         # Discriminated by the ``registry:`` or ``id:`` key (``registry:`` is

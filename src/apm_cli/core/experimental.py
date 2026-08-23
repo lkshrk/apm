@@ -135,16 +135,6 @@ FLAGS: dict[str, ExperimentalFlag] = {
             "skills at ~/.openclaw/skills/."
         ),
     ),
-    "hermes": ExperimentalFlag(
-        name="hermes",
-        description="Deploy skills, AGENTS.md, and MCP servers to the Hermes agent.",
-        default=False,
-        hint=(
-            "Use '--target hermes' to deploy skills + AGENTS.md to your "
-            "project, or '--target hermes --global' for your personal Hermes "
-            "home at ~/.hermes/ (skills + MCP servers in config.yaml)."
-        ),
-    ),
 }
 
 
@@ -179,7 +169,7 @@ def _get_experimental_section() -> dict:
     """
     from apm_cli.config import get_config
 
-    experimental = get_config().get("experimental", {})
+    experimental = get_config(read_only=True).get("experimental", {})
     return experimental if isinstance(experimental, dict) else {}
 
 

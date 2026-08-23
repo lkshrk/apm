@@ -410,11 +410,15 @@ class TargetProfile:
         # Claude Code honors CLAUDE_CONFIG_DIR (default ~/.claude) and Hermes
         # honors HERMES_HOME (default ~/.hermes); mirror that at user scope so
         # `apm install -g` lands where the tool reads.
-        if self.name in ("claude", "hermes"):
+        if self.name in ("claude", "codex", "hermes"):
             import os
             from pathlib import Path
 
-            env_var = "CLAUDE_CONFIG_DIR" if self.name == "claude" else "HERMES_HOME"
+            env_var = {
+                "claude": "CLAUDE_CONFIG_DIR",
+                "codex": "CODEX_HOME",
+                "hermes": "HERMES_HOME",
+            }[self.name]
             env = os.environ.get(env_var, "").strip()
             if env:
                 # ``resolve`` collapses ``..`` so traversal segments cannot
@@ -856,7 +860,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         user_supported=True,
         user_root_dir=".openclaw",
     ),
-    # Hermes agent (Nous Research) -- experimental.  Hermes natively reads
+    # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
     # the agentskills.io SKILL.md format and the AGENTS.md context-file
     # standard, both already emitted by APM, so skills + instructions reuse
     # the existing skill_standard / compile_family="agents" paths.  Skills

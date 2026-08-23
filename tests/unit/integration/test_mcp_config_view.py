@@ -407,8 +407,8 @@ def test_manifestless_virtual_skill_skipped_when_modules_not_materialized(
     assert view.problems == ()
 
 
-def test_manifestless_nonvirtual_claude_skill_records_problem(tmp_path: Path) -> None:
-    """A Claude-skill filesystem shape does not waive non-virtual manifests."""
+def test_manifestless_local_claude_skill_is_skipped(tmp_path: Path) -> None:
+    """A verified local Claude skill cannot declare MCP and needs no manifest."""
     root = _write_manifest(tmp_path, name="root")
     skill_dir = tmp_path / "packages" / "skill"
     skill_dir.mkdir(parents=True)
@@ -423,8 +423,8 @@ def test_manifestless_nonvirtual_claude_skill_records_problem(tmp_path: Path) ->
 
     view = _derive(root, _lock(locked), tmp_path / "apm_modules")
 
-    assert len(view.problems) == 1
-    assert "manifest not found" in view.problems[0].message
+    assert view.dependencies == ()
+    assert view.problems == ()
 
 
 def test_manifestless_virtual_package_without_skill_shape_records_problem(
