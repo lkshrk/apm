@@ -384,7 +384,9 @@ class MCPIntegrator:
 
         # Pass through harness-specific extra keys for adapters to merge
         if dep.extra:
-            info["_extra"] = dict(dep.extra)
+            extra = {key: value for key, value in dep.extra.items() if key != "targets"}
+            if extra:
+                info["_extra"] = extra
 
         return info
 
@@ -449,7 +451,9 @@ class MCPIntegrator:
 
         # Pass through harness-specific extra keys for adapters to merge
         if dep.extra:
-            info["_extra"] = dict(dep.extra)
+            extra = {key: value for key, value in dep.extra.items() if key != "targets"}
+            if extra:
+                info["_extra"] = extra
 
         # Warn about overlay fields not yet applied at install time
         if dep.version:

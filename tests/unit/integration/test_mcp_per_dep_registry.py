@@ -66,6 +66,7 @@ class TestPerDepRegistryCreatesSeparateOperations:
             integrator_mock._detect_mcp_config_drift.return_value = []
             integrator_mock._append_drifted_to_install_list.return_value = None
             integrator_mock._install_for_runtime.return_value = True
+            integrator_mock._gate_project_scoped_runtimes.return_value = ["copilot"]
 
             from apm_cli.integration.mcp_integrator_install import run_mcp_install
 
@@ -93,6 +94,7 @@ class TestPerDepRegistryCreatesSeparateOperations:
             integrator_mock._detect_mcp_config_drift.return_value = []
             integrator_mock._append_drifted_to_install_list.return_value = None
             integrator_mock._install_for_runtime.return_value = True
+            integrator_mock._gate_project_scoped_runtimes.return_value = ["copilot"]
 
             from apm_cli.integration.mcp_integrator_install import run_mcp_install
 
@@ -129,6 +131,7 @@ class TestDefaultRegistryDepsUseNoUrl:
             integrator_mock._detect_mcp_config_drift.return_value = []
             integrator_mock._append_drifted_to_install_list.return_value = None
             integrator_mock._install_for_runtime.return_value = True
+            integrator_mock._gate_project_scoped_runtimes.return_value = ["copilot"]
 
             from apm_cli.integration.mcp_integrator_install import run_mcp_install
 
@@ -153,6 +156,7 @@ class TestDefaultRegistryDepsUseNoUrl:
             integrator_mock._detect_mcp_config_drift.return_value = []
             integrator_mock._append_drifted_to_install_list.return_value = None
             integrator_mock._install_for_runtime.return_value = True
+            integrator_mock._gate_project_scoped_runtimes.return_value = ["copilot"]
 
             from apm_cli.integration.mcp_integrator_install import run_mcp_install
 
@@ -201,6 +205,7 @@ class TestMixedRegistryDepsGroupedCorrectly:
             integrator_mock._detect_mcp_config_drift.return_value = []
             integrator_mock._append_drifted_to_install_list.return_value = None
             integrator_mock._install_for_runtime.return_value = True
+            integrator_mock._gate_project_scoped_runtimes.return_value = ["copilot"]
 
             from apm_cli.integration.mcp_integrator_install import run_mcp_install
 

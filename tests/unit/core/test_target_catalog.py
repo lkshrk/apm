@@ -107,10 +107,18 @@ def test_current_runtime_mapping_is_characterized() -> None:
 
 def test_current_native_profiles_are_characterized() -> None:
     """Lock native roots, primitive mappings, flags, and compile families."""
+
+    def deployment_fields(mapping):
+        values = astuple(mapping)
+        return values[:3] + values[4:]
+
     actual = {
         name: (
             profile.root_dir,
-            {primitive: astuple(mapping) for primitive, mapping in profile.primitives.items()},
+            {
+                primitive: deployment_fields(mapping)
+                for primitive, mapping in profile.primitives.items()
+            },
             profile.compile_family,
             profile.requires_flag,
         )

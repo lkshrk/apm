@@ -8,8 +8,6 @@ from urllib.parse import urlparse
 import tomlkit
 from tomlkit.exceptions import TOMLKitError
 
-from ...registry.client import SimpleRegistryClient
-from ...registry.integration import RegistryIntegration
 from ...utils.atomic_io import atomic_write_text
 from ...utils.console import _rich_success, _rich_warning
 from ...utils.path_security import PathTraversalError
@@ -31,6 +29,15 @@ class CodexClientAdapter(MCPClientAdapter):
     target_name: str = "codex"
     mcp_servers_key: str = "mcp_servers"
 
+    def decode_server_config(self, name, native):
+        """Map Codex' ``http_headers`` alias to canonical MCP headers."""
+        if not isinstance(native, dict):
+            return super().decode_server_config(name, native)
+        config = dict(native)
+        if "http_headers" in config and "headers" not in config:
+            config["headers"] = config.pop("http_headers")
+        return super().decode_server_config(name, config)
+
     def __init__(
         self,
         registry_url=None,
@@ -49,8 +56,7 @@ class CodexClientAdapter(MCPClientAdapter):
                 config paths instead of project-local paths.
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
-        self.registry_client = SimpleRegistryClient(registry_url)
-        self.registry_integration = RegistryIntegration(registry_url)
+        self._registry_url = registry_url
 
     def _get_codex_dir(self) -> Path:
         """Return the root directory used for Codex config in the current scope."""

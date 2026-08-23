@@ -36,6 +36,8 @@ Design notes
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -61,7 +63,7 @@ from apm_cli.integration.copilot_app_ws import (
     WsClient,
     WsError,
 )
-from apm_cli.utils.yaml_io import load_frontmatter
+from apm_cli.utils.yaml_io import load_frontmatter, yaml_to_str
 
 if TYPE_CHECKING:
     from apm_cli.integration.targets import TargetProfile
@@ -88,6 +90,101 @@ secure-by-default rationale."""
 # slash-command targets; a file without them ships to slash-command
 # targets and hard-errors at ``copilot-app``.
 _WORKFLOW_SHAPE_KEYS: frozenset[str] = frozenset({"interval", "schedule_hour", "schedule_day"})
+_IMPORTED_WORKFLOW_KEYS = frozenset(
+    {
+        "id",
+        "name",
+        "prompt",
+        "model",
+        "reasoning_effort",
+        "project_id",
+        "interval",
+        "schedule_hour",
+        "schedule_day",
+        "enabled",
+        "mode",
+    }
+)
+
+
+def _load_imported_workflow(package_path: Path, prompt_files: list[Path]) -> dict | None:
+    """Return a validated importer-owned workflow row, if present."""
+    metadata_path = package_path / ".apm-import.json"
+    if not metadata_path.exists():
+        return None
+    if not metadata_path.is_file() or metadata_path.is_symlink():
+        raise ValueError("invalid imported Copilot App workflow metadata file")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise ValueError("invalid imported Copilot App workflow metadata file") from exc
+    if metadata.get("layout") != "workflow":
+        return None
+
+    imported_root = (Path.home() / ".apm" / "imported" / "command").resolve()
+    row = metadata.get("workflow")
+    candidate_ids = metadata.get("candidate_ids")
+    fingerprint = metadata.get("content_fingerprint")
+    operation_id = metadata.get("operation_id")
+    if (
+        not package_path.resolve().is_relative_to(imported_root)
+        or metadata.get("schema_version") != 1
+        or metadata.get("kind") != "command"
+        or metadata.get("targets") != ["copilot-app"]
+        or not isinstance(candidate_ids, list)
+        or not candidate_ids
+        or not all(isinstance(item, str) and item for item in candidate_ids)
+        or not isinstance(metadata.get("root_id"), str)
+        or not metadata["root_id"]
+        or not isinstance(fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None
+        or not isinstance(operation_id, str)
+        or re.fullmatch(r"[0-9a-f]{32}", operation_id) is None
+        or not isinstance(row, dict)
+        or set(row) != _IMPORTED_WORKFLOW_KEYS
+        or len(prompt_files) != 1
+    ):
+        raise ValueError("invalid imported Copilot App workflow metadata")
+
+    string_fields = ("id", "name", "prompt", "interval")
+    optional_strings = ("model", "reasoning_effort", "project_id", "mode")
+    if (
+        any(not isinstance(row[key], str) for key in string_fields)
+        or any(row[key] is not None and not isinstance(row[key], str) for key in optional_strings)
+        or row["interval"] not in _VALID_SCHEDULE_INTERVALS
+        or row["mode"] not in {None, "interactive", "plan", "autopilot"}
+        or type(row["schedule_hour"]) is not int
+        or not 0 <= row["schedule_hour"] <= 23
+        or type(row["schedule_day"]) is not int
+        or not 0 <= row["schedule_day"] <= 6
+        or type(row["enabled"]) is not int
+        or row["enabled"] not in (0, 1)
+    ):
+        raise ValueError("invalid imported Copilot App workflow row")
+
+    post = load_frontmatter(str(prompt_files[0]))
+    expected_frontmatter = {
+        key: row[key]
+        for key in (
+            "name",
+            "interval",
+            "schedule_hour",
+            "schedule_day",
+            "mode",
+            "model",
+            "reasoning_effort",
+        )
+        if row[key] is not None
+    }
+    expected_prompt = (
+        f"---\n{yaml_to_str(expected_frontmatter, sort_keys=False).rstrip()}\n---\n{row['prompt']}"
+    )
+    if (
+        post.metadata != expected_frontmatter
+        or prompt_files[0].read_text(encoding="utf-8") != expected_prompt
+    ):
+        raise ValueError("imported Copilot App workflow snapshot does not match its metadata")
+    return row
 
 
 def _is_workflow_shape(frontmatter_meta: dict) -> bool:
@@ -314,10 +411,9 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         loudly beats silently skipping the file and leaving the user
         wondering why nothing landed in the App.
 
-        The DB module enforces ``enabled = 0`` on insert; any frontmatter
-        ``enabled`` field, if present, is ignored.  This is a hard
-        contract: third-party packages cannot auto-run anything on the
-        user's machine.
+        The DB module enforces ``enabled = 0`` for ordinary installs.
+        Importer-owned snapshots can restore a previously reviewed native
+        row exactly after their private ownership metadata is validated.
         """
         db_path = _db_mod.resolve_copilot_app_db_path()
         if db_path is None:
@@ -330,9 +426,11 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         # Parse all candidate prompts up front so we can decide on the
         # global-scope / no-repo warnings with one pass.
         # --------------------------------------------------------------
+        prompt_files = self.find_prompt_files(package_info.install_path)
+        imported_row = _load_imported_workflow(package_info.install_path, prompt_files)
         parsed: list[tuple[Path, object, Schedule]] = []
         files_skipped = 0
-        for source_file in self.find_prompt_files(package_info.install_path):
+        for source_file in prompt_files:
             if source_file.is_symlink():
                 if diagnostics is not None:
                     diagnostics.warn(
@@ -342,6 +440,22 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
                 files_skipped += 1
                 continue
             post = load_frontmatter(str(source_file))
+            if imported_row is not None:
+                parsed.append(
+                    (
+                        source_file,
+                        post,
+                        Schedule(
+                            interval=imported_row["interval"],
+                            schedule_hour=imported_row["schedule_hour"],
+                            schedule_day=imported_row["schedule_day"],
+                            mode=imported_row["mode"],
+                            model=imported_row["model"],
+                            reasoning_effort=imported_row["reasoning_effort"],
+                        ),
+                    )
+                )
+                continue
             if not _is_workflow_shape(post.metadata):
                 if diagnostics is not None:
                     diagnostics.warn(
@@ -370,7 +484,7 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         # --------------------------------------------------------------
         # --global + workflow-shape: warn but proceed.
         # --------------------------------------------------------------
-        if user_scope and parsed and diagnostics is not None:
+        if imported_row is None and user_scope and parsed and diagnostics is not None:
             diagnostics.warn(
                 message=(
                     "Copilot App workflows installed with --global run with CWD=~/.copilot, "
@@ -384,7 +498,7 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         # --------------------------------------------------------------
         # Resolve project_id ONCE -- WS (preferred) then SQLite fallback.
         # --------------------------------------------------------------
-        repo_ctx = derive_repo_context(project_root)
+        repo_ctx = None if imported_row is not None else derive_repo_context(project_root)
         repo_suffix = f" ({repo_ctx.repo_name})" if repo_ctx is not None else ""
         project_id: str | None = None
         was_created = False
@@ -394,7 +508,13 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         # workflow rows land with project_id=NULL, which means "Run now"
         # CWDs into ~/.copilot. Warn parallel to the --global branch.
         # --------------------------------------------------------------
-        if repo_ctx is None and parsed and not user_scope and diagnostics is not None:
+        if (
+            imported_row is None
+            and repo_ctx is None
+            and parsed
+            and not user_scope
+            and diagnostics is not None
+        ):
             diagnostics.warn(
                 message=(
                     "Copilot App workflows installed without a project binding: "
@@ -476,23 +596,33 @@ class CopilotAppWorkflowIntegrator(BaseIntegrator):
         for source_file, post, schedule in parsed:
             prompt_stem = source_file.name.removesuffix(".prompt.md")
             wf_id = namespaced_id(owner, pkg_name, prompt_stem)
-            base_name = post.metadata.get("name") or prompt_stem
-            display_name = f"{base_name}{repo_suffix}"
-            row = WorkflowRow(
-                id=wf_id,
-                name=str(display_name),
-                prompt=post.content,
-                interval=schedule.interval,
-                schedule_hour=schedule.schedule_hour,
-                schedule_day=schedule.schedule_day,
-                enabled=0,  # ALWAYS disabled on install -- contract.
-                model=schedule.model,
-                reasoning_effort=schedule.reasoning_effort,
-                mode=schedule.mode,
-                project_id=project_id,
-            )
+            if imported_row is not None:
+                row = WorkflowRow(
+                    id=wf_id, **{key: value for key, value in imported_row.items() if key != "id"}
+                )
+            else:
+                base_name = post.metadata.get("name") or prompt_stem
+                display_name = f"{base_name}{repo_suffix}"
+                row = WorkflowRow(
+                    id=wf_id,
+                    name=str(display_name),
+                    prompt=post.content,
+                    interval=schedule.interval,
+                    schedule_hour=schedule.schedule_hour,
+                    schedule_day=schedule.schedule_day,
+                    enabled=0,  # ALWAYS disabled on ordinary install -- contract.
+                    model=schedule.model,
+                    reasoning_effort=schedule.reasoning_effort,
+                    mode=schedule.mode,
+                    project_id=project_id,
+                )
             try:
-                _db_mod.deploy_workflow(db_path, row)
+                _db_mod.deploy_workflow(
+                    db_path,
+                    row,
+                    preserve_imported_state=imported_row is not None,
+                    source_workflow_id=imported_row["id"] if imported_row is not None else None,
+                )
             except CopilotAppDbError as exc:
                 if diagnostics is not None:
                     diagnostics.warn(

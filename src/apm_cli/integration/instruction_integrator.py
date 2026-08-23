@@ -9,7 +9,9 @@ Content transforms are selected by the ``format_id`` field in
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -70,6 +72,58 @@ class InstructionIntegrator(BaseIntegrator):
             "*.instructions.md",
             subdirs=[".apm/instructions"],
         )
+
+    def _integrate_native_imported_instruction(
+        self,
+        target: TargetProfile,
+        package_path: Path,
+        project_root: Path,
+        *,
+        force: bool,
+    ) -> IntegrationResult | None:
+        """Copy importer-owned compiled bytes without canonical conversion."""
+        metadata_path = package_path / ".apm-import.json"
+        if not metadata_path.is_file() or metadata_path.is_symlink():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return None
+        if metadata.get("layout") != "compiled-instruction":
+            return None
+        mapping = target.primitives.get("instructions")
+        target_name = target.name
+        relative = Path(str(metadata.get("relative_path", "")))
+        if (
+            metadata.get("schema_version") != 1
+            or metadata.get("kind") != "instruction"
+            or metadata.get("target") != target_name
+            or metadata.get("targets") != [target_name]
+            or mapping is None
+            or metadata.get("format_id") != mapping.format_id
+            or relative.is_absolute()
+            or not relative.parts
+            or ".." in relative.parts
+        ):
+            raise ValueError("invalid imported native instruction metadata")
+        native_root = package_path / ".apm" / "native" / "instructions" / target_name
+        source = native_root / relative
+        ensure_path_within(source, native_root)
+        if source.is_symlink() or not source.is_file():
+            raise ValueError("imported native instruction is missing or is a symlink")
+        effective_root = mapping.deploy_root or target.root_dir
+        deploy_root = project_root / effective_root
+        target_path = deploy_root / relative
+        ensure_path_within(target_path, deploy_root)
+        if target_path.exists() and not force:
+            if target_path.is_symlink() or not target_path.is_file():
+                raise ValueError("imported native instruction destination is unsafe")
+            if target_path.read_bytes() == source.read_bytes():
+                return IntegrationResult(0, 0, 0, [target_path], files_adopted=1)
+            raise ValueError("imported native instruction changed after review")
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target_path)
+        return IntegrationResult(1, 0, 0, [target_path])
 
     def copy_instruction(self, source: Path, target: Path) -> int:
         """Copy instruction file with link resolution.
@@ -139,6 +193,15 @@ class InstructionIntegrator(BaseIntegrator):
         target_root = project_root / effective_root
         if not target.auto_create and not (project_root / target.root_dir).is_dir():
             return IntegrationResult(0, 0, 0, [])
+
+        native_result = self._integrate_native_imported_instruction(
+            target,
+            Path(package_info.install_path),
+            project_root,
+            force=force,
+        )
+        if native_result is not None:
+            return native_result
 
         self.init_link_resolver(package_info, project_root)
         instruction_files = self.find_instruction_files(package_info.install_path)

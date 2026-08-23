@@ -32,6 +32,7 @@ from apm_cli.core.target_catalog import (
 RULE_FORMATS: frozenset[str] = frozenset(
     {"cursor_rules", "claude_rules", "windsurf_rules", "kiro_steering", "antigravity_rules"}
 )
+IMPORT_STRATEGIES = frozenset({"generic", "inverse", "compiled", "shared", "snapshot", "custom"})
 """Canonical set of format-transforming rule ``format_id``s.
 
 Single home for "which instruction formats transform their source on
@@ -57,6 +58,9 @@ class PrimitiveMapping:
     format_id: str
     """Opaque tag used by integrators to select the right
     content transformer (e.g. ``"cursor_rules"``)."""
+
+    import_strategy: str | None = None
+    """Reverse-import handling for this deployed primitive."""
 
     deploy_root: str | None = None
     """Override *root_dir* for this primitive only.
@@ -101,6 +105,8 @@ class PrimitiveMapping:
         The converse is also enforced so the canonical set stays the one home
         for "which formats transform".
         """
+        if self.import_strategy is not None and self.import_strategy not in IMPORT_STRATEGIES:
+            raise ValueError(f"unknown import strategy: {self.import_strategy}")
         is_rule = self.format_id in RULE_FORMATS
         if is_rule and not self.output_compare:
             raise ValueError(
@@ -502,25 +508,34 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         root_dir=".github",
         primitives={
             "instructions": PrimitiveMapping(
-                "instructions", ".instructions.md", "github_instructions"
+                "instructions", ".instructions.md", "github_instructions", import_strategy="generic"
             ),
-            "prompts": PrimitiveMapping("prompts", ".prompt.md", "github_prompt"),
-            "agents": PrimitiveMapping("agents", ".agent.md", "github_agent"),
+            "prompts": PrimitiveMapping(
+                "prompts", ".prompt.md", "github_prompt", import_strategy="generic"
+            ),
+            "agents": PrimitiveMapping(
+                "agents", ".agent.md", "github_agent", import_strategy="generic"
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
-            "hooks": PrimitiveMapping("hooks", ".json", "github_hooks"),
-            "canvas": PrimitiveMapping("extensions", "", "copilot_canvas"),
+            "hooks": PrimitiveMapping("hooks", ".json", "github_hooks", import_strategy="snapshot"),
+            "canvas": PrimitiveMapping(
+                "extensions", "", "copilot_canvas", import_strategy="custom"
+            ),
         },
         auto_create=True,
         detect_by_dir=True,
         user_supported="partial",
         user_root_dir=".copilot",
         user_primitive_overrides={
-            "instructions": PrimitiveMapping("", ".md", "copilot_user_instructions"),
+            "instructions": PrimitiveMapping(
+                "", ".md", "copilot_user_instructions", import_strategy="compiled"
+            ),
         },
         generated_files=("copilot-instructions.md",),
     ),
@@ -539,12 +554,17 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "rules",
                 ".md",
                 "claude_rules",
+                import_strategy="compiled",
                 output_compare=True,
             ),
-            "agents": PrimitiveMapping("agents", ".md", "claude_agent"),
-            "commands": PrimitiveMapping("commands", ".md", "claude_command"),
-            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard"),
-            "hooks": PrimitiveMapping("hooks", ".json", "claude_hooks"),
+            "agents": PrimitiveMapping("agents", ".md", "claude_agent", import_strategy="generic"),
+            "commands": PrimitiveMapping(
+                "commands", ".md", "claude_command", import_strategy="generic"
+            ),
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", import_strategy="generic"
+            ),
+            "hooks": PrimitiveMapping("hooks", ".json", "claude_hooks", import_strategy="snapshot"),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -565,7 +585,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "cursor_rules",
                 output_compare=True,
             ),
-            "agents": PrimitiveMapping("agents", ".md", "cursor_agent"),
+            "agents": PrimitiveMapping("agents", ".md", "cursor_agent", import_strategy="generic"),
             # TODO(cursor-command-format): track via dedicated issue once
             # filed.  Cursor command deployment reuses the shared command
             # transformer (claude_command), which preserves only the
@@ -577,14 +597,17 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
             # ...) verbatim.  Dropped keys are surfaced via
             # diagnostics.warn() at install time -- see
             # command_integrator.
-            "commands": PrimitiveMapping("commands", ".md", "claude_command"),
+            "commands": PrimitiveMapping(
+                "commands", ".md", "claude_command", import_strategy="generic"
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
-            "hooks": PrimitiveMapping("hooks", ".json", "cursor_hooks"),
+            "hooks": PrimitiveMapping("hooks", ".json", "cursor_hooks", import_strategy="snapshot"),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -608,15 +631,18 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["kiro"],
         root_dir=".kiro",
         primitives={
-            "agents": PrimitiveMapping("agents", ".md", "kiro_agent"),
+            "agents": PrimitiveMapping("agents", ".md", "kiro_agent", import_strategy="generic"),
             "instructions": PrimitiveMapping(
                 "steering",
                 ".md",
                 "kiro_steering",
+                import_strategy="compiled",
                 output_compare=True,
             ),
-            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard"),
-            "hooks": PrimitiveMapping("hooks", ".json", "kiro_hooks"),
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", import_strategy="generic"
+            ),
+            "hooks": PrimitiveMapping("hooks", ".json", "kiro_hooks", import_strategy="snapshot"),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -629,12 +655,17 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["opencode"],
         root_dir=".opencode",
         primitives={
-            "agents": PrimitiveMapping("agents", ".md", "opencode_agent"),
-            "commands": PrimitiveMapping("commands", ".md", "opencode_command"),
+            "agents": PrimitiveMapping(
+                "agents", ".md", "opencode_agent", import_strategy="generic"
+            ),
+            "commands": PrimitiveMapping(
+                "commands", ".md", "opencode_command", import_strategy="generic"
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
         },
@@ -655,14 +686,17 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["gemini"],
         root_dir=".gemini",
         primitives={
-            "commands": PrimitiveMapping("commands", ".toml", "gemini_command"),
+            "commands": PrimitiveMapping(
+                "commands", ".toml", "gemini_command", import_strategy="generic"
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
-            "hooks": PrimitiveMapping("hooks", ".json", "gemini_hooks"),
+            "hooks": PrimitiveMapping("hooks", ".json", "gemini_hooks", import_strategy="snapshot"),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -678,10 +712,16 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["grok-build"],
         root_dir=".grok",
         primitives={
-            "instructions": PrimitiveMapping("rules", ".md", "grok_rules"),
-            "agents": PrimitiveMapping("agents", ".md", "grok_agent"),
-            "commands": PrimitiveMapping("commands", ".md", "claude_command"),
-            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard"),
+            "instructions": PrimitiveMapping(
+                "rules", ".md", "grok_rules", import_strategy="generic"
+            ),
+            "agents": PrimitiveMapping("agents", ".md", "grok_agent", import_strategy="generic"),
+            "commands": PrimitiveMapping(
+                "commands", ".md", "claude_command", import_strategy="generic"
+            ),
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", import_strategy="shared"
+            ),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -694,7 +734,9 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["grok-cloud"],
         root_dir=".grok",
         primitives={
-            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard"),
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", import_strategy="shared"
+            ),
         },
         auto_create=True,
         detect_by_dir=False,
@@ -737,6 +779,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="generic",
             ),
             "hooks": PrimitiveMapping("", "hooks.json", "antigravity_hooks"),
         },
@@ -754,14 +797,15 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["codex"],
         root_dir=".codex",
         primitives={
-            "agents": PrimitiveMapping("agents", ".toml", "codex_agent"),
+            "agents": PrimitiveMapping("agents", ".toml", "codex_agent", import_strategy="generic"),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
-            "hooks": PrimitiveMapping("", "hooks.json", "codex_hooks"),
+            "hooks": PrimitiveMapping("", "hooks.json", "codex_hooks", import_strategy="snapshot"),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -803,10 +847,15 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
                 deploy_root=".agents",
             ),
-            "commands": PrimitiveMapping("workflows", ".md", "windsurf_workflow"),
-            "hooks": PrimitiveMapping("", "hooks.json", "windsurf_hooks"),
+            "commands": PrimitiveMapping(
+                "workflows", ".md", "windsurf_workflow", import_strategy="generic"
+            ),
+            "hooks": PrimitiveMapping(
+                "", "hooks.json", "windsurf_hooks", import_strategy="snapshot"
+            ),
         },
         auto_create=False,
         detect_by_dir=True,
@@ -828,6 +877,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="shared",
             ),
         },
         auto_create=True,
@@ -853,6 +903,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="generic",
             ),
         },
         auto_create=True,
@@ -876,6 +927,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="generic",
             ),
         },
         auto_create=True,
@@ -896,6 +948,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                import_strategy="custom",
             ),
         },
         auto_create=False,
@@ -926,6 +979,7 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
                 "workflows",
                 ".prompt.md",
                 "prompt_standard",
+                import_strategy="custom",
             ),
         },
         auto_create=False,

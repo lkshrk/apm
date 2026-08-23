@@ -434,7 +434,7 @@ def _open_write_txn(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _validate_row(row: WorkflowRow) -> None:
+def _validate_row(row: WorkflowRow, *, preserve_imported_state: bool = False) -> None:
     """Pre-write sanity check on a ``WorkflowRow`` we are about to store.
 
     Mirrors the app's ``CHECK`` constraints so we surface bad input as a
@@ -447,14 +447,17 @@ def _validate_row(row: WorkflowRow) -> None:
             f"Invalid interval {row.interval!r}; expected one of {sorted(_VALID_INTERVALS)}"
         )
     if row.mode is not None and row.mode not in _VALID_MODES:
-        if row.mode == "autopilot":
+        if preserve_imported_state and row.mode == "autopilot":
+            pass
+        elif row.mode == "autopilot":
             raise ValueError(
                 "APM does not deploy workflows on autopilot mode -- "
                 "a third-party package could otherwise auto-run the moment "
                 "the user enables the row.  Users who want autopilot must "
                 "set it themselves per-row from the Copilot App UI."
             )
-        raise ValueError(f"Invalid mode {row.mode!r}; expected one of {sorted(_VALID_MODES)}")
+        else:
+            raise ValueError(f"Invalid mode {row.mode!r}; expected one of {sorted(_VALID_MODES)}")
     if not (0 <= row.schedule_hour <= 23):
         raise ValueError(f"Invalid schedule_hour {row.schedule_hour}; expected 0..23")
     if not (0 <= row.schedule_day <= 6):
@@ -463,7 +466,13 @@ def _validate_row(row: WorkflowRow) -> None:
         raise ValueError(f"Invalid enabled {row.enabled}; expected 0 or 1")
 
 
-def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
+def deploy_workflow(
+    db_path: Path,
+    row: WorkflowRow,
+    *,
+    preserve_imported_state: bool = False,
+    source_workflow_id: str | None = None,
+) -> str:
     """Insert or update a single workflow row owned by APM.
 
     On INSERT the row arrives with whatever the caller passed.  On
@@ -480,6 +489,9 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
       malicious-update vector.
     * Otherwise (e.g. only ``name`` changed), ``enabled``,
       ``last_run_at``, and ``next_run_at`` are preserved.
+    * With ``preserve_imported_state=True``, a provenance-validated native
+      row is checked for review-time drift, copied exactly to the managed
+      id, and removed atomically.
 
     Returns the lockfile URI for the deployed row.
 
@@ -491,9 +503,35 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
         CopilotAppDbLockedError: write transaction could not be acquired.
         ValueError: ``row`` fails ``_validate_row``.
     """
-    _validate_row(row)
+    _validate_row(row, preserve_imported_state=preserve_imported_state)
+    if preserve_imported_state:
+        if not source_workflow_id or is_apm_managed_id(source_workflow_id):
+            raise ValueError("imported workflow source id must be native and non-empty")
+    elif source_workflow_id is not None:
+        raise ValueError("source_workflow_id is only valid for imported workflow restoration")
     conn = _open_write_txn(db_path)
     try:
+        if preserve_imported_state:
+            source = conn.execute(
+                """SELECT name, prompt, model, reasoning_effort, project_id,
+                          interval, schedule_hour, schedule_day, enabled, mode
+                     FROM workflows WHERE id = ?""",
+                (source_workflow_id,),
+            ).fetchone()
+            expected_source = (
+                row.name,
+                row.prompt,
+                row.model,
+                row.reasoning_effort,
+                row.project_id,
+                row.interval,
+                row.schedule_hour,
+                row.schedule_day,
+                row.enabled,
+                row.mode,
+            )
+            if source is not None and tuple(source) != expected_source:
+                raise ValueError("imported workflow source changed after review")
         existing = conn.execute(
             """
             SELECT prompt, mode, interval, schedule_hour, schedule_day,
@@ -502,20 +540,21 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
             """,
             (row.id,),
         ).fetchone()
+        if preserve_imported_state and source is None and existing is None:
+            raise ValueError("imported workflow source disappeared after review")
         if existing is None:
-            # INSERT always writes enabled=0 regardless of row.enabled.
-            # The user must opt in via the App UI -- a third-party package
-            # cannot auto-run on install even if a future caller passes
-            # enabled=1 to this writer. Defence in depth alongside the
-            # caller-side enforcement in PromptIntegrator.
-            conn.execute(
-                """
+            # Ordinary inserts always write enabled=0 regardless of row.enabled.
+            # Only the provenance-validated native importer asks this writer
+            # to preserve previously reviewed state.
+            sql = """
                 INSERT INTO workflows (
                     id, name, prompt, model, reasoning_effort,
                     interval, schedule_hour, schedule_day,
                     enabled, mode, project_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-                """,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """
+            conn.execute(
+                sql,
                 (
                     row.id,
                     row.name,
@@ -525,6 +564,7 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
                     row.interval,
                     row.schedule_hour,
                     row.schedule_day,
+                    row.enabled if preserve_imported_state else 0,
                     row.mode,
                     row.project_id,
                 ),
@@ -539,7 +579,30 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
                 or existing["model"] != row.model
                 or existing["reasoning_effort"] != row.reasoning_effort
             )
-            if execution_changed:
+            if preserve_imported_state:
+                conn.execute(
+                    """
+                    UPDATE workflows
+                       SET name = ?, prompt = ?, model = ?, reasoning_effort = ?,
+                           interval = ?, schedule_hour = ?, schedule_day = ?,
+                           enabled = ?, mode = ?, project_id = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        row.name,
+                        row.prompt,
+                        row.model,
+                        row.reasoning_effort,
+                        row.interval,
+                        row.schedule_hour,
+                        row.schedule_day,
+                        row.enabled,
+                        row.mode,
+                        row.project_id,
+                        row.id,
+                    ),
+                )
+            elif execution_changed:
                 conn.execute(
                     """
                     UPDATE workflows
@@ -584,6 +647,8 @@ def deploy_workflow(db_path: Path, row: WorkflowRow) -> str:
                     """,
                     (row.name, row.project_id, row.id),
                 )
+        if preserve_imported_state and source_workflow_id != row.id:
+            conn.execute("DELETE FROM workflows WHERE id = ?", (source_workflow_id,))
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")

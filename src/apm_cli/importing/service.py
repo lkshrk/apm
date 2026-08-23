@@ -6,6 +6,7 @@ import base64
 import contextlib
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -16,17 +17,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import yaml
 
+from apm_cli.factory import ClientFactory
 from apm_cli.install.locking import lifecycle_operation
 from apm_cli.integration.targets import KNOWN_TARGETS
 from apm_cli.utils.atomic_io import atomic_write_text
 from apm_cli.utils.yaml_io import dump_yaml_roundtrip, load_yaml, yaml_to_str
 
+from .compiled_instructions import adopt_compiled_instruction
+from .discovery import NativeResource, discover_filesystem_resources, path_boundary_error
 from .journal import allow_operation, journal_root, read_journal, write_journal
+from .mcp_discovery import discover_mcp_sources
+from .plugin_discovery import capture_activation, discover_plugin_state
 from .secure import SecureRoot, harden_path, restore_file_bytes
+from .special_resources import (
+    discover_canvas_resources,
+    discover_copilot_app_workflows,
+    discover_cowork_resources,
+    snapshot_hook,
+)
 
 SCHEMA_VERSION = 1
 COORDINATORS = frozenset({"standalone", "omni-v24"})
@@ -83,6 +95,13 @@ _EMPTY_RESOLUTION = {
 }
 
 
+def _sensitive_name(value: object) -> bool:
+    normalized = str(value).lower().replace("-", "_")
+    return normalized in _SECRET_KEYS or any(
+        normalized.endswith(f"_{suffix}") for suffix in _SECRET_KEYS
+    )
+
+
 class ImportProtocolError(RuntimeError):
     """Strict protocol or stale-plan error."""
 
@@ -100,6 +119,52 @@ def _canonical(value: Any) -> bytes:
 
 def _digest(value: Any) -> str:
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _canonical_project_root(path: Path | None) -> Path:
+    if path is None:
+        raise ImportProtocolError("project import requires a project root; rescan")
+    expanded = path.expanduser()
+    if not expanded.is_absolute():
+        raise ImportProtocolError("project root must be an absolute canonical path")
+    absolute = Path(os.path.abspath(expanded))
+    try:
+        resolved = expanded.resolve(strict=True)
+    except OSError as exc:
+        raise ImportProtocolError(f"project root is missing: {expanded}") from exc
+    if resolved != absolute or not resolved.is_dir() or expanded.is_symlink():
+        raise ImportProtocolError(
+            f"project root must be a canonical non-symlink directory: {expanded}"
+        )
+    return resolved
+
+
+def _scope_identity(data: dict[str, Any]) -> tuple[str, Path | None]:
+    scope = data.get("scope", "global")
+    if scope == "global":
+        if data.get("project_root") is not None:
+            raise ImportProtocolError("global import cannot declare a project root")
+        return scope, None
+    if scope != "project":
+        raise ImportProtocolError(f"unsupported import scope: {scope}")
+    raw_root = data.get("project_root")
+    if not isinstance(raw_root, str):
+        raise ImportProtocolError("project import plan is missing project_root; rescan")
+    root = _canonical_project_root(Path(raw_root))
+    if raw_root != str(root):
+        raise ImportProtocolError("project_root is not canonical; rescan")
+    return scope, root
+
+
+def _candidate_set_identity(data: dict[str, Any]) -> str:
+    identity = {
+        "sources": data["sources"],
+        "preimages": data["source_preimages"],
+        "candidates": data["candidates"],
+    }
+    if data.get("scope") == "project":
+        identity.update(scope="project", project_root=data["project_root"])
+    return _digest(identity)
 
 
 def _file_hash(path: Path) -> str:
@@ -182,7 +247,7 @@ def _sanitize(value: Any, *, secret_context: bool = False) -> tuple[Any, bool]:
             sensitive = (
                 secret_context
                 or lower in {"env", "headers", "http_headers"}
-                or lower in _SECRET_KEYS
+                or _sensitive_name(lower)
             )
             sanitized, child_blocked = _sanitize(child, secret_context=sensitive)
             result[str(key)] = sanitized
@@ -196,22 +261,32 @@ def _sanitize(value: Any, *, secret_context: bool = False) -> tuple[Any, bool]:
             blocked = blocked or child_blocked
         return result, blocked
     if isinstance(value, str):
+        option = re.fullmatch(r"--([A-Za-z0-9_-]+)=(.*)", value)
+        if option and _sensitive_name(option.group(1)):
+            if option.group(2) and not _ENV_PLACEHOLDER.fullmatch(option.group(2)):
+                return {"blocked": "literal-secret"}, True
         parsed = urlsplit(value)
         if parsed.username or parsed.password:
-            host = parsed.hostname or ""
-            if parsed.port:
-                host += f":{parsed.port}"
-            return urlunsplit(
-                (parsed.scheme, host, parsed.path, parsed.query, parsed.fragment)
-            ), True
+            return {"blocked": "literal-secret"}, True
+        for key, child in parse_qsl(parsed.query, keep_blank_values=True):
+            if _sensitive_name(key) and child and not _ENV_PLACEHOLDER.fullmatch(child):
+                return {"blocked": "literal-secret"}, True
         if secret_context and value and not _ENV_PLACEHOLDER.fullmatch(value):
             return {"blocked": "literal-secret"}, True
     return value, False
 
 
 def _candidate(
-    root: _Root, path: Path, kind: str, name: str, payload: Any | None = None
+    root: _Root,
+    path: Path,
+    kind: str,
+    name: str,
+    payload: Any | None = None,
+    *,
+    source_targets: list[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if error := path_boundary_error(root.path, path):
+        raise ImportProtocolError(f"unsafe native source: {error}")
     preimage = _preimage(path)
     relative = path.resolve().relative_to(root.path.resolve()).as_posix()
     executables: list[str] = []
@@ -233,7 +308,7 @@ def _candidate(
         "name": name,
         "root_id": root.id,
         "source_handle": f"{root.id}:{relative}",
-        "source_target": [root.target],
+        "source_target": sorted(source_targets or [root.target]),
         "provenance": "local-only",
         "payload": clean_payload,
         "content_fingerprint": content,
@@ -243,24 +318,42 @@ def _candidate(
     }
 
 
+def _unsupported_candidate(target: str, name: str, reason: str) -> dict[str, Any]:
+    """Return one redacted, path-free blocker that can be left unmanaged."""
+    identity = {"target": target, "name": name, "reason": reason}
+    return {
+        "id": _digest(identity)[:32],
+        "kind": "unsupported",
+        "name": name,
+        "root_id": f"{target}-config",
+        "source_handle": f"unsupported:{target}:{name}",
+        "source_target": [target],
+        "provenance": "native-unsupported",
+        "payload": {
+            "unsupported_reason": reason,
+            "leave_unmanaged_available": True,
+        },
+        "content_fingerprint": _digest(identity),
+        "source_preimage_ids": [],
+        "executable_paths": [],
+        "secret_blocked": False,
+    }
+
+
 def _root_path(target: str) -> Path:
-    if target == "claude":
-        return (
-            Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
-            .expanduser()
-            .resolve(strict=False)
-        )
-    if target == "codex":
-        return (
-            Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-            .expanduser()
-            .resolve(strict=False)
-        )
-    raise ImportProtocolError(f"unsupported source target: {target}")
+    if target not in KNOWN_TARGETS:
+        raise ImportProtocolError(f"unsupported source target: {target}")
+    root = _user_target_root(target)
+    if root is None:
+        raise ImportProtocolError(f"source target is not available: {target}")
+    return root
 
 
 def _user_target_root(target: str) -> Path | None:
-    profile = KNOWN_TARGETS[target].for_scope(user_scope=True)
+    try:
+        profile = KNOWN_TARGETS[target].for_scope(user_scope=True)
+    except OSError:
+        return None
     if profile is None:
         return None
     if profile.resolved_deploy_root is not None:
@@ -269,10 +362,14 @@ def _user_target_root(target: str) -> Path | None:
     return (root if root.is_absolute() else Path.home() / root).resolve(strict=False)
 
 
-def _discover_unmanaged_clients() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _discover_unmanaged_clients(
+    managed_targets: tuple[str, ...] | list[str] = (),
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
     preimages: list[dict[str, Any]] = []
     for target in _UNMANAGED_NATIVE_CLIENTS:
+        if target in managed_targets:
+            continue
         root = _user_target_root(target)
         if root is None or not root.exists():
             continue
@@ -352,180 +449,356 @@ def _hook_scripts(value: Any, *, base: Path, root: Path) -> list[Path]:
     return sorted(found)
 
 
-def _discover_target(target: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    root_path = _root_path(target)
+def _resource_root(resource: NativeResource) -> _Root:
+    target = resource.targets[0]
+    shared_agents = (Path.home() / ".agents").resolve(strict=False)
+    root_id = (
+        "shared-agent-skills"
+        if resource.root.resolve(strict=False) == shared_agents
+        else f"{target}-config"
+    )
+    return _Root(root_id, target, resource.root)
+
+
+def _discover_filesystem_targets(
+    targets: tuple[str, ...] | list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    preimages: list[dict[str, Any]] = []
+    for resource in discover_filesystem_resources(targets):
+        if resource.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(resource.targets[0], resource.name, resource.blocked_reason)
+            )
+            continue
+        root = _resource_root(resource)
+        hook = snapshot_hook(resource) if resource.kind == "hook" else None
+        if hook is not None and hook.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(resource.targets[0], resource.name, hook.blocked_reason)
+            )
+            continue
+        payload: Any | None = None
+        if resource.strategy == "compiled":
+            compiled = adopt_compiled_instruction(resource)
+            payload = {
+                "import_layout": "compiled-instruction",
+                "target": compiled.target,
+                "format_id": compiled.format_id,
+                "relative_path": compiled.relative_path.as_posix(),
+            }
+        elif hook is not None:
+            payload = {
+                "import_layout": "hook-bundle",
+                "descriptor": hook.payload,
+                "scripts": [
+                    {
+                        "preimage_id": _preimage(script.path)["id"],
+                        "relative_path": script.path.relative_to(resource.root).as_posix(),
+                    }
+                    for script in hook.scripts
+                ],
+            }
+        preimage, candidate = _candidate(
+            root,
+            resource.path,
+            resource.kind,
+            resource.name,
+            payload,
+            source_targets=list(resource.targets),
+        )
+        preimages.append(preimage)
+        if hook is not None:
+            script_preimages = [_preimage(script.path) for script in hook.scripts]
+            candidate["source_preimage_ids"].extend(item["id"] for item in script_preimages)
+            candidate["content_fingerprint"] = _digest(
+                {
+                    "descriptor": preimage["content_fingerprint"],
+                    "scripts": [item["content_fingerprint"] for item in script_preimages],
+                }
+            )
+            candidate["executable_paths"] = sorted(
+                script.path.relative_to(resource.root).as_posix()
+                for script in hook.scripts
+                if stat.S_IMODE(script.path.stat().st_mode) & 0o111
+            )
+            for script_preimage in script_preimages:
+                preimages.append(script_preimage)
+        candidates.append(candidate)
+    return candidates, preimages
+
+
+def _discover_special_targets(
+    targets: tuple[str, ...] | list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected = set(targets)
+    resources: list[NativeResource] = []
+    if "copilot-cowork" in selected:
+        try:
+            resources.extend(discover_cowork_resources())
+        except OSError:
+            resources.append(
+                NativeResource(
+                    Path.home(),
+                    Path.home(),
+                    "unsupported",
+                    "copilot-cowork",
+                    ("copilot-cowork",),
+                    "custom",
+                    "source-resolver-error",
+                )
+            )
+    if "copilot" in selected:
+        try:
+            root = _user_target_root("copilot")
+            if root is not None:
+                resources.extend(discover_canvas_resources(root=root))
+        except OSError:
+            resources.append(
+                NativeResource(
+                    Path.home(),
+                    Path.home(),
+                    "unsupported",
+                    "copilot",
+                    ("copilot",),
+                    "custom",
+                    "source-resolver-error",
+                )
+            )
+
+    candidates: list[dict[str, Any]] = []
+    preimages: list[dict[str, Any]] = []
+    for resource in resources:
+        if resource.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(resource.targets[0], resource.name, resource.blocked_reason)
+            )
+            continue
+        root = _resource_root(resource)
+        payload = {"import_layout": "canvas"} if resource.kind == "canvas" else None
+        kind = "package" if resource.kind == "canvas" else resource.kind
+        preimage, candidate = _candidate(
+            root,
+            resource.path,
+            kind,
+            resource.name,
+            payload,
+            source_targets=list(resource.targets),
+        )
+        if resource.kind == "canvas":
+            candidate["content_fingerprint"] = preimage["content_fingerprint"]
+        preimages.append(preimage)
+        candidates.append(candidate)
+
+    if "copilot-app" in selected:
+        try:
+            workflows = discover_copilot_app_workflows()
+        except (OSError, ValueError):
+            candidates.append(
+                _unsupported_candidate("copilot-app", "copilot-app", "source-resolver-error")
+            )
+            workflows = []
+        for workflow in workflows:
+            if workflow.managed:
+                continue
+            root = _resource_root(workflow.native)
+            preimage, candidate = _candidate(
+                root,
+                workflow.native.path,
+                "command",
+                workflow.native.name,
+                {"import_layout": "workflow", "workflow": workflow.payload},
+                source_targets=list(workflow.native.targets),
+            )
+            preimages.append(preimage)
+            candidates.append(candidate)
+    return candidates, preimages
+
+
+def _discover_plugins(
+    targets: tuple[str, ...] | list[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    roots = {
+        target: root
+        for target in sorted(set(targets))
+        if (root := _user_target_root(target)) is not None
+    }
+    discovered = discover_plugin_state(roots)
+    candidates: list[dict[str, Any]] = []
+    preimages: list[dict[str, Any]] = []
+    for plugin in discovered.plugins:
+        if plugin.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(plugin.targets[0], plugin.name, plugin.blocked_reason)
+            )
+            continue
+        root = _Root(
+            f"plugin-{_digest(str(plugin.path.resolve(strict=False)))[:16]}",
+            plugin.targets[0],
+            plugin.path if plugin.path.is_dir() else plugin.path.parent,
+        )
+        payload = {
+            **plugin.payload,
+            "activation_paths": [
+                str(path.resolve(strict=False)) for path in plugin.activation_paths
+            ],
+        }
+        preimage, candidate = _candidate(
+            root,
+            plugin.path,
+            "plugin",
+            plugin.name,
+            payload,
+            source_targets=list(plugin.targets),
+        )
+        candidate["provenance"] = plugin.provenance
+        if plugin.path.is_dir() and plugin.payload.get("source") == "secured-path":
+            candidate["content_fingerprint"] = preimage["content_fingerprint"]
+        preimages.append(preimage)
+        candidates.append(candidate)
+    for marketplace in discovered.marketplaces:
+        if marketplace.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(
+                    marketplace.target, marketplace.name, marketplace.blocked_reason
+                )
+            )
+            continue
+        root = _Root(f"{marketplace.target}-config", marketplace.target, marketplace.path.parent)
+        preimage, candidate = _candidate(
+            root,
+            marketplace.path,
+            "marketplace",
+            marketplace.name,
+            marketplace.payload,
+            source_targets=[marketplace.target],
+        )
+        preimages.append(preimage)
+        candidates.append(candidate)
+    return candidates, preimages
+
+
+def _discover_mcp_targets(
+    targets: tuple[str, ...] | list[str],
+    *,
+    project_root: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    candidates: list[dict[str, Any]] = []
+    preimages: list[dict[str, Any]] = []
+    for source in discover_mcp_sources(targets, project_root=project_root):
+        expected_scope = "project" if project_root is not None else "global"
+        if source.scope != expected_scope:
+            raise ImportProtocolError("MCP discovery mixed global and project sources")
+        if project_root is not None and source.project_root != project_root:
+            raise ImportProtocolError("MCP discovery returned a mismatched project root")
+        if source.blocked_reason:
+            candidates.append(
+                _unsupported_candidate(source.client, source.client, source.blocked_reason)
+            )
+            continue
+        root = _Root(f"{source.client}-config", source.client, source.path.parent)
+        for name, payload in sorted(source.servers.items()):
+            preimage, candidate = _candidate(root, source.path, "mcp", str(name), payload)
+            preimages.append(preimage)
+            candidates.append(candidate)
+    return candidates, preimages
+
+
+def _discover_target_extras(target: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if target not in KNOWN_TARGETS:
+        raise ImportProtocolError(f"unsupported source target: {target}")
+    root_path = _user_target_root(target)
+    if root_path is None:
+        return [], []
     root = _Root(f"{target}-config", target, root_path)
     candidates: list[dict[str, Any]] = []
     preimages: list[dict[str, Any]] = []
-    if not root_path.is_dir() and target != "codex":
-        return candidates, preimages
-
-    layouts: list[tuple[str, str, str]]
-    if target == "claude":
-        layouts = [
-            ("rules", "*.md", "instruction"),
-            ("agents", "*.md", "agent"),
-            ("commands", "*.md", "command"),
-            ("skills", "*/SKILL.md", "skill"),
-            ("hooks", "*.json", "hook"),
-        ]
-    else:
-        layouts = [("agents", "*.toml", "agent"), ("skills", "*/SKILL.md", "skill")]
-    for directory, pattern, kind in layouts:
-        for found in sorted((root_path / directory).glob(pattern)):
-            source = found.parent if kind == "skill" else found
-            name = source.name if source.is_dir() else source.stem
-            payload = _load_structured(source) if kind == "hook" else None
-            preimage, candidate = _candidate(root, source, kind, name, payload)
-            preimages.append(preimage)
-            candidates.append(candidate)
-            if kind == "hook" and payload is not None:
-                for script in _hook_scripts(payload, base=source.parent, root=root_path):
-                    script_preimage, script_candidate = _candidate(
-                        root, script, "hook", f"{name}-{script.stem}"
-                    )
-                    preimages.append(script_preimage)
-                    candidates.append(script_candidate)
     if target == "claude":
         claude_md = root_path / "CLAUDE.md"
         if claude_md.is_file():
+            compiled = adopt_compiled_instruction(
+                NativeResource(
+                    root_path,
+                    claude_md,
+                    "instruction",
+                    "compiled-claude-md",
+                    ("claude",),
+                    "compiled",
+                )
+            )
             preimage, candidate = _candidate(
                 root,
                 claude_md,
                 "instruction",
-                "compiled-claude-md",
+                compiled.name,
+                {
+                    "import_layout": "compiled-instruction",
+                    "target": compiled.target,
+                    "format_id": compiled.format_id,
+                    "relative_path": compiled.relative_path.as_posix(),
+                },
             )
             preimages.append(preimage)
             candidates.append(candidate)
-
-    if target == "codex":
-        shared = _Root(
-            "shared-agent-skills", target, (Path.home() / ".agents").resolve(strict=False)
-        )
-        for found in sorted((shared.path / "skills").glob("*/SKILL.md")):
-            preimage, candidate = _candidate(shared, found.parent, "skill", found.parent.name)
+    # Preserve the pre-adapter Claude import source while native installs
+    # converge on the adapter-owned ~/.claude.json path.
+    legacy_settings = root_path / "settings.json"
+    if target == "claude" and legacy_settings.is_file():
+        try:
+            data = _load_structured(legacy_settings) or {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            candidates.append(
+                _unsupported_candidate("claude", "claude", "malformed-or-unreadable-mcp-document")
+            )
+            return candidates, preimages
+        for name, payload in sorted(data.get("mcpServers", {}).items()):
+            preimage, candidate = _candidate(root, legacy_settings, "mcp", str(name), payload)
             preimages.append(preimage)
             candidates.append(candidate)
-        hook_path = root_path / "hooks.json"
-        if hook_path.is_file():
-            hook_payload = _load_structured(hook_path)
-            preimage, candidate = _candidate(root, hook_path, "hook", "codex-hooks", hook_payload)
-            preimages.append(preimage)
-            candidates.append(candidate)
-            for script in _hook_scripts(hook_payload, base=root_path, root=root_path):
-                script_preimage, script_candidate = _candidate(
-                    root, script, "hook", f"codex-{script.stem}"
-                )
-                preimages.append(script_preimage)
-                candidates.append(script_candidate)
-
-    config_path = root_path / ("settings.json" if target == "claude" else "config.toml")
-    if config_path.is_file():
-        data = _load_structured(config_path) or {}
-        servers = data.get("mcpServers", {}) if target == "claude" else data.get("mcp_servers", {})
-        for name, payload in sorted(servers.items()):
-            preimage, candidate = _candidate(root, config_path, "mcp", str(name), payload)
-            preimages.append(preimage)
-            candidates.append(candidate)
-        if target == "claude" and data.get("hooks"):
+        if data.get("hooks"):
+            native = NativeResource(
+                root_path,
+                legacy_settings,
+                "hook",
+                "settings-hooks",
+                ("claude",),
+                "snapshot",
+            )
+            hook = snapshot_hook(native)
+            if hook is None:
+                raise ImportProtocolError("legacy Claude hooks are malformed")
+            script_preimages = [_preimage(script.path) for script in hook.scripts]
             preimage, candidate = _candidate(
-                root, config_path, "hook", "settings-hooks", data["hooks"]
+                root,
+                legacy_settings,
+                "hook",
+                "settings-hooks",
+                {
+                    "import_layout": "hook-bundle",
+                    "descriptor": data["hooks"],
+                    "scripts": [
+                        {
+                            "preimage_id": item["id"],
+                            "relative_path": script.path.relative_to(root_path).as_posix(),
+                        }
+                        for script, item in zip(hook.scripts, script_preimages, strict=True)
+                    ],
+                },
+            )
+            candidate["source_preimage_ids"].extend(item["id"] for item in script_preimages)
+            candidate["content_fingerprint"] = _digest(
+                {
+                    "descriptor": preimage["content_fingerprint"],
+                    "scripts": [item["content_fingerprint"] for item in script_preimages],
+                }
+            )
+            candidate["executable_paths"] = sorted(
+                script.path.relative_to(root_path).as_posix()
+                for script in hook.scripts
+                if stat.S_IMODE(script.path.stat().st_mode) & 0o111
             )
             preimages.append(preimage)
-            candidates.append(candidate)
-            for script in _hook_scripts(data["hooks"], base=root_path, root=root_path):
-                script_preimage, script_candidate = _candidate(
-                    root, script, "hook", f"settings-{script.stem}"
-                )
-                preimages.append(script_preimage)
-                candidates.append(script_candidate)
-
-    installed_path = root_path / "plugins" / "installed_plugins.json"
-    installed_data = _load_structured(installed_path) if installed_path.is_file() else {}
-    installed_entries = (
-        installed_data.get("plugins", installed_data) if isinstance(installed_data, dict) else {}
-    )
-    installed_refs: dict[Path, str] = {}
-    if isinstance(installed_entries, dict):
-        for ref, records in installed_entries.items():
-            record_list = records if isinstance(records, list) else [records]
-            for record in record_list:
-                if isinstance(record, dict) and record.get("installPath"):
-                    installed_refs[
-                        Path(str(record["installPath"])).expanduser().resolve(strict=False)
-                    ] = str(ref)
-
-    plugin_roots: set[Path] = set()
-    for marker in (".claude-plugin/plugin.json", ".codex-plugin/plugin.json"):
-        for manifest in (root_path / "plugins").glob(f"**/{marker}"):
-            plugin_roots.add(manifest.parent.parent.resolve())
-    for plugin_path in sorted(plugin_roots):
-        manifest_paths = [
-            plugin_path / ".claude-plugin" / "plugin.json",
-            plugin_path / ".codex-plugin" / "plugin.json",
-        ]
-        manifest = next(path for path in manifest_paths if path.is_file())
-        metadata = _load_structured(manifest) or {}
-        name = str(metadata.get("name") or plugin_path.name)
-        plugin_root = _Root(
-            f"{target}-plugin-{_digest(str(plugin_path))[:12]}", target, plugin_path
-        )
-        preimage, candidate = _candidate(
-            plugin_root,
-            plugin_path,
-            "plugin",
-            name,
-        )
-        marketplace_ref = installed_refs.get(plugin_path)
-        if marketplace_ref and "@" in marketplace_ref:
-            plugin_name, marketplace_name = marketplace_ref.rsplit("@", 1)
-            candidate["provenance"] = "marketplace"
-            candidate["payload"] = {
-                "plugin": plugin_name,
-                "marketplace": marketplace_name,
-            }
-        preimages.append(preimage)
-        candidates.append(candidate)
-
-    if installed_path.is_file():
-        entries = installed_entries
-        if isinstance(entries, dict):
-            for name, records in sorted(entries.items()):
-                record_list = records if isinstance(records, list) else [records]
-                paths = [
-                    Path(str(record.get("installPath"))).expanduser().resolve(strict=False)
-                    for record in record_list
-                    if isinstance(record, dict) and record.get("installPath")
-                ]
-                if paths and any(path in plugin_roots for path in paths):
-                    continue
-                preimage, candidate = _candidate(
-                    root,
-                    installed_path,
-                    "plugin",
-                    str(name),
-                    {"unsupported_reason": "plugin-install-path-missing"},
-                )
-                preimages.append(preimage)
-                candidates.append(candidate)
-
-    marketplace_path = root_path / "plugins" / "known_marketplaces.json"
-    if marketplace_path.is_file():
-        marketplace_data = _load_structured(marketplace_path) or {}
-        entries = marketplace_data.get("marketplaces", marketplace_data)
-        if isinstance(entries, dict):
-            iterator = sorted(entries.items())
-        elif isinstance(entries, list):
-            iterator = [
-                (str(entry.get("name", f"marketplace-{index}")), entry)
-                for index, entry in enumerate(entries)
-                if isinstance(entry, dict)
-            ]
-        else:
-            iterator = []
-        for name, payload in iterator:
-            preimage, candidate = _candidate(root, marketplace_path, "marketplace", name, payload)
-            preimages.append(preimage)
+            preimages.extend(script_preimages)
             candidates.append(candidate)
     if target == "codex":
         agents_md = root_path / "AGENTS.md"
@@ -540,6 +813,43 @@ def _discover_target(target: str) -> tuple[list[dict[str, Any]], list[dict[str, 
             preimages.append(preimage)
             candidates.append(candidate)
     return candidates, preimages
+
+
+def _discover_targets(
+    targets: tuple[str, ...] | list[str],
+    *,
+    project_root: Path | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    normalized = set(targets)
+    supported = set(KNOWN_TARGETS) | set(ClientFactory.supported_clients())
+    unknown = sorted(normalized - supported)
+    if unknown:
+        raise ImportProtocolError(f"unsupported source target: {', '.join(unknown)}")
+    if project_root is not None:
+        return _discover_mcp_targets(sorted(normalized), project_root=project_root)
+    native_targets = sorted(normalized & set(KNOWN_TARGETS))
+    candidates, preimages = _discover_filesystem_targets(native_targets)
+    special_candidates, special_preimages = _discover_special_targets(native_targets)
+    candidates.extend(special_candidates)
+    preimages.extend(special_preimages)
+    mcp_candidates, mcp_preimages = _discover_mcp_targets(
+        sorted(normalized), project_root=project_root
+    )
+    candidates.extend(mcp_candidates)
+    preimages.extend(mcp_preimages)
+    plugin_candidates, plugin_preimages = _discover_plugins(native_targets)
+    candidates.extend(plugin_candidates)
+    preimages.extend(plugin_preimages)
+    for target in native_targets:
+        extra_candidates, extra_preimages = _discover_target_extras(target)
+        candidates.extend(extra_candidates)
+        preimages.extend(extra_preimages)
+    return candidates, preimages
+
+
+def _discover_target(target: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compatibility wrapper for callers scanning one native target."""
+    return _discover_targets([target])
 
 
 def _load_exclusions() -> dict[str, dict[str, Any]]:
@@ -604,9 +914,102 @@ def _write_exclusions(entries: dict[str, dict[str, Any]]) -> None:
     root.write_text("import-exclusions.yml", yaml_to_str(payload, sort_keys=False))
 
 
-def _managed_ids() -> set[str]:
-    root = Path.home() / ".apm" / "imported"
+def _managed_ids(candidate_data: dict[str, Any]) -> set[str]:
+    scope, project_root = _scope_identity(candidate_data)
+    if scope == "project":
+        from apm_cli.deps.lockfile import LockFile, get_lockfile_path
+
+        lock = LockFile.read(get_lockfile_path(project_root))
+        if lock is None:
+            return set()
+        manifest = (
+            load_yaml(project_root / "apm.yml") if (project_root / "apm.yml").is_file() else {}
+        )
+        declared = {
+            item.get("name")
+            for item in (
+                manifest.get("dependencies", {}).get("mcp", [])
+                if isinstance(manifest, dict)
+                else []
+            )
+            if isinstance(item, dict)
+        }
+        managed: set[str] = set()
+        for candidate in candidate_data["candidates"]:
+            if candidate["kind"] != "mcp":
+                continue
+            locked = lock.mcp_configs.get(candidate["name"])
+            owned = candidate["name"] in declared
+            if (
+                owned
+                and isinstance(locked, dict)
+                and all(locked.get(key) == value for key, value in candidate["payload"].items())
+            ):
+                managed.add(candidate["id"])
+        return managed
+    from apm_cli.deps.lockfile import LockFile
+
+    lock = LockFile.read(Path.home() / ".apm" / "apm.lock.yaml")
     result: set[str] = set()
+    if lock is not None:
+        manifest_path = Path.home() / ".apm" / "apm.yml"
+        manifest = load_yaml(manifest_path) if manifest_path.is_file() else {}
+        declared_mcp = {
+            item.get("name")
+            for item in (
+                manifest.get("dependencies", {}).get("mcp", [])
+                if isinstance(manifest, dict)
+                else []
+            )
+            if isinstance(item, dict)
+        }
+        claims: dict[Path, str] = {}
+
+        def add_claims(paths: list[str], hashes: dict[str, str]) -> None:
+            for raw in paths:
+                if "://" in raw or raw not in hashes:
+                    continue
+                path = Path(raw).expanduser()
+                absolute = path if path.is_absolute() else Path.home() / path
+                claims[absolute.resolve(strict=False)] = hashes[raw].removeprefix("sha256:")
+
+        add_claims(lock.local_deployed_files, lock.local_deployed_file_hashes)
+        for dependency in lock.dependencies.values():
+            add_claims(dependency.deployed_files, dependency.deployed_file_hashes)
+
+        preimages = {item["id"]: item for item in candidate_data["source_preimages"]}
+
+        def preimage_is_claimed(preimage: dict[str, Any]) -> bool:
+            path = Path(preimage["absolute_path"])
+            if preimage["kind"] == "file":
+                if path_boundary_error(path.parent, path):
+                    return False
+                return claims.get(path.resolve(strict=False)) == preimage["content_fingerprint"]
+            files = sorted(item for item in path.rglob("*") if item.is_file())
+            return bool(files) and all(
+                path_boundary_error(path, item) is None
+                and claims.get(item.resolve(strict=False)) == _file_hash(item)
+                for item in files
+            )
+
+        for candidate in candidate_data["candidates"]:
+            if candidate["kind"] == "mcp":
+                locked = lock.mcp_configs.get(candidate["name"])
+                if (
+                    candidate["name"] in declared_mcp
+                    and isinstance(locked, dict)
+                    and all(locked.get(key) == value for key, value in candidate["payload"].items())
+                ):
+                    result.add(candidate["id"])
+                continue
+            source_preimages = [
+                preimages[source_id]
+                for source_id in candidate["source_preimage_ids"]
+                if source_id in preimages
+            ]
+            if source_preimages and all(preimage_is_claimed(item) for item in source_preimages):
+                result.add(candidate["id"])
+    root = Path.home() / ".apm" / "imported"
     if not root.is_dir():
         return result
     for metadata in root.glob("*/*/.apm-import.json"):
@@ -621,16 +1024,17 @@ def _validate_candidate_envelope(data: Any) -> dict[str, Any]:
     required = {
         "schema_version",
         "coordinator",
-        "scope",
         "sources",
         "candidate_set_id",
         "source_preimages",
         "candidates",
     }
-    if not isinstance(data, dict) or set(data) != required:
+    optional = {"scope", "project_root"}
+    if not isinstance(data, dict) or not required.issubset(data) or set(data) - required - optional:
         raise ImportProtocolError(f"candidate schema fields mismatch: expected {sorted(required)}")
     if data["schema_version"] != SCHEMA_VERSION or data["coordinator"] not in COORDINATORS:
         raise ImportProtocolError("unsupported candidate schema/coordinator")
+    scope, project_root = _scope_identity(data)
     candidate_required = {
         "id",
         "kind",
@@ -656,13 +1060,23 @@ def _validate_candidate_envelope(data: Any) -> dict[str, Any]:
             raise ImportProtocolError(
                 f"invalid candidate {candidate.get('id', '<unknown>')}: missing={sorted(missing)} extra={sorted(extras)}"
             )
-    expected = _digest(
-        {
-            "sources": data["sources"],
-            "preimages": data["source_preimages"],
-            "candidates": data["candidates"],
-        }
-    )
+    if scope == "project":
+        for preimage in data["source_preimages"]:
+            path = Path(preimage.get("absolute_path", ""))
+            if (
+                not path.is_absolute()
+                or path_boundary_error(project_root, path) is not None
+                or not path.is_relative_to(project_root)
+            ):
+                raise ImportProtocolError("project MCP preimage escapes the selected workspace")
+        if any(
+            candidate["kind"] not in {"mcp", "unsupported"}
+            or len(candidate["source_target"]) != 1
+            or candidate["source_target"][0] not in data["sources"]
+            for candidate in data["candidates"]
+        ):
+            raise ImportProtocolError("project import candidate set mixed scopes or targets")
+    expected = _candidate_set_identity(data)
     if not hmac.compare_digest(str(data["candidate_set_id"]), expected):
         raise ImportProtocolError("candidate_set_id does not match candidate content")
     return data
@@ -708,16 +1122,20 @@ def _validate_protocol_file(path: Path) -> None:
         raise ImportProtocolError(f"protocol file is not owner-only: {path}")
 
 
-def _apm_state_fingerprint() -> str:
-    paths = [
-        Path.home() / ".apm" / "apm.yml",
-        Path.home() / ".apm" / "apm.lock.yaml",
-        Path.home() / ".apm" / "marketplaces.json",
-        Path.home() / ".apm" / "import-exclusions.yml",
-    ]
-    imported = Path.home() / ".apm" / "imported"
-    if imported.is_dir():
-        paths.extend(sorted(imported.glob("*/*/.apm-import.json")))
+def _apm_state_fingerprint(candidate_data: dict[str, Any]) -> str:
+    scope, project_root = _scope_identity(candidate_data)
+    if scope == "project":
+        paths = [project_root / "apm.yml", project_root / "apm.lock.yaml"]
+    else:
+        paths = [
+            Path.home() / ".apm" / "apm.yml",
+            Path.home() / ".apm" / "apm.lock.yaml",
+            Path.home() / ".apm" / "marketplaces.json",
+            Path.home() / ".apm" / "import-exclusions.yml",
+        ]
+        imported = Path.home() / ".apm" / "imported"
+        if imported.is_dir():
+            paths.extend(sorted(imported.glob("*/*/.apm-import.json")))
     state = []
     for path in paths:
         if path.is_symlink():
@@ -735,11 +1153,14 @@ def _apm_state_fingerprint() -> str:
 def _plan(
     candidate_data: dict[str, Any], resolutions: dict[str, dict[str, Any]] | None = None
 ) -> dict[str, Any]:
-    exclusions = _load_exclusions()
-    managed = _managed_ids()
+    scope, project_root = _scope_identity(candidate_data)
+    exclusions = _load_exclusions() if scope == "global" else {}
+    managed = _managed_ids(candidate_data)
     name_fingerprints: dict[tuple[str, str], set[str]] = {}
     name_candidates: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for candidate in candidate_data["candidates"]:
+        if candidate.get("payload", {}).get("unsupported_reason"):
+            continue
         name_key = (candidate["kind"], candidate["name"])
         name_fingerprints.setdefault(name_key, set()).add(candidate["content_fingerprint"])
         name_candidates.setdefault(name_key, []).append(candidate)
@@ -749,7 +1170,7 @@ def _plan(
     blockers = []
     for candidate in sorted(candidate_data["candidates"], key=lambda value: value["id"]):
         name_key = (candidate["kind"], candidate["name"])
-        if len(name_fingerprints[name_key]) > 1:
+        if len(name_fingerprints.get(name_key, set())) > 1:
             origins = sorted(name_candidates[name_key], key=lambda value: value["id"])
             if candidate["id"] in grouped:
                 continue
@@ -797,6 +1218,12 @@ def _plan(
                 "retain",
                 [str(candidate["payload"]["unsupported_reason"])],
             )
+        elif candidate["id"] in managed:
+            classification, action, reasons = (
+                "already-managed",
+                "reuse",
+                ["managed-import-metadata"],
+            )
         elif candidate["executable_paths"]:
             classification, action, reasons = (
                 "needs-choice",
@@ -805,12 +1232,6 @@ def _plan(
                     "executable-approval-required",
                     *(f"executable:{path}" for path in sorted(candidate["executable_paths"])),
                 ],
-            )
-        elif candidate["id"] in managed:
-            classification, action, reasons = (
-                "already-managed",
-                "reuse",
-                ["managed-import-metadata"],
             )
         elif candidate.get("secret_blocked") or _contains_blocked(candidate["payload"]):
             classification, action, reasons = (
@@ -858,7 +1279,7 @@ def _plan(
         {
             "candidate_set_id": candidate_data["candidate_set_id"],
             "items": [{**item, "resolution": _EMPTY_RESOLUTION} for item in items],
-            "apm_state": _apm_state_fingerprint(),
+            "apm_state": _apm_state_fingerprint(candidate_data),
         }
     )
     counts: dict[str, int] = {}
@@ -867,7 +1288,7 @@ def _plan(
     plan = {
         "schema_version": SCHEMA_VERSION,
         "coordinator": candidate_data["coordinator"],
-        "scope": candidate_data["scope"],
+        "scope": candidate_data.get("scope", "global"),
         "sources": candidate_data["sources"],
         "candidate_set_id": candidate_data["candidate_set_id"],
         "inventory_fingerprint": inventory,
@@ -876,22 +1297,9 @@ def _plan(
         "warnings": [],
         "blockers": blockers,
     }
-    immutable = {**plan, "items": [{**item, "resolution": _EMPTY_RESOLUTION} for item in items]}
-    plan_id = _digest(immutable)
-    resolution_id = _resolution_identity(items)
-    operation = _digest(
-        {
-            "candidate_set_id": candidate_data["candidate_set_id"],
-            "plan_id": plan_id,
-            "resolution_id": resolution_id,
-        }
-    )[:32]
-    return {
-        **plan,
-        "plan_id": plan_id,
-        "resolution_id": resolution_id,
-        "operation_id": operation,
-    }
+    if project_root is not None:
+        plan["project_root"] = str(project_root)
+    return _bind_plan_identity(plan)
 
 
 def _contains_blocked(value: Any) -> bool:
@@ -930,6 +1338,28 @@ def _resolution_identity(items: list[dict[str, Any]]) -> str:
         key=lambda entry: entry["item_id"],
     )
     return _digest(entries)
+
+
+def _bind_plan_identity(plan: dict[str, Any]) -> dict[str, Any]:
+    immutable = {
+        **plan,
+        "items": [{**item, "resolution": _EMPTY_RESOLUTION} for item in plan["items"]],
+    }
+    plan_id = _digest(immutable)
+    resolution_id = _resolution_identity(plan["items"])
+    operation_id = _digest(
+        {
+            "candidate_set_id": plan["candidate_set_id"],
+            "plan_id": plan_id,
+            "resolution_id": resolution_id,
+        }
+    )[:32]
+    return {
+        **plan,
+        "plan_id": plan_id,
+        "resolution_id": resolution_id,
+        "operation_id": operation_id,
+    }
 
 
 def _effective_targets(item: dict[str, Any]) -> list[str]:
@@ -1020,7 +1450,6 @@ def _validate_plan(data: Any, candidates: dict[str, Any]) -> dict[str, Any]:
         "operation_id",
         "plan_id",
         "resolution_id",
-        "scope",
         "sources",
         "candidate_set_id",
         "inventory_fingerprint",
@@ -1029,20 +1458,35 @@ def _validate_plan(data: Any, candidates: dict[str, Any]) -> dict[str, Any]:
         "warnings",
         "blockers",
     }
-    if not isinstance(data, dict) or set(data) != required:
+    optional = {"scope", "project_root"}
+    if not isinstance(data, dict) or not required.issubset(data) or set(data) - required - optional:
         raise ImportProtocolError("plan schema fields mismatch")
     if data["schema_version"] != SCHEMA_VERSION or data["coordinator"] != candidates["coordinator"]:
         raise ImportProtocolError("plan coordinator/schema mismatch")
     if data["candidate_set_id"] != candidates["candidate_set_id"]:
         raise ImportProtocolError("plan is bound to a different candidate set")
+    plan_scope = _scope_identity(data)
+    candidate_scope = _scope_identity(candidates)
+    if plan_scope != candidate_scope:
+        raise ImportProtocolError("plan and candidate project roots do not match; rescan")
     resolutions = {item["id"]: item.get("resolution", {}) for item in data["items"]}
     expected = _plan(candidates, resolutions)
+    if "scope" not in data:
+        expected.pop("scope", None)
+        expected = _bind_plan_identity(
+            {
+                key: value
+                for key, value in expected.items()
+                if key not in {"plan_id", "resolution_id", "operation_id"}
+            }
+        )
     if _canonical(data) != _canonical(expected):
         raise ImportProtocolError("reviewed plan immutable fields or resolution identity changed")
     return data
 
 
 def _validate_plan_identity(data: dict[str, Any]) -> None:
+    _scope_identity(data)
     body = {
         key: value
         for key, value in data.items()
@@ -1067,6 +1511,28 @@ def _validate_plan_identity(data: dict[str, Any]) -> None:
         data.get("operation_id"),
     ):
         raise ImportProtocolError("reviewed plan identity is invalid")
+
+
+def _validate_apply_scope(
+    plan: dict[str, Any], project_root: Path | None
+) -> tuple[str, Path | None]:
+    scope, plan_root = _scope_identity(plan)
+    requested_root = (
+        _canonical_project_root(project_root)
+        if project_root is not None
+        else plan_root
+        if scope == "project"
+        else None
+    )
+    if (scope == "project" and requested_root != plan_root) or (
+        scope == "global" and requested_root is not None
+    ):
+        raise ImportProtocolError("apply scope/project root mismatch; rescan")
+    if plan_root is not None:
+        for managed_path in (plan_root / "apm.yml", plan_root / "apm.lock.yaml"):
+            if managed_path.is_symlink():
+                raise ImportProtocolError(f"project APM state is a symlink: {managed_path}")
+    return scope, plan_root
 
 
 def _resolve_source(candidate: dict[str, Any], preimages: dict[str, dict[str, Any]]) -> Path | None:
@@ -1149,11 +1615,25 @@ def _copy_source(source: Path, destination: Path, approved: set[str]) -> None:
 
 
 def _staged_fingerprint(candidate: dict[str, Any], staged_source: Path) -> str:
-    if candidate["payload"] == {"source": "secured-path"}:
+    if candidate["payload"].get("source") == "secured-path":
         return _preimage(staged_source)["content_fingerprint"]
     payload = _load_structured(staged_source)
     clean, _ = _sanitize(payload)
     return _digest(clean)
+
+
+def _replace_hook_paths(value: Any, variants: set[str], replacement: str) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _replace_hook_paths(child, variants, replacement) for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_hook_paths(child, variants, replacement) for child in value]
+    if isinstance(value, str):
+        for variant in sorted(variants, key=len, reverse=True):
+            if variant:
+                value = value.replace(variant, replacement)
+    return value
 
 
 def _snapshot(
@@ -1162,6 +1642,7 @@ def _snapshot(
     source: Path,
     expected_source: dict[str, Any],
     operation_id: str,
+    preimages: dict[str, dict[str, Any]] | None = None,
 ) -> Path:
     slug = re.sub(r"[^a-z0-9._-]+", "-", candidate["name"].lower()).strip("-") or "imported"
     target_key = "-".join(sorted(candidate["source_target"]))
@@ -1184,8 +1665,85 @@ def _snapshot(
     stage = root.make_directory(stage_name)
     try:
         kind = candidate["kind"]
+        layout = candidate["payload"].get("import_layout")
         approved = set(item["resolution"].get("approved_executables", []))
-        if kind == "plugin":
+        metadata_extra: dict[str, Any] = {}
+        if layout == "compiled-instruction":
+            target = candidate["payload"]["target"]
+            if candidate["source_target"] != [target]:
+                raise ImportProtocolError("compiled instruction target mismatch")
+            relative = Path(candidate["payload"]["relative_path"])
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ImportProtocolError("compiled instruction path escapes target root")
+            destination = stage / ".apm" / "native" / "instructions" / target / relative
+            _copy_source(source, destination, approved)
+            metadata_extra = {
+                "layout": layout,
+                "target": target,
+                "format_id": candidate["payload"]["format_id"],
+                "relative_path": relative.as_posix(),
+            }
+        elif layout == "workflow":
+            row = candidate["payload"].get("workflow")
+            if not isinstance(row, dict) or not isinstance(row.get("prompt"), str):
+                raise ImportProtocolError("workflow candidate payload is malformed")
+            frontmatter = {
+                key: row[key]
+                for key in (
+                    "name",
+                    "interval",
+                    "schedule_hour",
+                    "schedule_day",
+                    "mode",
+                    "model",
+                    "reasoning_effort",
+                )
+                if row.get(key) is not None
+            }
+            destination = stage / ".apm" / "prompts" / f"{slug}.prompt.md"
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            atomic_write_text(
+                destination,
+                f"---\n{yaml_to_str(frontmatter, sort_keys=False).rstrip()}\n---\n{row['prompt']}",
+                new_file_mode=0o600,
+            )
+            metadata_extra = {"layout": layout, "workflow": row}
+        elif layout == "hook-bundle":
+            if preimages is None:
+                raise ImportProtocolError("hook snapshot preimages are missing")
+            descriptor = candidate["payload"].get("descriptor")
+            scripts = candidate["payload"].get("scripts")
+            if not isinstance(descriptor, dict) or not isinstance(scripts, list):
+                raise ImportProtocolError("hook bundle payload is malformed")
+            rewritten = json.loads(json.dumps(descriptor))
+            destination = stage / ".apm" / "hooks" / f"{slug}.json"
+            for script in scripts:
+                if not isinstance(script, dict) or script.get("preimage_id") not in preimages:
+                    raise ImportProtocolError("hook script preimage is missing")
+                expected = preimages[script["preimage_id"]]
+                script_source = Path(expected["absolute_path"])
+                relative = Path(str(script.get("relative_path", "")))
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ImportProtocolError("hook script path escapes native root")
+                staged_relative = Path("resources") / relative
+                replacement = f"./{staged_relative.as_posix()}"
+                variants = {str(script_source), relative.as_posix()}
+                with contextlib.suppress(ValueError):
+                    variants.add(script_source.relative_to(source.parent).as_posix())
+                rewritten = _replace_hook_paths(rewritten, variants, replacement)
+                _copy_source(script_source, destination.parent / staged_relative, approved)
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            atomic_write_text(
+                destination,
+                json.dumps(rewritten, indent=2, sort_keys=True) + "\n",
+                new_file_mode=0o600,
+            )
+            metadata_extra = {"layout": layout}
+        elif layout == "canvas":
+            destination = stage / ".apm" / "extensions" / slug
+            _copy_source(source, destination, approved)
+            metadata_extra = {"layout": layout}
+        elif kind == "plugin":
             for entry in _tree_entries(source):
                 if (
                     entry["kind"] == "file"
@@ -1218,7 +1776,12 @@ def _snapshot(
         else:
             raise ImportProtocolError(f"unsupported snapshot kind: {kind}")
         manifest: dict[str, Any] = {"name": f"imported-{slug}", "version": "1.0.0"}
-        if kind == "plugin":
+        if kind == "plugin" or layout in {
+            "compiled-instruction",
+            "workflow",
+            "hook-bundle",
+            "canvas",
+        }:
             pass
         elif destination is not None:
             _copy_source(source, destination, approved)
@@ -1246,6 +1809,7 @@ def _snapshot(
             "targets": candidate["source_target"],
             "kind": kind,
             "operation_id": operation_id,
+            **metadata_extra,
         }
         atomic_write_text(
             stage / ".apm-import.json",
@@ -1299,10 +1863,22 @@ def _record_ownership(candidate: dict[str, Any], targets: list[str], operation_i
     return path
 
 
-def _update_manifest(dependencies: list[Any], mcp_dependencies: list[dict[str, Any]]) -> Path:
-    path = Path.home() / ".apm" / "apm.yml"
+def _update_manifest(
+    dependencies: list[Any],
+    mcp_dependencies: list[dict[str, Any]],
+    *,
+    path: Path | None = None,
+) -> Path:
+    path = path or Path.home() / ".apm" / "apm.yml"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    data = load_yaml(path) if path.is_file() else {"name": "global", "version": "1.0.0"}
+    data = (
+        load_yaml(path)
+        if path.is_file()
+        else {
+            "name": "global" if path.parent.name == ".apm" else path.parent.name,
+            "version": "1.0.0",
+        }
+    )
     if not isinstance(data, dict):
         raise ImportProtocolError("global APM manifest is not an object")
     dep_root = data.setdefault("dependencies", {})
@@ -1320,23 +1896,28 @@ def _update_manifest(dependencies: list[Any], mcp_dependencies: list[dict[str, A
 
 
 def _register_marketplace(name: str, payload: dict[str, Any]) -> None:
+    from apm_cli.marketplace.models import MarketplaceSource
+
     source = payload.get("source", payload)
-    repo = source.get("repo") if isinstance(source, dict) else None
-    owner = source.get("owner") if isinstance(source, dict) else None
-    if isinstance(repo, str) and "/" in repo and not owner:
-        owner, repo = repo.split("/", 1)
-    if not isinstance(owner, str) or not isinstance(repo, str):
-        raise ImportProtocolError(f"marketplace {name} has no canonical owner/repo")
+    if not isinstance(source, dict) or not isinstance(source.get("url"), str):
+        raise ImportProtocolError(f"marketplace {name} has no canonical URL")
+    normalized = MarketplaceSource(
+        name=name,
+        url=source["url"],
+        ref=str(source.get("ref") or "main"),
+        path=str(source.get("path") or "marketplace.json"),
+    ).to_dict()
+    if isinstance(source.get("install_path"), str):
+        normalized["install_path"] = source["install_path"]
     path = Path.home() / ".apm" / "marketplaces.json"
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {"marketplaces": []}
     entries = data.setdefault("marketplaces", [])
-    entry = {"name": name, "owner": owner, "repo": repo}
     matching = [item for item in entries if item.get("name") == name]
-    if matching and matching != [entry]:
+    if matching and matching != [normalized]:
         raise ImportProtocolError(f"marketplace name collision: {name}")
     if not matching:
-        entries.append(entry)
+        entries.append(normalized)
     _write_json(path.resolve(), data)
 
 
@@ -1369,65 +1950,64 @@ def _remove_activation(value: Any, needle: str) -> Any:
 def _capture_plugin_activation(
     candidate: dict[str, Any], source: Path, journal: dict[str, Any]
 ) -> None:
-    target = candidate["source_target"][0]
-    config = _root_path(target) / "plugins" / "installed_plugins.json"
-    if not config.is_file() or config.is_symlink():
-        return
-    raw = config.read_bytes()
-    data = json.loads(raw)
-    if not _contains_text(data, str(source)):
-        return
-    if any(
-        record["path"] == str(config.resolve()) for record in journal.get("retired_activations", [])
-    ):
-        return
-    backup_name = f"activation-{_digest(str(config))[:16]}.base64"
-    backup = journal_root(journal["operation_id"], create=True).write_text(
-        backup_name, base64.b64encode(raw).decode("ascii") + "\n"
-    )
-    journal.setdefault("retired_activations", []).append(
-        {
-            "path": str(config.resolve()),
-            "backup": str(backup),
-            "source": str(source),
-            "mode": stat.S_IMODE(config.stat().st_mode),
-            "hash": hashlib.sha256(raw).hexdigest(),
-        }
-    )
+    for raw_path in candidate["payload"].get("activation_paths", []):
+        config = Path(raw_path)
+        state = capture_activation(config)
+        data = json.loads(state.data)
+        if not _contains_text(data, str(source)):
+            continue
+        if any(
+            record["path"] == str(state.path) and record["source"] == str(source)
+            for record in journal.get("retired_activations", [])
+        ):
+            continue
+        backup_name = f"activation-{_digest((str(state.path), str(source)))[:16]}.base64"
+        backup = journal_root(journal["operation_id"], create=True).write_text(
+            backup_name, base64.b64encode(state.data).decode("ascii") + "\n"
+        )
+        journal.setdefault("retired_activations", []).append(
+            {
+                "path": str(state.path),
+                "backup": str(backup),
+                "source": str(source),
+                "mode": state.mode,
+                "hash": hashlib.sha256(state.data).hexdigest(),
+            }
+        )
 
 
 def _retire_plugin_activation(
     candidate: dict[str, Any], source: Path, journal: dict[str, Any]
 ) -> None:
-    target = candidate["source_target"][0]
-    config = _root_path(target) / "plugins" / "installed_plugins.json"
-    if not config.is_file() or config.is_symlink():
-        return
-    data = json.loads(config.read_text(encoding="utf-8"))
-    if not _contains_text(data, str(source)):
-        return
-    updated = dict(data)
-    plugins = updated.get("plugins")
-    if isinstance(plugins, dict):
-        updated_plugins = dict(plugins)
-        for key, installs in plugins.items():
-            if isinstance(installs, list):
-                kept = [entry for entry in installs if not _contains_text(entry, str(source))]
-                if kept:
-                    updated_plugins[key] = kept
-                else:
+    for raw_path in candidate["payload"].get("activation_paths", []):
+        config = Path(raw_path)
+        if not config.is_file() or config.is_symlink():
+            raise ImportProtocolError(f"plugin activation disappeared: {config}")
+        data = json.loads(config.read_text(encoding="utf-8"))
+        if not _contains_text(data, str(source)):
+            continue
+        updated = dict(data)
+        plugins = updated.get("plugins")
+        if isinstance(plugins, dict):
+            updated_plugins = dict(plugins)
+            for key, installs in plugins.items():
+                if isinstance(installs, list):
+                    kept = [entry for entry in installs if not _contains_text(entry, str(source))]
+                    if kept:
+                        updated_plugins[key] = kept
+                    else:
+                        updated_plugins.pop(key, None)
+                elif _contains_text(installs, str(source)):
                     updated_plugins.pop(key, None)
-            elif _contains_text(installs, str(source)):
-                updated_plugins.pop(key, None)
-        updated["plugins"] = updated_plugins
-    else:
-        updated = _remove_activation(data, str(source))
-    _write_json(config.resolve(), updated)
-    if _contains_text(updated, str(source)):
-        raise ImportProtocolError(f"failed to retire plugin activation: {source}")
+            updated["plugins"] = updated_plugins
+        else:
+            updated = _remove_activation(data, str(source))
+        _write_json(config.resolve(), updated)
+        if _contains_text(updated, str(source)):
+            raise ImportProtocolError(f"failed to retire plugin activation: {source}")
 
 
-def _install_manifest(path: Path, targets: list[str]) -> Any:
+def _install_manifest(path: Path, targets: list[str], *, user_scope: bool = True) -> Any:
     """Run the existing install application service while the import lock is held."""
     from apm_cli.constants import InstallMode
     from apm_cli.core.command_logger import InstallLogger
@@ -1450,19 +2030,23 @@ def _install_manifest(path: Path, targets: list[str]) -> Any:
     old_mcp_target_servers_present = (
         existing_lock._mcp_target_servers_present if existing_lock else True
     )
-    with contextlib.chdir(path.parent):
+    with (
+        contextlib.chdir(path.parent),
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
         result = InstallService().run(
             InstallRequest(
                 apm_package=package,
                 logger=logger,
-                scope=InstallScope.USER,
+                scope=InstallScope.USER if user_scope else InstallScope.PROJECT,
                 target=sorted(set(targets)),
             )
         )
         run_service_integrations(
             SimpleNamespace(
                 project_root=path.parent,
-                scope=InstallScope.USER,
+                scope=InstallScope.USER if user_scope else InstallScope.PROJECT,
                 install_mode=InstallMode.ALL,
                 logger=logger,
                 runtime=None,
@@ -1489,6 +2073,14 @@ def _install_manifest(path: Path, targets: list[str]) -> Any:
     return result
 
 
+def _install_import_manifest(path: Path, targets: list[str], scope: str) -> Any | None:
+    if not targets:
+        return None
+    if scope == "global":
+        return _install_manifest(path, targets)
+    return _install_manifest(path, targets, user_scope=False)
+
+
 def _verify_deployment(
     manifest_path: Path, journal: dict[str, Any], *, require_lock: bool = True
 ) -> None:
@@ -1497,7 +2089,7 @@ def _verify_deployment(
     package = APMPackage.from_apm_yml(manifest_path)
     if (
         require_lock
-        and package.get_apm_dependencies()
+        and (package.get_apm_dependencies() or package.get_all_mcp_dependencies())
         and not (manifest_path.parent / "apm.lock.yaml").is_file()
     ):
         raise ImportProtocolError("APM install produced no lockfile ownership record")
@@ -1566,9 +2158,12 @@ class ImportService:
         candidate_file: Path | None,
         plan_json: Path | None,
         coordinator: str,
+        project_root: Path | None = None,
     ) -> dict[str, Any]:
         if coordinator not in COORDINATORS:
             raise ImportProtocolError(f"unsupported coordinator: {coordinator}")
+        scope = "project" if project_root is not None else "global"
+        canonical_root = _canonical_project_root(project_root) if project_root is not None else None
         if candidate_file and candidate_file.is_file():
             _validate_protocol_file(candidate_file)
             data = _validate_candidate_envelope(
@@ -1576,16 +2171,21 @@ class ImportService:
             )
             if data["coordinator"] != coordinator:
                 raise ImportProtocolError("candidate coordinator mismatch")
+            existing_scope, existing_root = _scope_identity(data)
+            if existing_scope != scope or existing_root != canonical_root:
+                raise ImportProtocolError("candidate scope/project root mismatch; rescan")
             if sources:
                 candidates_by_id = {item["id"]: item for item in data["candidates"]}
                 preimages_by_id = {item["id"]: item for item in data["source_preimages"]}
-                for source in sorted(set(sources)):
-                    discovered, preimages = _discover_target(source)
-                    candidates_by_id.update((item["id"], item) for item in discovered)
-                    preimages_by_id.update((item["id"], item) for item in preimages)
-                unmanaged, unmanaged_preimages = _discover_unmanaged_clients()
-                candidates_by_id.update((item["id"], item) for item in unmanaged)
-                preimages_by_id.update((item["id"], item) for item in unmanaged_preimages)
+                discovered, preimages = _discover_targets(
+                    sorted(set(sources)), project_root=canonical_root
+                )
+                candidates_by_id.update((item["id"], item) for item in discovered)
+                preimages_by_id.update((item["id"], item) for item in preimages)
+                if scope == "global":
+                    unmanaged, unmanaged_preimages = _discover_unmanaged_clients(list(sources))
+                    candidates_by_id.update((item["id"], item) for item in unmanaged)
+                    preimages_by_id.update((item["id"], item) for item in unmanaged_preimages)
                 data["sources"] = sorted(set(data["sources"]) | set(sources))
                 data["source_preimages"] = sorted(
                     preimages_by_id.values(), key=lambda value: value["id"]
@@ -1593,42 +2193,34 @@ class ImportService:
                 data["candidates"] = sorted(
                     candidates_by_id.values(), key=lambda value: value["id"]
                 )
-                data["candidate_set_id"] = _digest(
-                    {
-                        "sources": data["sources"],
-                        "preimages": data["source_preimages"],
-                        "candidates": data["candidates"],
-                    }
-                )
+                data["candidate_set_id"] = _candidate_set_identity(data)
                 _write_json(candidate_file, data)
         else:
             all_candidates: list[dict[str, Any]] = []
             all_preimages: list[dict[str, Any]] = []
             normalized_sources = sorted(set(sources))
-            for source in normalized_sources:
-                candidates, preimages = _discover_target(source)
-                all_candidates.extend(candidates)
-                all_preimages.extend(preimages)
-            unmanaged, unmanaged_preimages = _discover_unmanaged_clients()
-            all_candidates.extend(unmanaged)
-            all_preimages.extend(unmanaged_preimages)
+            candidates, preimages = _discover_targets(
+                normalized_sources, project_root=canonical_root
+            )
+            all_candidates.extend(candidates)
+            all_preimages.extend(preimages)
+            if scope == "global":
+                unmanaged, unmanaged_preimages = _discover_unmanaged_clients(normalized_sources)
+                all_candidates.extend(unmanaged)
+                all_preimages.extend(unmanaged_preimages)
             preimages_by_id = {item["id"]: item for item in all_preimages}
             data = {
                 "schema_version": SCHEMA_VERSION,
                 "coordinator": coordinator,
-                "scope": "global",
+                "scope": scope,
                 "sources": normalized_sources,
                 "candidate_set_id": "",
                 "source_preimages": sorted(preimages_by_id.values(), key=lambda value: value["id"]),
                 "candidates": sorted(all_candidates, key=lambda value: value["id"]),
             }
-            data["candidate_set_id"] = _digest(
-                {
-                    "sources": data["sources"],
-                    "preimages": data["source_preimages"],
-                    "candidates": data["candidates"],
-                }
-            )
+            if canonical_root is not None:
+                data["project_root"] = str(canonical_root)
+            data["candidate_set_id"] = _candidate_set_identity(data)
             if candidate_file:
                 _write_json(candidate_file, data)
         plan = _plan(data)
@@ -1655,6 +2247,7 @@ class ImportService:
         coordinator: str,
         omni_preimage_set: str | None,
         token: bytes | None,
+        project_root: Path | None = None,
     ) -> dict[str, Any]:
         _validate_protocol_file(candidate_file)
         _validate_protocol_file(plan_file)
@@ -1667,6 +2260,7 @@ class ImportService:
         )
         plan_data = json.loads(plan_file.read_text(encoding="utf-8"))
         _validate_plan_identity(plan_data)
+        scope, plan_root = _validate_apply_scope(plan_data, project_root)
         operation = plan_data["operation_id"]
         existing = read_journal(operation)
         plan = plan_data if existing else _validate_plan(plan_data, candidates)
@@ -1693,6 +2287,10 @@ class ImportService:
             }
             if any(existing.get(key) != value for key, value in expected_binding.items()):
                 raise ImportProtocolError("journal binding does not match reviewed resolution")
+            if scope == "project" and (
+                existing.get("scope") != "project" or existing.get("project_root") != str(plan_root)
+            ):
+                raise ImportProtocolError("journal project root does not match reviewed plan")
         if existing and existing.get("state") in {"complete", "awaiting-external-commit"}:
             if (
                 token
@@ -1707,6 +2305,8 @@ class ImportService:
             "schema_version": SCHEMA_VERSION,
             "operation_id": operation,
             "coordinator": coordinator,
+            "scope": scope,
+            "project_root": str(plan_root) if plan_root is not None else None,
             "state": "recoverable-partial",
             "phase": "planned",
             "candidate_set_id": candidates["candidate_set_id"],
@@ -1716,7 +2316,9 @@ class ImportService:
             "omni_preimage_set": omni_preimage_set,
             "token_hash": hashlib.sha256(token).hexdigest() if token else None,
             "created_paths": [],
-            "manifest_path": str(Path.home() / ".apm" / "apm.yml"),
+            "manifest_path": str(
+                plan_root / "apm.yml" if plan_root is not None else Path.home() / ".apm" / "apm.yml"
+            ),
             "cleaned": False,
         }
         with allow_operation(operation), lifecycle_operation():
@@ -1724,24 +2326,34 @@ class ImportService:
                 write_journal(journal)
                 if "backups" not in journal:
                     journal["backups"] = []
-                    for index, managed_path in enumerate(
+                    managed_paths = (
                         (
+                            Path(journal["manifest_path"]),
+                            plan_root / "apm.lock.yaml",
+                        )
+                        if plan_root is not None
+                        else (
                             Path(journal["manifest_path"]),
                             Path.home() / ".apm" / "marketplaces.json",
                             Path.home() / ".apm" / "import-exclusions.yml",
                         )
-                    ):
+                    )
+                    for index, managed_path in enumerate(managed_paths):
                         record = {
                             "path": str(managed_path),
                             "existed": managed_path.is_file(),
                             "backup": None,
+                            "mode": None,
+                            "encoding": "base64",
                         }
                         if managed_path.is_file():
+                            raw = managed_path.read_bytes()
                             backup = journal_root(operation, create=True).write_text(
-                                f"managed-{index}.backup",
-                                managed_path.read_text(encoding="utf-8"),
+                                f"managed-{index}.base64",
+                                base64.b64encode(raw).decode("ascii") + "\n",
                             )
                             record["backup"] = str(backup)
+                            record["mode"] = stat.S_IMODE(managed_path.stat().st_mode)
                         journal["backups"].append(record)
                 journal["phase"] = "backed-up"
                 write_journal(journal)
@@ -1749,7 +2361,7 @@ class ImportService:
                 preimages = {item["id"]: item for item in candidates["source_preimages"]}
                 dependencies: list[Any] = []
                 mcp_dependencies: list[dict[str, Any]] = []
-                exclusions = _load_exclusions()
+                exclusions = _load_exclusions() if scope == "global" else {}
                 imported_plugins: list[tuple[dict[str, Any], Path]] = []
                 effective_install_targets: set[str] = set()
                 for item in plan["items"]:
@@ -1785,7 +2397,6 @@ class ImportService:
                         "proposed_targets": candidate["source_target"],
                     }
                     effective_targets = _effective_targets(target_item)
-                    effective_install_targets.update(effective_targets)
                     if item["classification"] == "needs-choice" and not item["resolution"].get(
                         "decision"
                     ):
@@ -1826,17 +2437,24 @@ class ImportService:
                         item["classification"] == "conflict" and not resolved_conflict
                     ):
                         raise ImportProtocolError(f"item is not importable: {item['id']}")
+                    effective_install_targets.update(effective_targets)
                     if candidate["kind"] == "marketplace":
                         _register_marketplace(candidate["name"], candidate["payload"])
+                        ownership = _record_ownership(candidate, effective_targets, operation)
+                        journal["created_paths"].append(str(ownership))
                         continue
                     if candidate["kind"] == "plugin" and candidate["provenance"] == "marketplace":
-                        dependencies.append(
-                            {
-                                "name": candidate["payload"]["plugin"],
-                                "marketplace": candidate["payload"]["marketplace"],
-                                "targets": effective_targets,
-                            }
-                        )
+                        dependency = {
+                            "name": candidate["payload"]["plugin"],
+                            "marketplace": candidate["payload"]["marketplace"],
+                            "targets": effective_targets,
+                        }
+                        for key in ("version", "ref"):
+                            if isinstance(candidate["payload"].get(key), str):
+                                dependency[key] = candidate["payload"][key]
+                        dependencies.append(dependency)
+                        ownership = _record_ownership(candidate, effective_targets, operation)
+                        journal["created_paths"].append(str(ownership))
                         source = _resolve_source(candidate, preimages)
                         if source is not None:
                             imported_plugins.append((candidate, source))
@@ -1860,18 +2478,31 @@ class ImportService:
                     )
                     if structured_dependency is not None:
                         dependencies.append(structured_dependency)
+                        if candidate["kind"] == "plugin":
+                            ownership = _record_ownership(candidate, effective_targets, operation)
+                            journal["created_paths"].append(str(ownership))
+                            source = _resolve_source(candidate, preimages)
+                            if source is not None:
+                                imported_plugins.append((candidate, source))
                         continue
                     if candidate["kind"] == "mcp":
                         mcp_dependency = {
                             **candidate["payload"],
                             "name": candidate["name"],
                             "registry": False,
+                            "targets": effective_targets,
                         }
                         mcp_dependencies.append(mcp_dependency)
-                        ownership = _record_ownership(candidate, effective_targets, operation)
-                        journal["created_paths"].append(str(ownership))
+                        if scope == "global":
+                            ownership = _record_ownership(candidate, effective_targets, operation)
+                            journal["created_paths"].append(str(ownership))
                         continue
-                    source = _resolve_source(candidate, preimages)
+                    source = (
+                        Path(preimages[candidate["source_preimage_ids"][0]]["absolute_path"])
+                        if candidate["payload"].get("import_layout") == "hook-bundle"
+                        and candidate["source_preimage_ids"]
+                        else _resolve_source(candidate, preimages)
+                    )
                     if source is None:
                         raise ImportProtocolError(
                             f"candidate has no importable source: {candidate['id']}"
@@ -1890,7 +2521,14 @@ class ImportService:
                             "executable approval missing for: "
                             + ", ".join(sorted(missing_approvals))
                         )
-                    snapshot = _snapshot(candidate, item, source, expected_source, operation)
+                    snapshot = _snapshot(
+                        candidate,
+                        item,
+                        source,
+                        expected_source,
+                        operation,
+                        preimages,
+                    )
                     dependencies.append(
                         {
                             "path": str(snapshot),
@@ -1900,17 +2538,24 @@ class ImportService:
                     journal["created_paths"].append(str(snapshot))
                     if candidate["kind"] == "plugin":
                         imported_plugins.append((candidate, source))
-                if exclusions:
+                if exclusions and scope == "global":
                     _write_exclusions(exclusions)
                 for candidate, source in imported_plugins:
                     _capture_plugin_activation(candidate, source, journal)
                 journal["phase"] = "packages-staged"
                 write_journal(journal)
-                manifest_path = _update_manifest(dependencies, mcp_dependencies)
+                manifest_path = _update_manifest(
+                    dependencies,
+                    mcp_dependencies,
+                    path=Path(journal["manifest_path"]),
+                )
                 journal["phase"] = "manifest-prepared"
                 write_journal(journal)
-                targets = sorted(effective_install_targets & {"claude", "codex"})
-                install_result = _install_manifest(manifest_path, targets)
+                targets = sorted(
+                    effective_install_targets
+                    & (set(KNOWN_TARGETS) | set(ClientFactory.supported_clients()))
+                )
+                install_result = _install_import_manifest(manifest_path, targets, scope)
                 journal["phase"] = "installed"
                 write_journal(journal)
                 _verify_deployment(manifest_path, journal, require_lock=install_result is not None)
@@ -1935,6 +2580,8 @@ class ImportService:
                 )
                 write_journal(journal)
             except Exception:
+                if journal.get("retired_activations"):
+                    _restore_retired_activations(journal)
                 journal["state"] = "recoverable-partial"
                 write_journal(journal)
                 raise
@@ -2030,6 +2677,8 @@ class ImportService:
         ):
             raise ImportProtocolError(f"operation is resume-only from {phase}")
         with allow_operation(operation_id), lifecycle_operation():
+            if journal.get("retired_activations"):
+                _restore_retired_activations(journal)
             for raw in reversed(journal.get("created_paths", [])):
                 path = Path(raw).resolve(strict=False)
                 imported = (Path.home() / ".apm" / "imported").resolve(strict=False)
@@ -2038,13 +2687,20 @@ class ImportService:
             for record in journal.get("backups", []):
                 managed_path = Path(record["path"])
                 if record["existed"] and record["backup"]:
-                    managed_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                    atomic_write_text(
-                        managed_path,
-                        Path(record["backup"]).read_text(encoding="utf-8"),
-                        new_file_mode=0o600,
-                    )
-                    harden_path(managed_path)
+                    if record.get("encoding") == "base64":
+                        raw = base64.b64decode(
+                            Path(record["backup"]).read_text(encoding="utf-8").strip(),
+                            validate=True,
+                        )
+                        restore_file_bytes(managed_path, raw, int(record.get("mode") or 0o600))
+                    else:
+                        managed_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        atomic_write_text(
+                            managed_path,
+                            Path(record["backup"]).read_text(encoding="utf-8"),
+                            new_file_mode=0o600,
+                        )
+                        harden_path(managed_path)
                 elif managed_path.is_file() and not managed_path.is_symlink():
                     managed_path.unlink()
             journal["state"] = "rolled-back"
