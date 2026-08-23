@@ -494,7 +494,8 @@ def test_plugin_activation_is_restored_when_post_retirement_gate_fails(monkeypat
         )
 
     assert installed_path.read_bytes() == original
-    assert stat.S_IMODE(installed_path.stat().st_mode) == original_mode
+    if os.name != "nt":
+        assert stat.S_IMODE(installed_path.stat().st_mode) == original_mode
     journal = read_journal(plan["operation_id"])
     assert journal["phase"] == "ownership-verified"
     assert journal["state"] == "recoverable-partial"

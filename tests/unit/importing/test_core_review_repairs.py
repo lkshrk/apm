@@ -309,17 +309,20 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
     skill = home / ".agents/skills/shared/SKILL.md"
     plugin = home / ".claude/plugins/cache/demo/.claude-plugin/plugin.json"
     canvas = home / ".copilot/extensions/diagram/extension.mjs"
+    hook = home / ".copilot/hooks/lifecycle-hooks.json"
     mcp = home / ".codex/config.toml"
     agent.parent.mkdir(parents=True)
     skill.parent.mkdir(parents=True)
     plugin.parent.mkdir(parents=True)
     canvas.parent.mkdir(parents=True)
+    hook.parent.mkdir(parents=True)
     mcp.parent.mkdir(parents=True)
     agent.write_text("agent\n", encoding="utf-8")
     compiled.write_text("compiled\n", encoding="utf-8")
     skill.write_text("skill\n", encoding="utf-8")
     plugin.write_text('{"name":"demo-plugin"}\n', encoding="utf-8")
     canvas.write_text("export default {}\n", encoding="utf-8")
+    hook.write_text('{"hooks":{"PreToolUse":[]}}\n', encoding="utf-8")
     if os.name != "nt":
         canvas.chmod(0o755)
     mcp.write_text(
@@ -371,7 +374,15 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
         item
         for item in managed["items"]
         if item["name"]
-        in {"demo", "shared", "compiled-claude-md", "demo-plugin", "diagram", "demo-mcp"}
+        in {
+            "demo",
+            "shared",
+            "compiled-claude-md",
+            "demo-plugin",
+            "diagram",
+            "lifecycle-hooks",
+            "demo-mcp",
+        }
     ]
     assert {item["classification"] for item in relevant} == {"already-managed"}
     assert {item["kind"] for item in relevant} >= {
@@ -380,6 +391,7 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
         "instruction",
         "plugin",
         "package",
+        "hook",
         "mcp",
     }
     agent.write_text("drift\n", encoding="utf-8")
@@ -393,6 +405,12 @@ def test_normal_global_lock_hashes_mark_outputs_managed_and_drift_visible(monkey
         next(item for item in drift["items"] if item["name"] == "demo")["classification"]
         == "local-package"
     )
+
+
+def test_ownership_path_keys_normalize_windows_and_posix_separators(tmp_path):
+    assert service._ownership_path_key(
+        ".copilot\\hooks\\lifecycle-hooks.json", home=tmp_path
+    ) == service._ownership_path_key(".copilot/hooks/lifecycle-hooks.json", home=tmp_path)
 
 
 def _user_mapping_cases():

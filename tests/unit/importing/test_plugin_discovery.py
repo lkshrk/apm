@@ -81,7 +81,7 @@ def test_marketplace_provenance_preserves_ref_version_and_install_path(tmp_path:
     assert source["url"] == "https://github.com/owner/repo"
     assert source["ref"] == "stable"
     assert source["path"] == "catalog/marketplace.json"
-    assert source["install_path"].endswith("plugins/marketplaces/market")
+    assert Path(source["install_path"]).parts[-3:] == ("plugins", "marketplaces", "market")
 
 
 def test_clean_local_git_plugin_uses_immutable_revision(tmp_path: Path) -> None:

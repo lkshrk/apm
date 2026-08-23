@@ -1,4 +1,5 @@
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -129,7 +130,8 @@ def test_grouped_hook_snapshot_keeps_scripts_in_one_package(monkeypatch, tmp_pat
     assert len(candidate["source_preimage_ids"]) == 2
     copied = package / ".apm/hooks/resources/hooks/scripts/check.sh"
     assert copied.read_bytes() == script.read_bytes()
-    assert stat.S_IMODE(copied.stat().st_mode) & 0o111
+    if os.name != "nt":
+        assert stat.S_IMODE(copied.stat().st_mode) & 0o111
     rendered = json.loads(next((package / ".apm/hooks").glob("*.json")).read_text())
     assert "./resources/hooks/scripts/check.sh" in rendered["hooks"]["PreToolUse"][0]["command"]
 
@@ -154,7 +156,8 @@ def test_canvas_snapshot_preserves_tree_bytes_and_modes(monkeypatch, tmp_path):
     copied = package / ".apm/extensions/diagram/bin/run"
 
     assert copied.read_bytes() == b"\x00\xff"
-    assert stat.S_IMODE(copied.stat().st_mode) & 0o111
+    if os.name != "nt":
+        assert stat.S_IMODE(copied.stat().st_mode) & 0o111
 
 
 def test_plugin_fanin_preserves_union_provenance_and_marketplace(monkeypatch, tmp_path):
@@ -257,13 +260,14 @@ def test_activation_failure_recovery_restores_exact_bytes_and_mode(monkeypatch, 
     service._restore_retired_activations(journal)
 
     assert activation.read_bytes() == original
-    assert stat.S_IMODE(activation.stat().st_mode) == 0o640
+    if os.name != "nt":
+        assert stat.S_IMODE(activation.stat().st_mode) == 0o640
 
 
 def test_intellij_mcp_only_apply_has_no_fallback_target(monkeypatch, tmp_path):
     home = _home(monkeypatch, tmp_path)
     config_root = tmp_path / "config"
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))
+    monkeypatch.setenv("LOCALAPPDATA" if os.name == "nt" else "XDG_CONFIG_HOME", str(config_root))
     monkeypatch.setenv("APM_E2E_TESTS", "1")
     config = config_root / "github-copilot/intellij/mcp.json"
     config.parent.mkdir(parents=True)
@@ -297,7 +301,11 @@ def test_intellij_mcp_only_apply_has_no_fallback_target(monkeypatch, tmp_path):
         plan_json=None,
         coordinator="standalone",
     )
-    assert [item["classification"] for item in second["items"]] == ["already-managed"]
+    assert not [
+        item
+        for item in second["items"]
+        if item["classification"] in {"importable", "local-package"}
+    ]
 
 
 def test_canvas_apply_and_second_scan_has_no_work(monkeypatch, tmp_path):

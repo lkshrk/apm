@@ -102,6 +102,14 @@ def _sensitive_name(value: object) -> bool:
     )
 
 
+def _ownership_path_key(path: str | Path, *, home: Path | None = None) -> str:
+    """Normalize lockfile paths across slash direction and Windows case rules."""
+    candidate = Path(str(path).replace("\\", "/")).expanduser()
+    if not candidate.is_absolute():
+        candidate = (home or Path.home()) / candidate
+    return os.path.normcase(os.path.normpath(str(candidate.resolve(strict=False))))
+
+
 class ImportProtocolError(RuntimeError):
     """Strict protocol or stale-plan error."""
 
@@ -963,15 +971,20 @@ def _managed_ids(candidate_data: dict[str, Any]) -> set[str]:
             )
             if isinstance(item, dict)
         }
-        claims: dict[Path, str] = {}
+        claims: dict[str, str] = {}
 
         def add_claims(paths: list[str], hashes: dict[str, str]) -> None:
+            normalized_hashes = {
+                _ownership_path_key(raw): value.removeprefix("sha256:")
+                for raw, value in hashes.items()
+                if "://" not in raw
+            }
             for raw in paths:
-                if "://" in raw or raw not in hashes:
+                if "://" in raw:
                     continue
-                path = Path(raw).expanduser()
-                absolute = path if path.is_absolute() else Path.home() / path
-                claims[absolute.resolve(strict=False)] = hashes[raw].removeprefix("sha256:")
+                key = _ownership_path_key(raw)
+                if key in normalized_hashes:
+                    claims[key] = normalized_hashes[key]
 
         add_claims(lock.local_deployed_files, lock.local_deployed_file_hashes)
         for dependency in lock.dependencies.values():
@@ -984,11 +997,11 @@ def _managed_ids(candidate_data: dict[str, Any]) -> set[str]:
             if preimage["kind"] == "file":
                 if path_boundary_error(path.parent, path):
                     return False
-                return claims.get(path.resolve(strict=False)) == preimage["content_fingerprint"]
+                return claims.get(_ownership_path_key(path)) == preimage["content_fingerprint"]
             files = sorted(item for item in path.rglob("*") if item.is_file())
             return bool(files) and all(
                 path_boundary_error(path, item) is None
-                and claims.get(item.resolve(strict=False)) == _file_hash(item)
+                and claims.get(_ownership_path_key(item)) == _file_hash(item)
                 for item in files
             )
 
