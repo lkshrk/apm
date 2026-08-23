@@ -151,10 +151,11 @@ def cli(ctx, verbose: bool) -> None:
     """Main entry point for the APM CLI."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
-    from apm_cli.core.output_mode import configure_output_mode, detect_output_mode
+    from apm_cli.core.output_mode import OutputMode, configure_output_mode, detect_output_mode
 
     output_mode = detect_output_mode(ctx.meta.get("apm_raw_args", sys.argv[1:]))
     configure_output_mode(output_mode)
+    ctx.call_on_close(lambda: configure_output_mode(OutputMode()))
     ctx.obj["output_mode"] = output_mode
 
     if verbose:

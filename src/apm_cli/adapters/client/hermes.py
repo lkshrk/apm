@@ -103,7 +103,20 @@ class HermesClientAdapter(CopilotClientAdapter):
             env = copilot_entry.get("env")
             if env:
                 out["env"] = dict(env)
-        out["enabled"] = enabled
+        for key, value in copilot_entry.items():
+            if key not in {
+                "type",
+                "tools",
+                "id",
+                "command",
+                "args",
+                "env",
+                "url",
+                "headers",
+                "enabled",
+            }:
+                out[key] = value
+        out["enabled"] = copilot_entry.get("enabled", enabled)
         return out
 
     def get_config_path(self):

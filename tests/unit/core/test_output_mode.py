@@ -47,3 +47,21 @@ def test_human_output_is_not_machine_readable() -> None:
     from apm_cli.core.output_mode import detect_output_mode
 
     assert not detect_output_mode(("policy", "status", "--output", "table")).machine_readable
+
+
+def test_import_default_is_machine_readable() -> None:
+    from apm_cli.core.output_mode import detect_output_mode
+
+    assert detect_output_mode(("import", "--from", "vscode")).machine_readable
+
+
+def test_cli_restores_human_output_after_import(monkeypatch, tmp_path) -> None:
+    from apm_cli.cli import cli
+    from apm_cli.utils import console
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = CliRunner().invoke(cli, ["import", "--global"])
+
+    assert result.exception is None, result.output
+    json.loads(result.stdout)
+    assert console._console_stderr is False

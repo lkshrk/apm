@@ -10,9 +10,27 @@ from typing import Any
 
 import click
 
+from apm_cli.factory import ClientFactory
 from apm_cli.importing import ImportProtocolError, ImportService
+from apm_cli.integration.targets import KNOWN_TARGETS
 
 _OPERATION_ID = re.compile(r"^[a-f0-9]{32}$")
+
+
+def registered_import_sources() -> tuple[str, ...]:
+    """Return the canonical public import source names."""
+    return tuple(sorted(set(KNOWN_TARGETS) | set(ClientFactory.supported_clients())))
+
+
+def _expand_sources(sources: tuple[str, ...], *, global_: bool) -> tuple[str, ...]:
+    del global_
+    if "all" in sources:
+        if len(sources) != 1:
+            raise click.UsageError("--from all cannot be combined with another source")
+        return registered_import_sources()
+    if sources:
+        return tuple(sorted(set(sources)))
+    return registered_import_sources()
 
 
 def _emit(payload: dict[str, Any]) -> None:
@@ -72,7 +90,12 @@ def _fail(exc: Exception, *, operation_id: str | None = None) -> None:
 
 @click.group("import", invoke_without_command=True, help="Import existing native agent state")
 @click.option("--global", "global_", is_flag=True, help="Import user-global state")
-@click.option("--from", "sources", multiple=True, type=click.Choice(["claude", "codex"]))
+@click.option(
+    "--from",
+    "sources",
+    multiple=True,
+    type=click.Choice((*registered_import_sources(), "all")),
+)
 @click.option("--candidate-file", type=click.Path(path_type=str))
 @click.option("--plan-json", type=click.Path(path_type=str))
 @click.option("--apply-plan", type=click.Path(path_type=str))
@@ -102,8 +125,7 @@ def import_cmd(
     del format_
     if ctx.invoked_subcommand is not None:
         return
-    if not global_:
-        raise click.UsageError("native import currently requires --global")
+    project_root = None if global_ else Path.cwd()
     candidate_path = _path(candidate_file, "--candidate-file", required=bool(apply_plan))
     plan_path = _path(plan_json, "--plan-json")
     service = ImportService()
@@ -119,8 +141,10 @@ def import_cmd(
                 coordinator=coordinator,
                 omni_preimage_set=omni_preimage_set,
                 token=token,
+                project_root=project_root,
             )
         else:
+            sources = _expand_sources(sources, global_=global_)
             if not sources and not (candidate_path and candidate_path.is_file()):
                 raise click.UsageError("scan requires --from or an existing --candidate-file")
             operation = None
@@ -129,6 +153,7 @@ def import_cmd(
                 candidate_file=candidate_path,
                 plan_json=plan_path,
                 coordinator=coordinator,
+                project_root=project_root,
             )
         if apply_plan:
             _emit_result("import-apply-result", result)
@@ -168,12 +193,15 @@ def resume_cmd(
 ) -> None:
     del format_
     try:
+        plan_file = _path(apply_plan, "--apply-plan", required=True)
+        plan_data = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.is_file() else {}
         result = ImportService().resume(
             candidate_file=_path(candidate_file, "--candidate-file", required=True),
-            plan_file=_path(apply_plan, "--apply-plan", required=True),
+            plan_file=plan_file,
             coordinator=coordinator,
             omni_preimage_set=omni_preimage_set,
             token=_token_from_stdin(token_stdin),
+            project_root=Path.cwd() if plan_data.get("scope") == "project" else None,
         )
         if result["operation_id"] != operation:
             raise ImportProtocolError("resume operation does not match reviewed plan")

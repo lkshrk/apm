@@ -61,6 +61,17 @@ class GeminiClientAdapter(CopilotClientAdapter):
     # revisit in a follow-up.
     _supports_runtime_env_substitution: bool = False
 
+    def decode_server_config(self, name, native):
+        """Recover Gemini's transport encoded by ``url`` versus ``httpUrl``."""
+        if not isinstance(native, dict):
+            return super().decode_server_config(name, native)
+        config = dict(native)
+        if "httpUrl" in config:
+            config.setdefault("transport", "streamable-http")
+        elif "url" in config:
+            config.setdefault("transport", "sse")
+        return super().decode_server_config(name, config)
+
     def _get_config_dir(self) -> Path:
         """Return the ``.gemini`` directory for the active scope."""
         if self.user_scope:

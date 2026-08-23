@@ -47,6 +47,54 @@ class _TargetSelectionSource(StrEnum):
     INVALID_MANIFEST = "invalid-manifest"
 
 
+def _dependency_target_runtimes(
+    dep: object,
+    target_runtimes: list[str],
+    explicitly_selected_runtimes: tuple[str, ...] = (),
+) -> list[str]:
+    """Narrow one MCP dependency to its reviewed adapter targets."""
+    extra = getattr(dep, "extra", None)
+    if not isinstance(extra, dict) or "targets" not in extra:
+        return list(target_runtimes)
+
+    raw_targets = extra["targets"]
+    if not isinstance(raw_targets, list) or not all(isinstance(item, str) for item in raw_targets):
+        return []
+
+    from apm_cli.factory import ClientFactory
+
+    supported = ClientFactory.supported_clients()
+    allowed = {target for target in raw_targets if target in supported}
+    available = list(target_runtimes)
+    available.extend(
+        target
+        for target in explicitly_selected_runtimes
+        if target in supported and target not in available
+    )
+    return [target for target in available if target in allowed]
+
+
+def _explicit_mcp_runtimes(
+    explicit_target: str | list[str] | None,
+    target_decision: EffectiveTargetDecision | None,
+) -> tuple[str, ...]:
+    """Return exact selected MCP adapter names without target-family folding."""
+    from apm_cli.factory import ClientFactory
+
+    supported = ClientFactory.supported_clients()
+    raw = (
+        explicit_target if explicit_target is not None else getattr(target_decision, "value", None)
+    )
+    values = raw.split(",") if isinstance(raw, str) else list(raw or ())
+    return tuple(
+        dict.fromkeys(
+            value.strip()
+            for value in values
+            if isinstance(value, str) and value.strip() in supported
+        )
+    )
+
+
 def _install_registry_group(
     operations: Any,
     group_dep_names: list,
@@ -1014,17 +1062,32 @@ def run_mcp_install(
             )
         return 0
 
+    explicitly_selected_runtimes = _explicit_mcp_runtimes(explicit_target, target_decision)
+    dependency_runtimes = {
+        id(dep): _dependency_target_runtimes(
+            dep,
+            target_runtimes,
+            explicitly_selected_runtimes,
+        )
+        for dep in mcp_deps
+    }
+    active_dependency_runtimes = list(
+        dict.fromkeys(runtime for dep in mcp_deps for runtime in dependency_runtimes[id(dep)])
+    )
+    if not active_dependency_runtimes:
+        return 0
+
     if managed_target_servers is not None:
         from apm_cli.install.mcp.ownership import migrate_legacy_project_target_servers
 
         migrate_legacy_project_target_servers(
             managed_target_servers,
-            active_runtimes=set(target_runtimes),
+            active_runtimes=set(active_dependency_runtimes),
             user_scope=user_scope,
         )
 
     _migrate_intellij_managed_config(
-        target_runtimes,
+        active_dependency_runtimes,
         managed_target_servers,
         project_root=project_root,
         user_scope=user_scope,
@@ -1032,17 +1095,21 @@ def run_mcp_install(
     )
 
     if managed_target_servers is not None:
-        active_targets = set(target_runtimes)
-        current_names = {
-            dep.name if hasattr(dep, "name") else dep
-            for dep in mcp_deps
-            if isinstance(dep, str) or hasattr(dep, "name")
+        active_targets = set(active_dependency_runtimes)
+        current_names_by_target = {
+            target: {
+                dep.name if hasattr(dep, "name") else dep
+                for dep in mcp_deps
+                if (isinstance(dep, str) or hasattr(dep, "name"))
+                and target in dependency_runtimes[id(dep)]
+            }
+            for target in active_targets
         }
         for target in list(managed_target_servers):
             if target not in active_targets:
                 del managed_target_servers[target]
             else:
-                managed_target_servers[target].intersection_update(current_names)
+                managed_target_servers[target].intersection_update(current_names_by_target[target])
 
     # Use the new registry operations module for better server detection
     configured_count = 0
@@ -1056,15 +1123,19 @@ def run_mcp_install(
             # resolved against the correct registry endpoint.
             # Plain strings (backward-compat) and deps with registry=None go to
             # the default group (key=None).  Only str values trigger routing.
-            registry_groups: builtins.dict[str | None, list] = {}
+            registry_groups: builtins.dict[tuple[str | None, tuple[str, ...]], list] = {}
             for dep in registry_deps:
                 dep_registry = getattr(dep, "registry", None)
-                key = dep_registry if isinstance(dep_registry, str) else None
+                dep_targets = dependency_runtimes[id(dep)]
+                if not dep_targets:
+                    continue
+                registry_url = dep_registry if isinstance(dep_registry, str) else None
+                key = (registry_url, tuple(dep_targets))
                 if key not in registry_groups:
                     registry_groups[key] = []
                 registry_groups[key].append(dep)
 
-            for group_registry_url, group_deps_list in registry_groups.items():
+            for (group_registry_url, group_targets), group_deps_list in registry_groups.items():
                 group_dep_names = [
                     dep.name if hasattr(dep, "name") else dep for dep in group_deps_list
                 ]
@@ -1075,7 +1146,7 @@ def run_mcp_install(
                     group_dep_names=group_dep_names,
                     group_dep_map=group_dep_map,
                     group_deps=group_deps_list,
-                    target_runtimes=target_runtimes,
+                    target_runtimes=list(group_targets),
                     stored_mcp_configs=stored_mcp_configs,
                     servers_to_update=servers_to_update,
                     successful_updates=successful_updates,
@@ -1095,20 +1166,26 @@ def run_mcp_install(
 
     # --- Self-defined deps (registry: false) ---
     if self_defined_deps:
-        configured_count += _install_self_defined_deps(
-            self_defined_deps=self_defined_deps,
-            target_runtimes=target_runtimes,
-            stored_mcp_configs=stored_mcp_configs,
-            servers_to_update=servers_to_update,
-            successful_updates=successful_updates,
-            project_root=project_root,
-            user_scope=user_scope,
-            verbose=verbose,
-            console=console,
-            logger=logger,
-            managed_target_servers=managed_target_servers,
-            fail_on_write_error=fail_on_write_error,
-        )
+        self_defined_groups: dict[tuple[str, ...], list] = {}
+        for dep in self_defined_deps:
+            dep_targets = tuple(dependency_runtimes[id(dep)])
+            if dep_targets:
+                self_defined_groups.setdefault(dep_targets, []).append(dep)
+        for group_targets, group_deps in self_defined_groups.items():
+            configured_count += _install_self_defined_deps(
+                self_defined_deps=group_deps,
+                target_runtimes=list(group_targets),
+                stored_mcp_configs=stored_mcp_configs,
+                servers_to_update=servers_to_update,
+                successful_updates=successful_updates,
+                project_root=project_root,
+                user_scope=user_scope,
+                verbose=verbose,
+                console=console,
+                logger=logger,
+                managed_target_servers=managed_target_servers,
+                fail_on_write_error=fail_on_write_error,
+            )
 
     # Close the panel
     _print_mcp_summary(console, configured_count, successful_updates)

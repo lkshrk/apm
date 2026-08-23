@@ -15,15 +15,17 @@ from pathlib import Path
 import pytest
 
 PERF_ENABLED = os.environ.get("PYTEST_PERF") == "1"
+PERF_ROOT = Path(__file__).parent.resolve()
 
 
 def pytest_collection_modifyitems(config, items):
-    """Apply the opt-in skip marker to every test in this directory."""
+    """Apply the opt-in skip marker only to tests in this directory."""
     skip = pytest.mark.skipif(
         not PERF_ENABLED, reason="Perf scenarios are opt-in: set PYTEST_PERF=1 to run"
     )
     for item in items:
-        item.add_marker(skip)
+        if item.path.resolve().is_relative_to(PERF_ROOT):
+            item.add_marker(skip)
 
 
 CLONE_ROOT = Path("/tmp/perf-atlas-clones")

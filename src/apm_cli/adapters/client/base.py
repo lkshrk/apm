@@ -3,7 +3,9 @@
 import os
 import re
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -337,6 +339,7 @@ class MCPClientAdapter(ABC):
         """
         self._project_root = Path(project_root) if project_root is not None else None
         self.user_scope = user_scope
+        self._registry_url: str | None = None
         # Per-server tracking populated by the env-resolution helpers and
         # consumed by ``configure_mcp_server`` for the post-install summary
         # and the aggregated legacy-syntax deprecation warning. Defined on
@@ -344,6 +347,28 @@ class MCPClientAdapter(ABC):
         # subclass path constructed it.
         self._last_env_placeholder_keys: set[str] = set()
         self._last_legacy_angle_vars: set[str] = set()
+
+    @cached_property
+    def registry_client(self):
+        """Create the network/cache client only when an install path needs it."""
+        return self._create_registry_client()
+
+    def _create_registry_client(self):
+        """Construct the registry client behind the lazy public attribute."""
+        from ...registry.client import SimpleRegistryClient
+
+        return SimpleRegistryClient(self._registry_url)
+
+    @cached_property
+    def registry_integration(self):
+        """Create the legacy registry integration only on first use."""
+        return self._create_registry_integration()
+
+    def _create_registry_integration(self):
+        """Construct the registry integration behind the lazy public attribute."""
+        from ...registry.integration import RegistryIntegration
+
+        return RegistryIntegration(self._registry_url)
 
     def _format_runtime_env_placeholder(self, name: str) -> str:
         """Return the target runtime's env-var placeholder syntax for *name*."""
@@ -380,10 +405,54 @@ class MCPClientAdapter(ABC):
             raise ValueError("Adapter did not produce a native MCP server mapping")
         return rendered
 
+    def decode_server_config(self, name: str, native: Any) -> dict[str, Any]:
+        """Normalize one native server entry into an APM MCP dependency payload."""
+        if not isinstance(native, dict):
+            return {"unsupported_reason": "malformed-mcp-server-config"}
+
+        data = deepcopy(native)
+        command = data.pop("command", None)
+        args = data.pop("args", None)
+        env = data.pop("env", data.pop("environment", None))
+        url = data.pop("url", data.pop("httpUrl", None))
+        headers = data.pop("headers", data.pop("http_headers", None))
+        tools = data.pop("tools", None)
+        native_transport = data.pop("transport", data.pop("type", None))
+        data.pop("name", None)
+        data.pop("registry", None)
+
+        if isinstance(command, list):
+            command, embedded_args = (command[0], command[1:]) if command else (None, [])
+            if args is None:
+                args = embedded_args
+
+        aliases = {"local": "stdio", "remote": "http"}
+        transport = aliases.get(native_transport, native_transport)
+        if transport not in {"stdio", "sse", "http", "streamable-http"}:
+            transport = "stdio" if command else "http" if url else None
+
+        decoded: dict[str, Any] = dict(data)
+        for key, value in (
+            ("transport", transport),
+            ("command", command),
+            ("args", args),
+            ("env", env),
+            ("url", url),
+            ("headers", headers),
+            ("tools", tools),
+        ):
+            if value is not None:
+                decoded[key] = value
+        return decoded
+
     @abstractmethod
     def get_config_path(self):
         """Get the path to the MCP configuration file."""
         pass
+
+    def get_import_config_path(self):
+        """Get the existing config path without adding import-only path state."""
+        return self.get_config_path()
 
     @abstractmethod
     def update_config(self, config_updates) -> bool | None:

@@ -49,6 +49,8 @@ def detect_output_mode(argv: Sequence[str]) -> OutputMode:
         return OutputMode(machine_readable=True)
     if _contains_command(args, ("lock", "export")):
         return OutputMode(machine_readable=True)
+    if _contains_command(args, ("import",)):
+        return OutputMode(machine_readable=True)
     if _contains_command(args, ("policy", "status")) and _option_has_value(
         args,
         "--output",

@@ -432,7 +432,7 @@ def get_copilot_cowork_skills_dir() -> str | None:
     Returns:
         The stored ``copilot_cowork_skills_dir`` config value, or ``None`` if not set.
     """
-    return get_config().get("copilot_cowork_skills_dir")
+    return get_config(read_only=True).get("copilot_cowork_skills_dir")
 
 
 def set_copilot_cowork_skills_dir(path: str) -> None:

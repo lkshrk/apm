@@ -99,8 +99,20 @@ class CopilotClientAdapter(MCPClientAdapter):
                 paths instead of project-local paths when supported.
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
-        self.registry_client = SimpleRegistryClient(registry_url)
-        self.registry_integration = RegistryIntegration(registry_url)
+        self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def get_config_path(self):
         """Get the path to the Copilot CLI MCP configuration file.

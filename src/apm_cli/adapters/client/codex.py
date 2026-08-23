@@ -31,6 +31,15 @@ class CodexClientAdapter(MCPClientAdapter):
     target_name: str = "codex"
     mcp_servers_key: str = "mcp_servers"
 
+    def decode_server_config(self, name, native):
+        """Map Codex' ``http_headers`` alias to canonical MCP headers."""
+        if not isinstance(native, dict):
+            return super().decode_server_config(name, native)
+        config = dict(native)
+        if "http_headers" in config and "headers" not in config:
+            config["headers"] = config.pop("http_headers")
+        return super().decode_server_config(name, config)
+
     def __init__(
         self,
         registry_url=None,
@@ -49,8 +58,20 @@ class CodexClientAdapter(MCPClientAdapter):
                 config paths instead of project-local paths.
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
-        self.registry_client = SimpleRegistryClient(registry_url)
-        self.registry_integration = RegistryIntegration(registry_url)
+        self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def _get_codex_dir(self) -> Path:
         """Return the root directory used for Codex config in the current scope."""

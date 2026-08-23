@@ -57,8 +57,20 @@ class VSCodeClientAdapter(MCPClientAdapter):
                 project-local paths when supported.
         """
         super().__init__(project_root=project_root, user_scope=user_scope)
-        self.registry_client = SimpleRegistryClient(registry_url)
-        self.registry_integration = RegistryIntegration(registry_url)
+        self._registry_url = registry_url
+        from ...registry.client import SimpleRegistryClient as DefaultSimpleRegistryClient
+        from ...registry.integration import RegistryIntegration as DefaultRegistryIntegration
+
+        if SimpleRegistryClient is not DefaultSimpleRegistryClient:
+            self.registry_client = SimpleRegistryClient(registry_url)
+        if RegistryIntegration is not DefaultRegistryIntegration:
+            self.registry_integration = RegistryIntegration(registry_url)
+
+    def _create_registry_client(self):
+        return SimpleRegistryClient(self._registry_url)
+
+    def _create_registry_integration(self):
+        return RegistryIntegration(self._registry_url)
 
     def get_config_path(self, logger=None):
         """Get the path to the VSCode MCP configuration file in the repository.
@@ -73,7 +85,8 @@ class VSCodeClientAdapter(MCPClientAdapter):
         vscode_dir = repo_root / ".vscode"
         mcp_config_path = vscode_dir / "mcp.json"
 
-        # Create the .vscode directory if it doesn't exist
+        # Preserve install callers' historical path-creation behavior. Import
+        # discovery uses get_import_config_path(), which is strictly read-only.
         try:
             if not vscode_dir.exists():
                 vscode_dir.mkdir(parents=True, exist_ok=True)
@@ -84,6 +97,10 @@ class VSCodeClientAdapter(MCPClientAdapter):
                 print(f"Warning: Could not create .vscode directory: {e}")
 
         return str(mcp_config_path)
+
+    def get_import_config_path(self):
+        """Return the repository MCP path without creating ``.vscode``."""
+        return str(self.project_root / ".vscode" / "mcp.json")
 
     def update_config(self, new_config, logger=None):
         """Update the VSCode MCP configuration with new values.

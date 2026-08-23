@@ -155,6 +155,9 @@ def parse_plugin_manifest(plugin_json_path: Path) -> dict[str, Any]:
     except ValueError as e:
         raise ValueError(f"Invalid JSON in plugin.json: {e}")  # noqa: B904
 
+    if not isinstance(manifest, dict):
+        raise ValueError("Invalid JSON in plugin.json: top-level value must be an object")
+
     if not manifest.get("name"):
         logging.getLogger("apm").warning(
             "plugin.json at %s is missing 'name' field; falling back to directory name",
@@ -162,6 +165,24 @@ def parse_plugin_manifest(plugin_json_path: Path) -> dict[str, Any]:
         )
 
     return manifest
+
+
+def inspect_plugin_package(plugin_path: Path) -> tuple[Path, dict[str, Any]]:
+    """Read and validate a native plugin package without modifying it."""
+    from ..utils.helpers import find_plugin_json
+
+    if not plugin_path.is_dir() or plugin_path.is_symlink():
+        raise ValueError("plugin install path is not a regular directory")
+    plugin_json = find_plugin_json(plugin_path)
+    if plugin_json is None or plugin_json.is_symlink():
+        raise ValueError("plugin manifest is missing or is a symlink")
+    if not _is_within_plugin(plugin_json, plugin_path, component="manifest"):
+        raise ValueError("plugin manifest escapes plugin root")
+    manifest = parse_plugin_manifest(plugin_json)
+    if not isinstance(manifest, dict):
+        raise ValueError("plugin manifest must be an object")
+    _validate_declared_component_paths(plugin_path, manifest)
+    return plugin_json, manifest
 
 
 def normalize_plugin_directory(plugin_path: Path, plugin_json_path: Path | None = None) -> Path:

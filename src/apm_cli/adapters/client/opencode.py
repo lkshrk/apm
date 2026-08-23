@@ -42,7 +42,7 @@ class OpenCodeClientAdapter(CopilotClientAdapter):
 
     supports_user_scope: bool = False
     target_name: str = "opencode"
-    mcp_servers_key: str = "mcpServers"
+    mcp_servers_key: str = "mcp"
 
     # OpenCode's config runtime-substitution support has not yet been
     # individually audited (see #1152). Pin to legacy install-time
@@ -136,7 +136,7 @@ class OpenCodeClientAdapter(CopilotClientAdapter):
         OpenCode: ``{"type": "local", "command": ["npx", "-y", "pkg"],
                      "environment": {...}, "enabled": true}``
         """
-        entry: dict = {"type": "local", "enabled": enabled}
+        entry: dict = {"type": "local", "enabled": copilot_entry.get("enabled", enabled)}
 
         cmd = copilot_entry.get("command", "")
         args = copilot_entry.get("args", [])
@@ -152,5 +152,9 @@ class OpenCodeClientAdapter(CopilotClientAdapter):
         env = copilot_entry.get("env") or {}
         if env:
             entry["environment"] = dict(env)
+
+        for key, value in copilot_entry.items():
+            if key not in {"type", "command", "args", "env", "url", "headers", "enabled"}:
+                entry[key] = value
 
         return entry

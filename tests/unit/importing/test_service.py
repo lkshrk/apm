@@ -231,6 +231,7 @@ def test_mapped_legacy_mcp_is_direct_manifest_dependency_and_locked(monkeypatch,
             "transport": "http",
             "url": "https://example.invalid/mcp",
             "env": {"TOKEN": "${MCP_TOKEN}"},
+            "targets": ["codex"],
         }
     ]
     lock = (home / ".apm" / "apm.lock.yaml").read_text()
@@ -436,7 +437,14 @@ def test_plugin_takeover_and_marketplace_registration(monkeypatch, tmp_path):
     )
     assert "demo" not in installed["plugins"]
     registry = json.loads((home / ".apm" / "marketplaces.json").read_text(encoding="utf-8"))
-    assert registry["marketplaces"] == [{"name": "demo-market", "owner": "owner", "repo": "repo"}]
+    assert registry["marketplaces"] == [
+        {
+            "name": "demo-market",
+            "owner": "owner",
+            "repo": "repo",
+            "url": "https://github.com/owner/repo",
+        }
+    ]
 
 
 @pytest.mark.parametrize("gate", ["_verify_post_retirement", "_audit_import"])
@@ -486,7 +494,8 @@ def test_plugin_activation_is_restored_when_post_retirement_gate_fails(monkeypat
         )
 
     assert installed_path.read_bytes() == original
-    assert stat.S_IMODE(installed_path.stat().st_mode) == original_mode
+    if os.name != "nt":
+        assert stat.S_IMODE(installed_path.stat().st_mode) == original_mode
     journal = read_journal(plan["operation_id"])
     assert journal["phase"] == "ownership-verified"
     assert journal["state"] == "recoverable-partial"
@@ -518,7 +527,9 @@ def test_marketplace_dependency_supports_target_narrowing():
     assert dependency.target_subset == ["claude"]
 
 
-def test_marketplace_plugin_uses_registry_dependency_not_cache_snapshot(monkeypatch, tmp_path):
+def test_marketplace_plugin_uses_registry_dependency_and_second_scan_has_no_work(
+    monkeypatch, tmp_path
+):
     home = _home(monkeypatch, tmp_path)
     claude = home / ".claude"
     plugin = claude / "plugins" / "cache" / "demo-market" / "demo" / "1.0.0"
@@ -563,7 +574,22 @@ def test_marketplace_plugin_uses_registry_dependency_not_cache_snapshot(monkeypa
         "marketplace": "demo-market",
         "targets": ["claude"],
     } in manifest["dependencies"]["apm"]
-    assert not (home / ".apm" / "imported" / "plugin").exists()
+    ownership = list((home / ".apm" / "imported" / "plugin").glob("*/.apm-import.json"))
+    assert len(ownership) == 1
+    metadata = json.loads(ownership[0].read_text(encoding="utf-8"))
+    assert metadata["kind"] == "plugin"
+    assert metadata["targets"] == ["claude"]
+    second = ImportService().scan(
+        sources=("claude",),
+        candidate_file=tmp_path / "protocol" / "second.json",
+        plan_json=None,
+        coordinator="standalone",
+    )
+    assert not [
+        item
+        for item in second["items"]
+        if item["classification"] in {"importable", "local-package"}
+    ]
 
 
 def test_legacy_unscoped_targets_block_before_mutation(monkeypatch, tmp_path):
@@ -823,7 +849,9 @@ def test_crash_phase_replay_uses_the_required_recovery_side(
 
 
 @pytest.mark.parametrize("with_claude_md", [False, True])
-def test_claude_hook_scripts_are_discovered_per_hook_file(monkeypatch, tmp_path, with_claude_md):
+def test_claude_hook_candidates_group_each_descriptor_with_its_script(
+    monkeypatch, tmp_path, with_claude_md
+):
     home = _home(monkeypatch, tmp_path)
     claude = home / ".claude"
     hooks = claude / "hooks"
@@ -846,11 +874,57 @@ def test_claude_hook_scripts_are_discovered_per_hook_file(monkeypatch, tmp_path,
         coordinator="standalone",
     )
     names = {item["name"] for item in plan["items"]}
-    assert {"one-one", "two-two"}.issubset(names)
+    hook_names = {item["name"] for item in plan["items"] if item["kind"] == "hook"}
+    assert hook_names == {"one", "two"}
+    envelope = json.loads((tmp_path / "candidates.json").read_text(encoding="utf-8"))
+    hooks = [item for item in envelope["candidates"] if item["kind"] == "hook"]
+    assert {item["name"] for item in hooks} == {"one", "two"}
+    assert all(len(item["source_preimage_ids"]) == 2 for item in hooks)
     assert ("compiled-claude-md" in names) is with_claude_md
     if with_claude_md:
         item = next(item for item in plan["items"] if item["name"] == "compiled-claude-md")
         assert item["classification"] == "local-package"
+
+
+def test_grouped_hook_apply_and_second_scan_has_no_work(monkeypatch, tmp_path):
+    home = _home(monkeypatch, tmp_path)
+    monkeypatch.setenv("APM_E2E_TESTS", "1")
+    claude = home / ".claude"
+    script = claude / "scripts" / "check.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    hook = claude / "hooks" / "check.json"
+    hook.parent.mkdir()
+    hook.write_text(json.dumps({"command": "../scripts/check.sh"}), encoding="utf-8")
+    candidates = tmp_path / "candidates.json"
+    plan_path = tmp_path / "plan.json"
+
+    ImportService().scan(
+        sources=("claude",),
+        candidate_file=candidates,
+        plan_json=plan_path,
+        coordinator="standalone",
+    )
+    result = ImportService().apply(
+        candidate_file=candidates,
+        plan_file=plan_path,
+        coordinator="standalone",
+        omni_preimage_set=None,
+        token=None,
+    )
+    assert result["state"] == "complete"
+
+    second = ImportService().scan(
+        sources=("claude",),
+        candidate_file=tmp_path / "second.json",
+        plan_json=None,
+        coordinator="standalone",
+    )
+    assert not [
+        item
+        for item in second["items"]
+        if item["classification"] in {"importable", "local-package"}
+    ]
 
 
 def test_conflict_selects_one_origin_and_excludes_losers(monkeypatch, tmp_path):
