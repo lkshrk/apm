@@ -22,6 +22,12 @@ creating APM state. Candidate and plan files are deterministic, strict-schema
 JSON and must be absolute owner-only files in one secured operation directory.
 Literal MCP secrets are replaced with a blocking sentinel and never printed.
 
+Known user roots for other clients are reported as unsupported items instead
+of being ignored. Applying requires an explicit `exclude` resolution for each
+one, meaning “leave this client unmanaged.” The decision is stored in the
+durable exclusion ledger, so later onboarding runs continue without prompting
+unless the client identity or configured root changes.
+
 Machine output is a strict typed envelope. Scan returns
 `{"ok":true,"kind":"import-plan","plan":{...}}`. Mutating and recovery
 commands return `{"ok":true,"kind":"import-*-result","result":{...}}`.
