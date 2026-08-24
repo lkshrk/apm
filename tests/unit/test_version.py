@@ -97,7 +97,7 @@ class TestGetVersionFrozenMode:
     def test_frozen_mode_reads_meipass_pyproject(self, tmp_path: Path) -> None:
         meipass_dir = tmp_path / "meipass"
         meipass_dir.mkdir()
-        (meipass_dir / "pyproject.toml").write_text('version = "5.6.7"\n', encoding="utf-8")
+        (meipass_dir / "pyproject.toml").write_text('version = "0.28.0+omni.8"\n', encoding="utf-8")
         mock_sys = MagicMock()
         mock_sys.frozen = True
         mock_sys._MEIPASS = str(meipass_dir)
@@ -105,7 +105,7 @@ class TestGetVersionFrozenMode:
         with patch.object(version_mod, "__BUILD_VERSION__", None):
             with patch("apm_cli.version.sys", mock_sys):
                 result = get_version()
-        assert result == "5.6.7"
+        assert result == "0.28.0+omni.8"
 
     def test_frozen_mode_meipass_pyproject_missing_returns_unknown(self, tmp_path: Path) -> None:
         meipass_dir = tmp_path / "meipass_empty"
