@@ -856,6 +856,17 @@ class TestMarketplaceResolution(unittest.TestCase):
         assert result is structured_ref
 
     @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
+    def test_resolve_marketplace_dep_preserves_target_subset(self, mock_resolve):
+        mock_resolve.return_value = self._make_resolution("acme/gopls-lsp#main")
+        resolver = APMDependencyResolver()
+        dep = self._make_marketplace_dep()
+        dep.target_subset = ["codex"]
+
+        result = resolver._resolve_marketplace_dep(dep)
+
+        assert result.target_subset == ["codex"]
+
+    @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
     def test_marketplace_deps_resolved_in_tree(self, mock_resolve):
         mock_resolve.return_value = self._make_resolution("acme/gopls-lsp#main")
         with TemporaryDirectory() as temp_dir:

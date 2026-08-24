@@ -512,6 +512,7 @@ class APMDependencyResolver:
             if resolution.dependency_reference is not None
             else DependencyReference.parse(resolution.canonical)
         )
+        resolved.target_subset = dep_ref.target_subset
         self._marketplace_provenance[resolved.get_unique_key()] = resolution.provenance(
             dep_ref.marketplace_name,
             dep_ref.marketplace_plugin_name,

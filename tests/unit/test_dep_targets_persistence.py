@@ -75,6 +75,19 @@ def test_parse_targets_field() -> None:
     assert dep.target_subset == ["codex"]
 
 
+def test_parse_marketplace_targets_field() -> None:
+    dep = DependencyReference.parse_from_dict(
+        {
+            "name": "superpowers",
+            "marketplace": "claude-plugins-official",
+            "targets": ["codex"],
+        }
+    )
+
+    assert dep.is_marketplace
+    assert dep.target_subset == ["codex"]
+
+
 def test_parse_no_targets_field() -> None:
     dep = DependencyReference.parse_from_dict({"git": "owner/repo"})
 
