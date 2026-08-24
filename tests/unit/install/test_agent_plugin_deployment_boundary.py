@@ -604,6 +604,32 @@ def test_dry_run_native_preflight_skips_apm_when_only_mcp_is_selected(
     assert "no native harness is binary-qualified" not in result.output
 
 
+def test_dry_run_native_preflight_resolves_marketplace_before_install_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from apm_cli.install.template import preflight_agent_plugin_dry_run
+
+    cached = tmp_path / "apm_modules" / "acme" / "native"
+    cached.mkdir(parents=True)
+    dependency = DependencyReference.parse_from_dict(
+        {"name": "native", "marketplace": "catalog", "targets": ["codex"]}
+    )
+    resolved = DependencyReference.parse("acme/native")
+    resolve = MagicMock(return_value=resolved)
+    monkeypatch.setattr(
+        "apm_cli.deps.apm_resolver.APMDependencyResolver._resolve_marketplace_dep",
+        resolve,
+    )
+    monkeypatch.setattr("apm_cli.core.scope.get_modules_dir", lambda _scope: tmp_path / "apm_modules")
+    monkeypatch.setattr("apm_cli.bundle.local_bundle.route_agent_plugin_package", lambda _path: None)
+    ctx = SimpleNamespace(project_root=tmp_path, scope=object(), auth_resolver=object())
+
+    preflight_agent_plugin_dry_run(ctx, [dependency])
+
+    resolve.assert_called_once_with(dependency)
+
+
 def test_dry_run_native_detection_does_not_normalize_legacy_plugin_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

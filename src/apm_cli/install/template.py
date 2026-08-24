@@ -137,12 +137,16 @@ def preflight_agent_plugin_dry_run(ctx: InstallContext, dependencies: list) -> N
     """Reject a cached or local native package without mutating its source."""
     from apm_cli.bundle.local_bundle import route_agent_plugin_package
     from apm_cli.core.scope import get_modules_dir
+    from apm_cli.deps.apm_resolver import APMDependencyResolver
     from apm_cli.models.apm_package import PackageInfo
     from apm_cli.models.validation import validate_apm_package
 
     source_root = ctx.project_root
     modules_dir = get_modules_dir(ctx.scope)
+    resolver = APMDependencyResolver(auth_resolver=ctx.auth_resolver)
     for dependency in dependencies:
+        if dependency.is_marketplace:
+            dependency = resolver._resolve_marketplace_dep(dependency)
         if dependency.is_local and dependency.local_path:
             package_path = Path(dependency.local_path).expanduser()
             if not package_path.is_absolute():
