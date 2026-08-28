@@ -203,6 +203,11 @@ class InstallTransaction:
             self.rollback()
         return False
 
+    def __del__(self) -> None:
+        """Release this transaction's lock acquisition when abandoned."""
+        with contextlib.suppress(Exception):
+            self._release_workspace_lock()
+
     def _restore_manifest(self) -> None:
         """Atomically restore the byte-exact manifest snapshot when present."""
         _maybe_rollback_manifest(
@@ -214,8 +219,9 @@ class InstallTransaction:
 
     def _release_workspace_lock(self) -> None:
         """Release this transaction's nested lifecycle acquisition once."""
-        lock = self._workspace_lock
-        if self._workspace_lock_held and lock is not None:
+        lock = getattr(self, "_workspace_lock", None)
+        held = getattr(self, "_workspace_lock_held", lock is not None)
+        if held and lock is not None:
             self._workspace_lock_held = False
             lock.release()
 

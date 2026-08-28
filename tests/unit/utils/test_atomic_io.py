@@ -123,13 +123,14 @@ class TestAtomicWriteText:
         target = tmp_path / "existing.txt"
         target.write_text("existing", encoding="utf-8")
         target.chmod(0o640)
+        expected_mode = target.stat().st_mode & 0o777
 
         with patch("apm_cli.utils.atomic_io.os.fchmod", create=True) as mock_fchmod:
             atomic_write_text(target, "data", new_file_mode=0o600)
 
         mock_fchmod.assert_called_once()
         _fd, mode = mock_fchmod.call_args[0]
-        assert mode == 0o640
+        assert mode == expected_mode
 
     def test_fchmod_not_called_when_mode_is_none(self, tmp_path: Path) -> None:
         """A new file without a requested mode does not call fchmod."""

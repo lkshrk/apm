@@ -394,11 +394,12 @@ def test_repeated_dry_run_releases_only_transaction_acquisition(tmp_path: Path) 
 
 def test_abandoned_transaction_does_not_strand_lifecycle_lock(tmp_path: Path) -> None:
     """Dropping the last transaction owner releases its FileLock acquisition."""
+    lock = lifecycle_lock()
     transaction = _transaction(tmp_path)
     del transaction
     gc.collect()
 
-    assert not lifecycle_lock().is_locked
+    assert not lock.is_locked
     replacement = InstallTransaction(
         manifest_path=tmp_path / "apm.yml",
         apm_modules_dir=tmp_path / "apm_modules",
@@ -406,6 +407,17 @@ def test_abandoned_transaction_does_not_strand_lifecycle_lock(tmp_path: Path) ->
         logger=MagicMock(),
     )
     replacement.commit(InstallResult())
+
+
+def test_partially_initialized_transaction_releases_lifecycle_lock() -> None:
+    """An interruption after lock acquisition cannot strand the lock."""
+    lock = acquire_lifecycle_lock()
+    transaction = InstallTransaction.__new__(InstallTransaction)
+    transaction._workspace_lock = lock
+    del transaction
+    gc.collect()
+
+    assert not lock.is_locked
 
 
 def test_phase_compatibility_journal_does_not_own_lifecycle_lock(tmp_path: Path) -> None:

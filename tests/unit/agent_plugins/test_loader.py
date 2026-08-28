@@ -174,6 +174,7 @@ def test_inventory_rejects_path_replacement_before_open(
         AssetInventory(tmp_path).collect_file(asset_path)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows cannot rename an open file")
 def test_verified_asset_descriptor_is_stable_after_path_replacement(tmp_path: Path) -> None:
     _write_manifest(tmp_path)
     _write_valid_skill(tmp_path, "stable")
