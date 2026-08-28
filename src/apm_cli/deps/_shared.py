@@ -29,9 +29,15 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
         apm_yml = synthesize_apm_yml_from_plugin(target_path, dict(manifest))
         package = APMPackage.from_apm_yml(apm_yml)
         if "lspServers" in declared and not package.get_lsp_dependencies():
-            raise ValueError("Marketplace LSP metadata did not materialize a valid dependency")
+            raise ValueError(
+                f"Marketplace LSP metadata for {dep_ref.repo_url} at {target_path} "
+                "did not materialize a valid dependency"
+            )
         if "mcpServers" in declared and not package.get_mcp_dependencies():
-            raise ValueError("Marketplace MCP metadata did not materialize a valid dependency")
+            raise ValueError(
+                f"Marketplace MCP metadata for {dep_ref.repo_url} at {target_path} "
+                "did not materialize a valid dependency"
+            )
     except Exception:
         if target_path.exists():
             robust_rmtree(target_path, ignore_errors=True)

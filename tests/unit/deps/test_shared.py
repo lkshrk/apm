@@ -86,6 +86,19 @@ class TestValidateAndLoadPackage:
         assert [dep.name for dep in package.get_lsp_dependencies()] == ["gopls"]
         assert (tmp_path / "apm.yml").is_file()
 
+    def test_materializes_metadata_only_marketplace_mcp_plugin(self, tmp_path: Path) -> None:
+        (tmp_path / "README.md").write_text("catalog-only plugin")
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "test-mcp",
+            "mcpServers": {"test-server": {"command": "echo", "args": ["hello"]}},
+        }
+
+        package = _validate_and_load_package(validate_apm_package(tmp_path), tmp_path, dep_ref)
+
+        assert [dep.name for dep in package.get_mcp_dependencies()] == ["test-server"]
+        assert (tmp_path / "apm.yml").is_file()
+
     def test_rejects_invalid_marketplace_metadata_and_cleans_target(self, tmp_path: Path) -> None:
         target = tmp_path / "plugin"
         target.mkdir()
@@ -94,6 +107,25 @@ class TestValidateAndLoadPackage:
         dep_ref.marketplace_manifest = {
             "name": "bad-lsp",
             "lspServers": {"gopls": {"command": "gopls"}},
+        }
+
+        with pytest.raises(ValueError) as exc_info:
+            _validate_and_load_package(validate_apm_package(target), target, dep_ref)
+
+        assert dep_ref.repo_url in str(exc_info.value)
+        assert str(target) in str(exc_info.value)
+        assert not target.exists()
+
+    def test_rejects_invalid_marketplace_mcp_metadata_and_cleans_target(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        (target / "README.md").write_text("catalog-only plugin")
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "bad-mcp",
+            "mcpServers": {"test-server": {"args": ["hello"]}},
         }
 
         with pytest.raises(ValueError, match="did not materialize"):
