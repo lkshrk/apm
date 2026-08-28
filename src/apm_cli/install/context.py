@@ -144,6 +144,7 @@ class InstallContext:
     # Cleanup refusals retain the original lockfile hash, not a hash of
     # user-edited bytes. Lockfile assembly consumes this after cleanup.
     package_cleanup_retained: dict[str, dict[str, str | None]] = field(default_factory=dict)
+    package_cleanup_released: dict[str, set[str]] = field(default_factory=dict)
     orphan_cleanup_retained: dict[str, dict[str, str | None]] = field(default_factory=dict)
     package_types: dict[str, str] = field(default_factory=dict)
     package_hashes: dict[str, str] = field(default_factory=dict)

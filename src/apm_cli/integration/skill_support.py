@@ -41,11 +41,14 @@ class SkillIntegrationResult:
     bin_deployed: int = 0
     bin_skipped_reason: str | None = None
     target_paths: list[Path] = None
+    preserved_external: list[Path] = None
     materializations: tuple[MaterializationResult, ...] = ()
 
     def __post_init__(self) -> None:
         if self.target_paths is None:
             self.target_paths = []
+        if self.preserved_external is None:
+            self.preserved_external = []
 
 
 def clean_orphaned_skills(
@@ -95,3 +98,19 @@ def get_lockfile_owned_agent_skills(project_root: Path) -> set[str]:
 
         logging.getLogger(__name__).debug("Could not read lockfile for ownership check: %s", exc)
     return owned
+
+
+def shadowed_by_leaf_skill_symlink(rel: str, project_root: Path, targets) -> bool:
+    """Return whether *rel* is beneath a direct skill destination symlink."""
+    normalized = rel.replace("\\", "/")
+    for target in targets or []:
+        mapping = getattr(target, "primitives", {}).get("skills")
+        if mapping is None:
+            continue
+        effective_root = mapping.deploy_root or target.root_dir
+        prefix = f"{effective_root}/skills/"
+        if normalized.startswith(prefix):
+            skill_name = normalized[len(prefix) :].split("/", 1)[0]
+            if skill_name and (project_root / effective_root / "skills" / skill_name).is_symlink():
+                return True
+    return False

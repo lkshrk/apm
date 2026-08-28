@@ -199,7 +199,7 @@ def _warn_target_reconcile_failure(
     )
 
 
-def integrate_package_primitives(  # noqa: PLR0913
+def integrate_package_primitives(  # noqa: C901, PLR0913
     package_info: Any,
     project_root: Path,
     *,
@@ -271,6 +271,7 @@ def integrate_package_primitives(  # noqa: PLR0913
         "canvases": 0,
         "links_resolved": 0,
         "deployed_files": [],
+        "released_files": [],
     }
 
     deployed = result["deployed_files"]
@@ -665,6 +666,9 @@ def integrate_package_primitives(  # noqa: PLR0913
         # entries give ``content-integrity`` its per-file coverage so skill
         # drift is caught under ``apm audit --ci --no-drift``.
         deployed.extend(_skill_bundle_file_entries(tp, project_root, targets))
+    for tp in getattr(skill_result, "preserved_external", ()):
+        if tp.is_relative_to(project_root):
+            result["released_files"].append(tp.relative_to(project_root).as_posix())
 
     # A3: warm-cache visibility. If nothing was integrated for any kind AND
     # no skill was created, emit one annotation so the user knows the dep

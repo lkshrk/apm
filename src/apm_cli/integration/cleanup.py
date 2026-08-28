@@ -38,6 +38,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from apm_cli.utils.path_security import has_symlink_component
+
 from .base_integrator import BaseIntegrator
 
 
@@ -59,6 +61,9 @@ class CleanupResult:
     skipped_unmanaged: list[str] = field(default_factory=list)
     """Paths refused by the safety gates (validation failure, directory
     entry, etc.). Callers retain the prior ownership row when it exists."""
+
+    preserved_external: list[str] = field(default_factory=list)
+    """Symlink-backed paths left untouched and released from APM ownership."""
 
     deleted_targets: list[Path] = field(default_factory=list)
     """Absolute paths of deleted entries -- input to
@@ -343,7 +348,8 @@ def remove_stale_deployed_files(
         # containment via from_lockfile_path) ourselves.
         from .copilot_cowork_paths import COWORK_URI_SCHEME
 
-        if stale_path.startswith(COWORK_URI_SCHEME):
+        is_cowork = stale_path.startswith(COWORK_URI_SCHEME)
+        if is_cowork:
             # Basic security: reject path-traversal components.
             if ".." in stale_path:
                 result.skipped_unmanaged.append(stale_path)
@@ -390,6 +396,14 @@ def remove_stale_deployed_files(
                 result.skipped_unmanaged.append(stale_path)
                 continue
             stale_target = project_root / stale_path
+
+        if not is_cowork and has_symlink_component(project_root, stale_target):
+            result.preserved_external.append(stale_path)
+            diagnostics.warn(
+                f"Preserved symlink-backed path {stale_path}; APM ownership was released.",
+                package=dep_key,
+            )
+            continue
 
         if not stale_target.exists():
             # File already gone -- treat as cleaned (no-op success).

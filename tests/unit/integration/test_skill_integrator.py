@@ -3017,6 +3017,165 @@ class TestSubSkillContentSkipAndCollisionProtection:
         assert (self.project_root / ".claude" / "skills" / "alias-name" / "SKILL.md").is_file()
         assert not (self.project_root / ".claude" / "skills" / "real-name").exists()
 
+    def test_native_skill_preserves_unmanaged_destination_symlink(self):
+        """A leaf symlink collision is skipped without touching its target."""
+        source = self.project_root / "native-skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text("---\nname: native-skill\ndescription: native\n---\n")
+        external = self.project_root / "dotfiles-native"
+        external.mkdir()
+        sentinel = external / "sentinel"
+        sentinel.write_text("keep\n")
+        destination = self.project_root / ".claude" / "skills" / "native-skill"
+        destination.parent.mkdir(parents=True)
+        destination.symlink_to(external, target_is_directory=True)
+        pkg_info = self._create_package_info(name="native-skill", install_path=source)
+        target = KNOWN_TARGETS["claude"]
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            [target],
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+        from apm_cli.utils.diagnostics import DiagnosticCollector
+
+        diagnostics = DiagnosticCollector()
+        result = self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=[target],
+            source_plan=plan,
+            diagnostics=diagnostics,
+            managed_files=set(),
+        )
+
+        assert result.skill_skipped is True
+        assert result.target_paths == []
+        assert destination.is_symlink()
+        assert sentinel.read_text() == "keep\n"
+        assert diagnostics.has_diagnostics
+        assert self.integrator._native_skill_session_owners == {}
+
+    def test_native_skill_skips_link_but_deploys_other_target(self):
+        """One leaf collision does not suppress a safe second target."""
+        source = self.project_root / "mixed-skill"
+        source.mkdir()
+        (source / "SKILL.md").write_text("---\nname: mixed-skill\ndescription: mixed\n---\n")
+        external = self.project_root / "dotfiles-mixed"
+        external.mkdir()
+        claude_link = self.project_root / ".claude" / "skills" / "mixed-skill"
+        claude_link.parent.mkdir(parents=True)
+        claude_link.symlink_to(external, target_is_directory=True)
+        pkg_info = self._create_package_info(name="mixed-skill", install_path=source)
+        targets = [KNOWN_TARGETS["claude"], KNOWN_TARGETS["agent-skills"]]
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            targets,
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        result = self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=targets,
+            source_plan=plan,
+            managed_files=set(),
+        )
+
+        deployed = self.project_root / ".agents" / "skills" / "mixed-skill" / "SKILL.md"
+        assert result.skill_skipped is False
+        assert result.target_paths == [deployed.parent]
+        assert claude_link.is_symlink()
+        assert deployed.is_file()
+
+    def test_bundled_skill_reselects_primary_after_link_collision(self):
+        """A skipped first target does not hide a safe bundle deployment."""
+        source = self.project_root / "mixed-bundle"
+        skill = source / ".apm" / "skills" / "bundled"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: bundled\ndescription: bundled\n---\n")
+        external = self.project_root / "dotfiles-bundle"
+        external.mkdir()
+        shared_link = self.project_root / ".agents" / "skills" / "bundled"
+        shared_link.parent.mkdir(parents=True)
+        shared_link.symlink_to(external, target_is_directory=True)
+        pkg_info = self._create_package_info(
+            name="mixed-bundle",
+            install_path=source,
+            package_type=PackageType.APM_PACKAGE,
+        )
+        targets = [KNOWN_TARGETS["agent-skills"], KNOWN_TARGETS["claude"]]
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            targets,
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        result = self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=targets,
+            source_plan=plan,
+            managed_files=set(),
+        )
+
+        deployed = self.project_root / ".claude" / "skills" / "bundled"
+        assert result.sub_skills_promoted == 1
+        assert result.target_paths == [deployed]
+        assert shared_link.is_symlink()
+        assert (deployed / "SKILL.md").is_file()
+
+    @pytest.mark.parametrize("dangling", [False, True])
+    def test_bundled_skill_preserves_unmanaged_destination_symlink(self, dangling: bool):
+        """Valid and dangling leaf links are both skipped without writes."""
+        source = self.project_root / "bundle"
+        skill = source / ".apm" / "skills" / "bundled"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: bundled\ndescription: bundled\n---\n")
+        destination = self.project_root / ".claude" / "skills" / "bundled"
+        destination.parent.mkdir(parents=True)
+        external = self.project_root / "dotfiles-bundled"
+        if not dangling:
+            external.mkdir()
+            (external / "sentinel").write_text("keep\n")
+        destination.symlink_to(external, target_is_directory=True)
+        pkg_info = self._create_package_info(
+            name="bundle",
+            install_path=source,
+            package_type=PackageType.APM_PACKAGE,
+        )
+        target = KNOWN_TARGETS["claude"]
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            [target],
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        result = self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=[target],
+            source_plan=plan,
+            managed_files=set(),
+        )
+
+        assert result.sub_skills_promoted == 0
+        assert result.target_paths == []
+        assert destination.is_symlink()
+        if not dangling:
+            assert (external / "sentinel").read_text() == "keep\n"
+
     def test_cross_package_overwrite_records_diagnostic(self):
         """Cross-package overwrites should record a diagnostic, not print inline."""
         # Pre-existing managed skill from a different package

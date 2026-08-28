@@ -89,6 +89,35 @@ def test_unmanaged_prefix_rejected(project_root, diagnostics, logger):
     assert (project_root / rel).exists()
 
 
+@pytest.mark.parametrize("dangling", [False, True])
+def test_stale_symlink_is_preserved_but_released_from_ownership(
+    project_root, diagnostics, dangling
+):
+    rel = ".claude/skills/smart-docs"
+    link = project_root / rel
+    link.parent.mkdir(parents=True)
+    target = project_root / "dotfiles-smart-docs"
+    if not dangling:
+        target.mkdir()
+        (target / "sentinel").write_text("keep\n", encoding="utf-8")
+    link.symlink_to(target, target_is_directory=True)
+
+    result = remove_stale_deployed_files(
+        [rel],
+        project_root,
+        dep_key="pkg",
+        targets=None,
+        diagnostics=diagnostics,
+    )
+
+    assert result.deleted == []
+    assert result.retained == []
+    assert result.preserved_external == [rel]
+    assert link.is_symlink()
+    if not dangling:
+        assert (target / "sentinel").read_text(encoding="utf-8") == "keep\n"
+
+
 def test_directory_entry_refused(project_root, diagnostics, logger):
     """A lockfile entry that resolves to a directory is refused outright.
 

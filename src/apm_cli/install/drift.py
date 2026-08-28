@@ -18,11 +18,8 @@ instead of auto-fetched. ``apm audit --ci`` can opt into a lock-pinned,
 scratch-only self-hydration path so cold-cache CI still evaluates drift
 without mutating the checkout.
 
-Design constraints (see ``WIP/drift/06-final-plan.md``):
-* Pure read-only against the project tree -- writes go to the scratch
-  directory only.  ``ensure_path_within`` guards every write redirection.
-* ASCII-only console output (Windows cp1252 safety).
-* Normalization strips line-ending differences, BOMs, and the APM
+Design constraints: project-tree reads only; scratch writes are containment-guarded;
+console output is ASCII-safe. Normalization strips line endings, BOMs, and the APM
   ``Build ID`` header that legitimately changes on every recompile.
 """
 
@@ -44,6 +41,7 @@ from apm_cli.install.drift_render import render_drift as render_drift
 from apm_cli.install.drift_render import render_drift_json as render_drift_json
 from apm_cli.install.drift_render import render_drift_sarif as render_drift_sarif
 from apm_cli.install.drift_render import render_drift_text as render_drift_text
+from apm_cli.integration.skill_support import shadowed_by_leaf_skill_symlink
 from apm_cli.utils.console import STATUS_SYMBOLS
 from apm_cli.utils.guards import _ReadOnlyProjectGuard
 
@@ -926,6 +924,12 @@ def diff_scratch_against_project(
     for rel, scratch_path in sorted(scratch_files.items()):
         project_path = project_files.get(rel)
         if project_path is None:
+            if (
+                shadowed_by_leaf_skill_symlink(rel, project_root, targets)
+                and rel not in tracked
+                and not rel.startswith(claimed_prefixes)
+            ):
+                continue
             if tracked_files is not None and rel not in tracked_files:
                 continue
             findings.append(

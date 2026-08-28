@@ -91,6 +91,19 @@ def _build_deployable_copy_ignore(
     return _combined
 
 
+def _report_skill_symlink_skip(path: str, package: str, diagnostics, logger) -> None:
+    """Preserve a leaf destination symlink as an unmanaged collision."""
+    message = f"Preserved skill symlink '{path}'; APM did not take ownership"
+    if diagnostics is not None:
+        diagnostics.warn(message, package=package)
+    elif logger is not None:
+        logger.warning(message)
+    else:
+        from apm_cli.utils.console import _rich_warning
+
+        _rich_warning(message)
+
+
 def to_hyphen_case(name: str) -> str:
     """Convert a package name to hyphen-case for Claude Skills spec.
 
@@ -709,7 +722,7 @@ class SkillIntegrator(BaseIntegrator):
                 pass
 
     @staticmethod
-    def _promote_sub_skills(
+    def _promote_sub_skills(  # noqa: PLR0913
         sub_skills_dir: Path,
         target_skills_root: Path,
         parent_name: str,
@@ -726,6 +739,7 @@ class SkillIntegrator(BaseIntegrator):
         link_rewriter: "SkillIntegrator | None" = None,
         source_plan: "DeployableSourcePlan | None" = None,
         source_paths: dict[str, Path] | None = None,
+        preserved_external: list[Path] | None = None,
     ) -> tuple[int, list[Path]]:
         """Promote named skill directories to top-level skill entries.
 
@@ -782,6 +796,11 @@ class SkillIntegrator(BaseIntegrator):
             sub_name = raw_sub_name if is_valid else normalize_skill_name(raw_sub_name)
             target = target_skills_root / sub_name
             rel_path = f"{rel_prefix}/{sub_name}"
+            if target.is_symlink():
+                if preserved_external is not None:
+                    preserved_external.append(target)
+                _report_skill_symlink_skip(rel_path, parent_name, diagnostics, logger)
+                continue
             if target.exists():
                 # Content-identical: skip entirely (no copy, no warning)
                 if SkillIntegrator.is_skill_dir_identical_to_source(sub_skill_path, target):
@@ -926,6 +945,7 @@ class SkillIntegrator(BaseIntegrator):
         skill_subset=None,
         skip_bin: bool = False,
         source_plan: "DeployableSourcePlan | None" = None,
+        preserved_external: list[Path] | None = None,
     ) -> tuple[int, list[Path]]:
         """Promote sub-skills from a package that is NOT itself a skill.
 
@@ -988,7 +1008,6 @@ class SkillIntegrator(BaseIntegrator):
                 continue
             seen_skill_dirs.add(resolved_root)
             is_primary = not primary_selected
-            primary_selected = True
 
             target_skills_root.mkdir(parents=True, exist_ok=True)
 
@@ -1007,8 +1026,10 @@ class SkillIntegrator(BaseIntegrator):
                 link_rewriter=self,
                 skip_bin=skip_bin,
                 source_plan=source_plan,
+                preserved_external=preserved_external,
             )
-            if is_primary:
+            if is_primary and n > 0:
+                primary_selected = True
                 count = n
             all_deployed.extend(deployed)
 
@@ -1108,6 +1129,7 @@ class SkillIntegrator(BaseIntegrator):
         files_copied = 0
         all_target_paths: list[Path] = []
         primary_skill_md: Path | None = None
+        preserved_external: list[Path] = []
 
         # Read lockfile once and derive both maps in a single pass.
         owned_by, lockfile_native_owners = self._build_ownership_maps(project_root)
@@ -1118,12 +1140,13 @@ class SkillIntegrator(BaseIntegrator):
         current_key: str | None = dep_ref.get_unique_key() if dep_ref is not None else None
 
         seen_skill_dirs: set[Path] = set()
+        primary_selected = False
 
-        for idx, target in enumerate(targets):
+        for target in targets:
             if not target.supports("skills"):
                 continue
 
-            is_primary = idx == 0  # first active target owns diagnostics
+            is_primary = not primary_selected
             skills_mapping = target.primitives["skills"]
             # Static targets still need the effective root for the containment guard below.
             effective_root = skills_mapping.deploy_root or target.root_dir
@@ -1131,16 +1154,24 @@ class SkillIntegrator(BaseIntegrator):
 
             # Security: validate name + containment + symlink rejection.
             from apm_cli.utils.path_security import (
-                PathTraversalError,
                 ensure_path_within,
                 validate_path_segments,
             )
 
             validate_path_segments(skill_name, context="skill name")
             if target_skill_dir.is_symlink():
-                raise PathTraversalError(
-                    f"Skill destination {target_skill_dir} is a symlink -- refusing to deploy"
+                preserved_external.append(target_skill_dir)
+                try:
+                    rel_path = target_skill_dir.relative_to(project_root).as_posix()
+                except ValueError:
+                    rel_path = f"skills/{skill_name}"
+                _report_skill_symlink_skip(
+                    rel_path,
+                    current_key or skill_name,
+                    diagnostics if is_primary else None,
+                    logger if is_primary else None,
                 )
+                continue
             if target.resolved_deploy_root is None:
                 ensure_path_within(target_skill_dir, project_root / effective_root / "skills")
 
@@ -1154,6 +1185,7 @@ class SkillIntegrator(BaseIntegrator):
                     )
                 continue
             seen_skill_dirs.add(resolved)
+            primary_selected = True
 
             if is_primary:
                 skill_created = not target_skill_dir.exists()
@@ -1239,12 +1271,13 @@ class SkillIntegrator(BaseIntegrator):
                 link_rewriter=self,
                 skip_bin=skip_bin,
                 source_plan=source_plan,
+                preserved_external=preserved_external,
             )
             all_target_paths.extend(sub_deployed)
 
         # Record ownership in the session map so subsequent packages installed in
         # the same run can detect a collision even before the lockfile is written.
-        if current_key is not None:
+        if current_key is not None and primary_skill_md is not None:
             self._native_skill_session_owners[skill_name] = current_key
 
         # Count unique sub-skills from primary target only
@@ -1256,12 +1289,13 @@ class SkillIntegrator(BaseIntegrator):
         return SkillIntegrationResult(
             skill_created=skill_created,
             skill_updated=skill_updated,
-            skill_skipped=False,
+            skill_skipped=primary_skill_md is None,
             skill_path=primary_skill_md,
             references_copied=files_copied,
             links_resolved=0,
             sub_skills_promoted=sub_skills_count,
             target_paths=all_target_paths,
+            preserved_external=preserved_external,
         )
 
     def _integrate_skill_bundle(
@@ -1319,6 +1353,7 @@ class SkillIntegrator(BaseIntegrator):
 
         total_promoted = 0
         all_deployed: list[Path] = []
+        preserved_external: list[Path] = []
         any_created = False
         seen_skill_dirs: set[Path] = set()
         primary_selected = False
@@ -1374,11 +1409,12 @@ class SkillIntegrator(BaseIntegrator):
                 skip_bin=skip_bin,
                 source_plan=source_plan,
                 source_paths=source_paths,
+                preserved_external=preserved_external,
             )
-            if is_primary:
+            if is_primary and n > 0:
+                primary_selected = True
                 total_promoted = n
-                if n > 0:
-                    any_created = True
+                any_created = True
             all_deployed.extend(deployed)
 
         if self._skill_filter_misses_available(_name_filter, available_names):
@@ -1393,12 +1429,13 @@ class SkillIntegrator(BaseIntegrator):
         return SkillIntegrationResult(
             skill_created=any_created,
             skill_updated=False,
-            skill_skipped=False,
+            skill_skipped=not all_deployed,
             skill_path=None,
             references_copied=0,
             links_resolved=0,
             sub_skills_promoted=total_promoted,
             target_paths=all_deployed,
+            preserved_external=preserved_external,
         )
 
     def integrate_package_skill(
@@ -1460,6 +1497,7 @@ class SkillIntegrator(BaseIntegrator):
         if not should_install_skill(package_info):
             # Even non-skill packages may ship sub-skills under .apm/skills/.
             # Promote them so Copilot can discover them independently.
+            preserved_external: list[Path] = []
             sub_skills_count, sub_deployed = self._promote_sub_skills_standalone(
                 package_info,
                 project_root,
@@ -1471,6 +1509,7 @@ class SkillIntegrator(BaseIntegrator):
                 skill_subset=skill_subset,
                 skip_bin=skip_bin,
                 source_plan=source_plan,
+                preserved_external=preserved_external,
             )
             return SkillIntegrationResult(
                 skill_created=False,
@@ -1481,6 +1520,7 @@ class SkillIntegrator(BaseIntegrator):
                 links_resolved=0,
                 sub_skills_promoted=sub_skills_count,
                 target_paths=sub_deployed,
+                preserved_external=preserved_external,
             )
 
         # Skip virtual FILE packages - they're individual files, not full packages
@@ -1610,6 +1650,7 @@ class SkillIntegrator(BaseIntegrator):
 
         # No SKILL.md at root  -- not a skill package.
         # Still promote any sub-skills shipped under .apm/skills/.
+        preserved_external = []
         sub_skills_count, sub_deployed = self._promote_sub_skills_standalone(
             package_info,
             project_root,
@@ -1621,6 +1662,7 @@ class SkillIntegrator(BaseIntegrator):
             skill_subset=skill_subset,
             skip_bin=skip_bin,
             source_plan=source_plan,
+            preserved_external=preserved_external,
         )
         return self._merge_bin_paths(
             SkillIntegrationResult(
@@ -1632,6 +1674,7 @@ class SkillIntegrator(BaseIntegrator):
                 links_resolved=0,
                 sub_skills_promoted=sub_skills_count,
                 target_paths=sub_deployed,
+                preserved_external=preserved_external,
             ),
             bin_paths,
             bin_skip_reason,

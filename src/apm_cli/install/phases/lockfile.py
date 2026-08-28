@@ -223,13 +223,27 @@ class LockfileBuilder:
             prior_ledger = DeploymentLedgerCodec.from_lockfile(existing)
         prior_files_by_package: dict[str, list[str]] = {}
         prior_hashes_by_package: dict[str, dict[str, str]] = {}
+        released_by_package = getattr(self.ctx, "package_cleanup_released", {})
+
+        def is_released(path: str, released: set[str]) -> bool:
+            return any(path == root or path.startswith(root.rstrip("/") + "/") for root in released)
+
         for dep_key in lockfile.dependencies:
             previous = existing.get_dependency(dep_key) if existing is not None else None
+            released = released_by_package.get(dep_key, set())
             prior_files_by_package[dep_key] = (
-                previous.deployed_files if previous is not None else []
+                [path for path in previous.deployed_files if not is_released(path, released)]
+                if previous is not None
+                else []
             )
             prior_hashes_by_package[dep_key] = (
-                previous.deployed_file_hashes if previous is not None else {}
+                {
+                    path: content_hash
+                    for path, content_hash in previous.deployed_file_hashes.items()
+                    if not is_released(path, released)
+                }
+                if previous is not None
+                else {}
             )
         from apm_cli.core.deployment_state import DeploymentReconciler
 
@@ -258,6 +272,7 @@ class LockfileBuilder:
         canonical_records = {}
         ghost_count = 0
         for dep_key in lockfile.dependencies:
+            released = released_by_package.get(dep_key, set())
             claim = package_claims[dep_key]
             current = list(claim.current_files)
             retained_hashes = cleanup_retained.get(dep_key, {})
@@ -297,7 +312,21 @@ class LockfileBuilder:
                 apply_disk_deletion=not lockfile_only,
                 user_scope=is_user_scope(getattr(self.ctx, "scope", None)),
             )
-            if not files:
+            if released:
+                files = [path for path in files if not is_released(path, released)]
+                _hashes = {
+                    path: content_hash
+                    for path, content_hash in _hashes.items()
+                    if not is_released(path, released)
+                }
+                ledger = DeploymentLedger(
+                    records={
+                        key: record
+                        for key, record in ledger.records.items()
+                        if not is_released(record.locator.value, released)
+                    }
+                )
+            if not files and not released:
                 # Nothing this install governs and nothing to carry forward;
                 # leave deployed_files untouched so the whole-dep
                 # _merge_existing path can preserve it intact.

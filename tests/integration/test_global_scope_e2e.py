@@ -16,6 +16,7 @@ resolution, and CLI output using local fixtures only.
 import json
 import os
 import platform  # noqa: F401
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -838,3 +839,136 @@ class TestGlobalHookIntegrationNakedFormat:
         assert "1 hook" not in combined, (
             f"Counter must not report '1 hook(s) integrated' for an empty merge. Got: {combined}"
         )
+
+
+class TestGlobalSkillSymlinkCollisions:
+    """Dotfile-owned leaf links remain external to APM ownership."""
+
+    def test_install_preserves_native_and_bundled_skill_links(
+        self, apm_binary_path, fake_home, tmp_path
+    ):
+        native = tmp_path / "smart-docs"
+        native.mkdir()
+        (native / "SKILL.md").write_text(
+            "---\nname: smart-docs\ndescription: smart docs\n---\n",
+            encoding="utf-8",
+        )
+        bundle = tmp_path / "useful-skills"
+        bundled_skill = bundle / ".apm" / "skills" / "yabai-skhd-doctor"
+        bundled_skill.mkdir(parents=True)
+        (bundle / "apm.yml").write_text(
+            "name: useful-skills\nversion: 1.0.0\nincludes: auto\n",
+            encoding="utf-8",
+        )
+        (bundled_skill / "SKILL.md").write_text(
+            "---\nname: yabai-skhd-doctor\ndescription: yabai doctor\n---\n",
+            encoding="utf-8",
+        )
+        normal = tmp_path / "z-normal"
+        normal_agent = normal / ".apm" / "agents" / "normal.agent.md"
+        normal_agent.parent.mkdir(parents=True)
+        (normal / "apm.yml").write_text(
+            "name: z-normal\nversion: 1.0.0\nincludes: auto\n",
+            encoding="utf-8",
+        )
+        normal_agent.write_text("# Normal agent\n", encoding="utf-8")
+        apm_dir = fake_home / ".apm"
+        apm_dir.mkdir()
+        (apm_dir / "apm.yml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "symlink-collision-fixture",
+                    "version": "1.0.0",
+                    "target": "claude,agent-skills",
+                    "dependencies": {"apm": [str(native), str(bundle), str(normal)]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        claude_target = tmp_path / "dotfiles-smart-docs"
+        claude_target.mkdir()
+        (claude_target / "sentinel").write_text("claude\n", encoding="utf-8")
+        shared_target = tmp_path / "dotfiles-yabai"
+        shared_target.mkdir()
+        (shared_target / "sentinel").write_text("shared\n", encoding="utf-8")
+        claude_link = fake_home / ".claude" / "skills" / "smart-docs"
+        shared_link = fake_home / ".agents" / "skills" / "yabai-skhd-doctor"
+        claude_link.parent.mkdir(parents=True)
+        shared_link.parent.mkdir(parents=True)
+        args = [
+            "install",
+            "--global",
+            "--only",
+            "apm",
+            "--target",
+            "claude,agent-skills",
+            "--verbose",
+        ]
+        initial = _run_apm(apm_binary_path, args, fake_home, fake_home)
+        assert initial.returncode == 0, initial.stdout + initial.stderr
+        initial_lock_bytes = (apm_dir / "apm.lock.yaml").read_bytes()
+        initial_lock = initial_lock_bytes.decode()
+        assert ".claude/skills/smart-docs" in initial_lock
+        assert ".agents/skills/yabai-skhd-doctor" in initial_lock
+        shutil.rmtree(claude_link)
+        shutil.rmtree(shared_link)
+        claude_link.symlink_to(claude_target, target_is_directory=True)
+        shared_link.symlink_to(shared_target, target_is_directory=True)
+        expected_links = {
+            claude_link: os.readlink(claude_link),
+            shared_link: os.readlink(shared_link),
+        }
+        expected_trees = {
+            claude_target: sorted(
+                (path.relative_to(claude_target).as_posix(), path.read_bytes())
+                for path in claude_target.rglob("*")
+                if path.is_file()
+            ),
+            shared_target: sorted(
+                (path.relative_to(shared_target).as_posix(), path.read_bytes())
+                for path in shared_target.rglob("*")
+                if path.is_file()
+            ),
+        }
+
+        def assert_links_unchanged() -> None:
+            for link, target in expected_links.items():
+                assert link.is_symlink()
+                assert os.readlink(link) == target
+            for root, tree in expected_trees.items():
+                current = sorted(
+                    (path.relative_to(root).as_posix(), path.read_bytes())
+                    for path in root.rglob("*")
+                    if path.is_file()
+                )
+                assert current == tree
+
+        dry_run = _run_apm(apm_binary_path, [*args, "--dry-run"], fake_home, fake_home)
+        assert dry_run.returncode == 0, dry_run.stdout + dry_run.stderr
+        assert (apm_dir / "apm.lock.yaml").read_bytes() == initial_lock_bytes
+        assert_links_unchanged()
+        for _ in range(2):
+            result = _run_apm(apm_binary_path, args, fake_home, fake_home)
+            assert result.returncode == 0, result.stdout + result.stderr
+            combined = result.stdout + result.stderr
+            assert "Preserved skill symlink" in combined
+            assert "Released external ownership" in combined, combined
+            assert "--force" not in combined
+            assert_links_unchanged()
+            current_lock = (apm_dir / "apm.lock.yaml").read_text(encoding="utf-8")
+            assert ".claude/skills/smart-docs" not in current_lock, current_lock
+            assert ".agents/skills/yabai-skhd-doctor" not in current_lock, current_lock
+
+        lock = (apm_dir / "apm.lock.yaml").read_text(encoding="utf-8")
+        assert ".claude/skills/smart-docs" not in lock, lock
+        assert ".agents/skills/yabai-skhd-doctor" not in lock, lock
+        assert (fake_home / ".agents" / "skills" / "smart-docs" / "SKILL.md").is_file()
+        assert (fake_home / ".claude" / "skills" / "yabai-skhd-doctor" / "SKILL.md").is_file()
+        assert (fake_home / ".claude" / "agents" / "normal.md").is_file()
+        audit = _run_apm(
+            apm_binary_path,
+            ["audit", "--ci", "--format", "json"],
+            apm_dir,
+            fake_home,
+        )
+        assert audit.returncode == 0, audit.stdout + audit.stderr

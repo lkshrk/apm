@@ -63,6 +63,10 @@ def run(ctx: InstallContext) -> None:
     if package_cleanup_retained is None:
         package_cleanup_retained = {}
         ctx.package_cleanup_retained = package_cleanup_retained
+    package_cleanup_released = getattr(ctx, "package_cleanup_released", None)
+    if package_cleanup_released is None:
+        package_cleanup_released = {}
+        ctx.package_cleanup_released = package_cleanup_released
 
     # ------------------------------------------------------------------
     # Orphan cleanup: remove deployed files for packages that were
@@ -200,6 +204,8 @@ def run(ctx: InstallContext) -> None:
                     path: prev_dep.deployed_file_hashes.get(path)
                     for path in cleanup_result.retained
                 }
+            if cleanup_result.preserved_external:
+                package_cleanup_released[dep_key] = set(cleanup_result.preserved_external)
             if cleanup_result.deleted_targets:
                 BaseIntegrator.cleanup_empty_parents(cleanup_result.deleted_targets, project_root)
             for _skipped in cleanup_result.skipped_user_edit:

@@ -426,6 +426,79 @@ def test_diff_engine_unrecorded_yields_to_modified(tmp_path):
     assert [f.kind for f in findings] == ["modified"]
 
 
+def test_diff_engine_ignores_external_leaf_skill_symlink(tmp_path):
+    """An unmanaged leaf link shadows replay output without becoming drift."""
+    from apm_cli.integration.targets import KNOWN_TARGETS
+
+    scratch = tmp_path / "scratch"
+    project = tmp_path / "project"
+    external = tmp_path / "dotfiles-skill"
+    external.mkdir()
+    (external / "sentinel").write_text("keep\n", encoding="utf-8")
+    _write(scratch / ".claude" / "skills" / "smart-docs" / "SKILL.md", b"source\n")
+    link = project / ".claude" / "skills" / "smart-docs"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(external, target_is_directory=True)
+
+    findings = diff_scratch_against_project(
+        scratch,
+        project,
+        _empty_lockfile(),
+        targets=[KNOWN_TARGETS["claude"]],
+    )
+
+    assert findings == []
+    assert link.is_symlink()
+    assert (external / "sentinel").read_text(encoding="utf-8") == "keep\n"
+
+
+def test_diff_engine_reports_tracked_leaf_skill_symlink(tmp_path):
+    """A claimed skill replaced by a link remains drift until ownership releases."""
+    from apm_cli.integration.targets import KNOWN_TARGETS
+
+    rel = ".claude/skills/smart-docs/SKILL.md"
+    scratch = tmp_path / "scratch"
+    project = tmp_path / "project"
+    external = tmp_path / "dotfiles-skill"
+    external.mkdir()
+    _write(scratch / rel, b"source\n")
+    link = project / ".claude" / "skills" / "smart-docs"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(external, target_is_directory=True)
+
+    findings = diff_scratch_against_project(
+        scratch,
+        project,
+        _lockfile_with_tracked([rel]),
+        targets=[KNOWN_TARGETS["claude"]],
+    )
+
+    assert [(finding.kind, finding.path) for finding in findings] == [("unintegrated", rel)]
+
+
+def test_diff_engine_does_not_exempt_symlinked_skill_root(tmp_path):
+    """Only the direct skill leaf may shadow replay output."""
+    from apm_cli.integration.targets import KNOWN_TARGETS
+
+    rel = ".claude/skills/smart-docs/SKILL.md"
+    scratch = tmp_path / "scratch"
+    project = tmp_path / "project"
+    external = tmp_path / "external-claude"
+    (external / "skills").mkdir(parents=True)
+    _write(scratch / rel, b"source\n")
+    project.mkdir()
+    (project / ".claude").symlink_to(external, target_is_directory=True)
+
+    findings = diff_scratch_against_project(
+        scratch,
+        project,
+        _empty_lockfile(),
+        targets=[KNOWN_TARGETS["claude"]],
+    )
+
+    assert [(finding.kind, finding.path) for finding in findings] == [("unintegrated", rel)]
+
+
 def test_render_text_lists_unrecorded_group_and_lockfile_remedy():
     out = render_drift_text([DriftFinding(path=".claude/skills/x/SKILL.md", kind="unrecorded")])
     assert "[x] Drift detected: 1 file(s)" in out

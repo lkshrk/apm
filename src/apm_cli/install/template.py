@@ -320,6 +320,14 @@ def _integrate_materialization(
         if any(int_result[k] > 0 for k in mutation_keys):
             deltas["installed"] = 1
         ctx.package_deployed_files[dep_key] = int_result["deployed_files"]
+        if int_result["released_files"]:
+            ctx.package_cleanup_released.setdefault(dep_key, set()).update(
+                int_result["released_files"]
+            )
+            if logger:
+                logger.verbose_detail(
+                    f"Released external ownership: {', '.join(int_result['released_files'])}"
+                )
     except Exception as e:
         # Per-source error wording: each DependencySource subclass
         # declares its own INTEGRATE_ERROR_PREFIX (Strategy pattern).
