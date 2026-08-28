@@ -90,12 +90,23 @@ chmod +x "dist/$BINARY_NAME/apm"
 
 # Test the binary
 echo -e "${YELLOW}Testing binary...${NC}"
-if "./dist/$BINARY_NAME/apm" --version; then
-    echo -e "${GREEN}✓ Binary test successful${NC}"
-else
+EXPECTED_VERSION=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' pyproject.toml | head -n 1)
+if [ -z "$EXPECTED_VERSION" ]; then
+    echo -e "${RED}✗ Could not read version from pyproject.toml${NC}"
+    exit 1
+fi
+if ! VERSION_OUTPUT=$("./dist/$BINARY_NAME/apm" --version); then
     echo -e "${RED}✗ Binary test failed${NC}"
     exit 1
 fi
+ACTUAL_VERSION=${VERSION_OUTPUT#* version }
+ACTUAL_VERSION=${ACTUAL_VERSION%% *}
+if [ "$ACTUAL_VERSION" != "$EXPECTED_VERSION" ]; then
+    echo -e "${RED}✗ Binary version mismatch: expected $EXPECTED_VERSION, got $ACTUAL_VERSION${NC}"
+    exit 1
+fi
+echo "$VERSION_OUTPUT"
+echo -e "${GREEN}✓ Binary test successful${NC}"
 
 # Show binary info
 echo -e "${GREEN}✓ Build complete!${NC}"

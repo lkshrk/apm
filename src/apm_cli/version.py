@@ -52,14 +52,18 @@ def get_version() -> str:
             with open(pyproject_path, encoding="utf-8") as f:
                 content = f.read()
 
-            # Look for version = "x.y.z" pattern (including PEP 440 prereleases)
+            # Look for version = "x.y.z" pattern (including PEP 440 prereleases/local versions)
             import re
 
             match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', content)
             if match:
                 version_str = match.group(1)
-                # Validate PEP 440 version patterns: x.y.z or x.y.z{a|b|rc}N
-                if re.match(r"^\d+\.\d+\.\d+(a\d+|b\d+|rc\d+)?$", version_str):
+                # Validate the release forms used by APM, including local build metadata.
+                if re.fullmatch(
+                    r"\d+\.\d+\.\d+(?:a\d+|b\d+|rc\d+)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?",
+                    version_str,
+                    re.IGNORECASE,
+                ):
                     return version_str
     except Exception:
         pass
