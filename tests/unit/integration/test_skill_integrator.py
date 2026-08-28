@@ -2925,6 +2925,98 @@ class TestSubSkillContentSkipAndCollisionProtection:
 
         assert (target / "SKILL.md").is_file()
 
+    def test_sub_skill_copy_normalizes_equivalent_source_alias(self):
+        """Sub-skill deployment copies from the plan's canonical source tree."""
+        source = self._create_package_with_sub_skills("pkg", sub_skills=["my-skill"])
+        alias = self.project_root / "package-alias"
+        try:
+            alias.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        pkg_info = self._create_package_info(name="pkg", install_path=alias)
+        target = KNOWN_TARGETS["claude"]
+        (self.project_root / ".claude").mkdir()
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            [target],
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=[target],
+            source_plan=plan,
+        )
+
+        deployed = self.project_root / ".claude" / "skills" / "my-skill" / "SKILL.md"
+        assert deployed.is_file()
+
+    def test_symlinked_sub_skill_is_not_deployed(self):
+        """A sibling skill symlink cannot inherit another skill's authorization."""
+        source = self._create_package_with_sub_skills("pkg", sub_skills=["good"])
+        alias = source / ".apm" / "skills" / "alias"
+        try:
+            alias.symlink_to(source / ".apm" / "skills" / "good", target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        pkg_info = self._create_package_info(name="pkg", install_path=source)
+        target = KNOWN_TARGETS["claude"]
+        (self.project_root / ".claude").mkdir()
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            [target],
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=[target],
+            source_plan=plan,
+        )
+
+        assert (self.project_root / ".claude" / "skills" / "good" / "SKILL.md").is_file()
+        assert not (self.project_root / ".claude" / "skills" / "alias").exists()
+
+    def test_native_skill_keeps_alias_name_while_copying_canonical_source(self):
+        """Canonical source reads do not change the declared directory name."""
+        source = self.project_root / "real-name"
+        source.mkdir()
+        (source / "SKILL.md").write_text("---\nname: alias-name\ndescription: alias\n---\n")
+        alias = self.project_root / "alias-name"
+        try:
+            alias.symlink_to(source, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        pkg_info = self._create_package_info(name="alias-name", install_path=alias)
+        target = KNOWN_TARGETS["claude"]
+        (self.project_root / ".claude").mkdir(exist_ok=True)
+        plan = DeployableSourcePlan.create(
+            pkg_info,
+            [target],
+            skill_subset=None,
+            hooks_approved=False,
+            canvas_approved=False,
+            skip_bin=True,
+        )
+
+        self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            targets=[target],
+            source_plan=plan,
+        )
+
+        assert (self.project_root / ".claude" / "skills" / "alias-name" / "SKILL.md").is_file()
+        assert not (self.project_root / ".claude" / "skills" / "real-name").exists()
+
     def test_cross_package_overwrite_records_diagnostic(self):
         """Cross-package overwrites should record a diagnostic, not print inline."""
         # Pre-existing managed skill from a different package

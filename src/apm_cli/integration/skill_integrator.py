@@ -768,6 +768,8 @@ class SkillIntegrator(BaseIntegrator):
             rel_prefix = target_skills_root.name
 
         for sub_skill_path in candidates:
+            if sub_skill_path.is_symlink():
+                continue
             if not sub_skill_path.is_dir():
                 continue
             if not (sub_skill_path / "SKILL.md").exists():
@@ -942,7 +944,7 @@ class SkillIntegrator(BaseIntegrator):
             tuple[int, list[Path]]: (count of promoted sub-skills, list of deployed dirs)
         """
         self.init_link_resolver(package_info, project_root)
-        package_path = package_info.install_path
+        package_path = package_info.install_path.resolve(strict=True)
         sub_skills_dir = package_path / ".apm" / "skills"
         if not sub_skills_dir.is_dir():
             return 0, []
@@ -1062,11 +1064,11 @@ class SkillIntegrator(BaseIntegrator):
             SkillIntegrationResult: Results of the integration operation
         """
         self.init_link_resolver(package_info, project_root)
-        package_path = package_info.install_path
+        raw_skill_name = package_info.install_path.name
+        package_path = package_info.install_path.resolve(strict=True)
 
         # Use the source folder name as the skill name
         # e.g., apm_modules/ComposioHQ/awesome-claude-skills/mcp-builder -> mcp-builder
-        raw_skill_name = package_path.name
 
         # Validate skill name per agentskills.io spec
         is_valid, error_msg = validate_skill_name(raw_skill_name)
@@ -1496,7 +1498,7 @@ class SkillIntegrator(BaseIntegrator):
                     links_resolved=0,
                 )
 
-        package_path = package_info.install_path
+        package_path = package_info.install_path.resolve(strict=True)
 
         # MARKETPLACE_PLUGIN: deploy bin/ executables + plugin manifest BEFORE
         # skill routing.  bin/ deployment is orthogonal to whether the plugin
