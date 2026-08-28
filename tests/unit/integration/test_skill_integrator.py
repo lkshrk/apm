@@ -2909,6 +2909,22 @@ class TestSubSkillContentSkipAndCollisionProtection:
         assert "Sub-skill my-skill" in content
         assert "User authored" not in content
 
+    def test_managed_skill_with_file_ledger_is_restored(self):
+        """A managed empty skill directory is restored from its tracked file."""
+        target = self.project_root / ".agents" / "skills" / "my-skill"
+        target.mkdir(parents=True)
+        package_dir = self._create_package_with_sub_skills("pkg", sub_skills=["my-skill"])
+        pkg_info = self._create_package_info(name="pkg", install_path=package_dir)
+
+        self.integrator.integrate_package_skill(
+            pkg_info,
+            self.project_root,
+            managed_files={".agents/skills/my-skill/SKILL.md"},
+            force=False,
+        )
+
+        assert (target / "SKILL.md").is_file()
+
     def test_cross_package_overwrite_records_diagnostic(self):
         """Cross-package overwrites should record a diagnostic, not print inline."""
         # Pre-existing managed skill from a different package

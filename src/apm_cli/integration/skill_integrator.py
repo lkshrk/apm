@@ -788,8 +788,10 @@ class SkillIntegrator(BaseIntegrator):
                     continue
 
                 # Check if this is a user-authored skill (not managed by APM)
-                is_managed = (
-                    managed_files is not None and rel_path.replace("\\", "/") in managed_files
+                normalized_rel = rel_path.replace("\\", "/")
+                is_managed = managed_files is not None and (
+                    normalized_rel in managed_files
+                    or any(path.startswith(normalized_rel + "/") for path in managed_files)
                 )
                 prev_owner = (owned_by or {}).get(sub_name)
                 is_self_overwrite = prev_owner is not None and prev_owner == parent_name
