@@ -624,8 +624,12 @@ def test_dry_run_native_preflight_resolves_marketplace_before_install_path(
         "apm_cli.deps.apm_resolver.APMDependencyResolver._resolve_marketplace_dep",
         resolve,
     )
-    monkeypatch.setattr("apm_cli.core.scope.get_modules_dir", lambda _scope: tmp_path / "apm_modules")
-    monkeypatch.setattr("apm_cli.bundle.local_bundle.route_agent_plugin_package", lambda _path: None)
+    monkeypatch.setattr(
+        "apm_cli.core.scope.get_modules_dir", lambda _scope: tmp_path / "apm_modules"
+    )
+    monkeypatch.setattr(
+        "apm_cli.bundle.local_bundle.route_agent_plugin_package", lambda _path: None
+    )
     ctx = SimpleNamespace(project_root=tmp_path, scope=object(), auth_resolver=object())
 
     preflight_agent_plugin_dry_run(ctx, [dependency])
