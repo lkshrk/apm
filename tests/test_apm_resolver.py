@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from apm_cli.marketplace.errors import BuildError, PluginNotFoundError
+from apm_cli.marketplace.models import MarketplacePlugin
 from apm_cli.marketplace.resolver import MarketplacePluginResolution
 from src.apm_cli.deps.apm_resolver import APMDependencyResolver
 from src.apm_cli.deps.dependency_graph import (
@@ -881,6 +882,81 @@ class TestMarketplaceResolution(unittest.TestCase):
             result = resolver.resolve_dependencies(project_root)
             assert result.flattened_dependencies.total_dependencies() == 1
             assert "acme/gopls-lsp" in result.flattened_dependencies.dependencies
+
+    @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
+    def test_metadata_only_marketplace_dep_uses_catalog_components(self, mock_resolve):
+        plugin = MarketplacePlugin(
+            name="gopls-lsp",
+            source="./plugins/gopls-lsp",
+            manifest={
+                "name": "gopls-lsp",
+                "source": "./plugins/gopls-lsp",
+                "lspServers": {
+                    "gopls": {
+                        "command": "gopls",
+                        "extensionToLanguage": {".go": "go"},
+                    }
+                },
+            },
+        )
+        mock_resolve.return_value = MarketplacePluginResolution(
+            canonical="acme/gopls-lsp#main",
+            plugin=plugin,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            modules = root / "apm_modules"
+            (root / "apm.yml").write_text(
+                "name: consumer\nversion: 1.0.0\n"
+                "dependencies:\n  apm:\n"
+                "    - name: gopls-lsp\n      marketplace: claude-plugins-official\n"
+            )
+
+            def download(dep_ref, _modules_dir, _parent_chain=""):
+                path = dep_ref.get_install_path(modules)
+                path.mkdir(parents=True)
+                (path / "README.md").write_text("metadata-only plugin")
+                return path
+
+            result = APMDependencyResolver(
+                apm_modules_dir=modules,
+                download_callback=download,
+                max_parallel=1,
+            ).resolve_dependencies(root)
+
+            packages = [node.package for node in result.dependency_tree.nodes.values()]
+            lsp = [dep for package in packages if package for dep in package.get_lsp_dependencies()]
+            assert [dep.name for dep in lsp] == ["gopls"]
+            assert (modules / "acme" / "gopls-lsp" / "apm.yml").is_file()
+
+    def test_remote_root_with_one_child_skill_routes_that_skill(self):
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            modules = root / "apm_modules"
+            (root / "apm.yml").write_text(
+                "name: consumer\nversion: 1.0.0\n"
+                "dependencies:\n  apm:\n    - git: ShiplightAI/agent-skills-v2\n"
+            )
+
+            def download(dep_ref, _modules_dir, _parent_chain=""):
+                path = dep_ref.get_install_path(modules)
+                (path / "shiplight").mkdir(parents=True)
+                (path / "shiplight" / "SKILL.md").write_text(
+                    "---\nname: shiplight\ndescription: QA skill\n---\n"
+                )
+                return path
+
+            result = APMDependencyResolver(
+                apm_modules_dir=modules,
+                download_callback=download,
+                max_parallel=1,
+            ).resolve_dependencies(root)
+
+            packages = [node.package for node in result.dependency_tree.nodes.values()]
+            shiplight = [package for package in packages if package and package.name == "shiplight"]
+            assert len(shiplight) == 1
+            assert shiplight[0].package_path.name == "shiplight"
 
     @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
     def test_marketplace_dep_failure_surfaces_error(self, mock_resolve):

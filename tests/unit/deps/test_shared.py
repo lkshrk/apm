@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apm_cli.deps._shared import _validate_and_load_package
+from apm_cli.models.apm_package import DependencyReference
+from apm_cli.models.validation import validate_apm_package
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -65,6 +67,35 @@ class TestValidateAndLoadPackage:
         _validate_and_load_package(validation_result, tmp_path, dep_ref)
 
         assert package.source == "https://github.com/owner/repo"
+
+    def test_materializes_metadata_only_marketplace_plugin(self, tmp_path: Path) -> None:
+        (tmp_path / "README.md").write_text("catalog-only plugin")
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "gopls-lsp",
+            "lspServers": {
+                "gopls": {
+                    "command": "gopls",
+                    "extensionToLanguage": {".go": "go"},
+                }
+            },
+        }
+
+        package = _validate_and_load_package(validate_apm_package(tmp_path), tmp_path, dep_ref)
+
+        assert [dep.name for dep in package.get_lsp_dependencies()] == ["gopls"]
+        assert (tmp_path / "apm.yml").is_file()
+
+    def test_routes_one_immediate_child_skill(self, tmp_path: Path) -> None:
+        skill = tmp_path / "shiplight"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: shiplight\ndescription: QA skill\n---\n")
+        dep_ref = DependencyReference(repo_url="ShiplightAI/agent-skills-v2")
+
+        package = _validate_and_load_package(validate_apm_package(tmp_path), tmp_path, dep_ref)
+
+        assert package.name == "shiplight"
+        assert package.package_path == skill
 
     def test_raises_on_invalid_result(self, tmp_path: Path) -> None:
         dep_ref = _make_dep_ref("github.com/owner/bad-pkg")

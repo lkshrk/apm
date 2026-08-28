@@ -371,6 +371,7 @@ class MarketplacePlugin:
     # ``None`` means the field was absent (old marketplace.json); the resolver
     # falls back to its built-in default in that case.
     tag_pattern: str | None = None
+    manifest: dict[str, Any] | None = None
 
     def matches_query(self, query: str) -> bool:
         """Return True if the plugin matches a search query (case-insensitive)."""
@@ -542,6 +543,7 @@ def _parse_plugin_entry(
             source_marketplace=source_name,
             registry=registry_name,
             tag_pattern=tag_pattern,
+            manifest=dict(entry),
         ),
         None,
     )

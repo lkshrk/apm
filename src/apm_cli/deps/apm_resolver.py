@@ -39,6 +39,41 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_RESOLVE_PARALLEL = 4
 
 
+def _normalize_downloaded_package_root(dep_ref: DependencyReference, install_path: Path) -> Path:
+    """Materialize catalog-only plugins or route one unambiguous child skill."""
+    if not install_path.is_dir():
+        return install_path
+    manifest = getattr(dep_ref, "marketplace_manifest", None)
+    apm_yml_path = install_path / "apm.yml"
+    if (
+        not apm_yml_path.exists()
+        and isinstance(manifest, dict)
+        and any(
+            manifest.get(key)
+            for key in ("agents", "commands", "hooks", "lspServers", "mcpServers", "skills")
+        )
+    ):
+        from apm_cli.deps.plugin_parser import synthesize_apm_yml_from_plugin
+
+        synthesize_apm_yml_from_plugin(install_path, dict(manifest))
+
+    if (
+        not apm_yml_path.exists()
+        and not (install_path / "SKILL.md").is_file()
+        and route_agent_plugin_package(install_path) is None
+    ):
+        children = sorted(
+            candidate.parent
+            for candidate in install_path.glob("*/SKILL.md")
+            if candidate.is_file()
+            and not candidate.is_symlink()
+            and not candidate.parent.is_symlink()
+        )
+        if len(children) == 1:
+            return children[0]
+    return install_path
+
+
 def _select_dependency_winners(
     nodes: Iterable[DependencyNode],
 ) -> tuple[tuple[DependencyNode, ...], dict[str, str]]:
@@ -513,6 +548,9 @@ class APMDependencyResolver:
             else DependencyReference.parse(resolution.canonical)
         )
         resolved.target_subset = dep_ref.target_subset
+        manifest = getattr(resolution.plugin, "manifest", None)
+        if isinstance(manifest, dict) and manifest:
+            resolved.marketplace_manifest = dict(manifest)
         self._marketplace_provenance[resolved.get_unique_key()] = resolution.provenance(
             dep_ref.marketplace_name,
             dep_ref.marketplace_plugin_name,
@@ -1130,6 +1168,8 @@ class APMDependencyResolver:
             if not install_path.exists():
                 return None
 
+        install_path = _normalize_downloaded_package_root(dep_ref, install_path)
+
         # Native Agent Plugins must retain their projected compatibility package
         # so recursive resolution can see APM-only dependencies without requiring
         # or synthesizing an apm.yml compatibility manifest.
@@ -1156,15 +1196,16 @@ class APMDependencyResolver:
         if not apm_yml_path.exists():
             # Package exists but has no apm.yml (e.g., Claude Skill)
             # Check for SKILL.md and create minimal package
-            skill_md_path = install_path / "SKILL.md"
+            skill_root = install_path
+            skill_md_path = skill_root / "SKILL.md"
             if skill_md_path.exists():
                 # Claude Skill without apm.yml - no transitive deps
                 return APMPackage(
-                    name=dep_ref.get_display_name(),
+                    name=skill_root.name,
                     version="1.0.0",
                     source=dep_ref.repo_url,
-                    package_path=install_path,
-                    source_path=self._compute_dep_source_path(dep_ref, parent_pkg, install_path),
+                    package_path=skill_root,
+                    source_path=skill_root.resolve(),
                 )
             # No manifest found
             return None

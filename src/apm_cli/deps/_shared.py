@@ -35,26 +35,35 @@ def _validate_and_load_package(
     """
     from ..agent_plugins.errors import AgentPluginError
     from ..bundle.local_bundle import route_agent_plugin_package
+    from ..deps.apm_resolver import _normalize_downloaded_package_root
+    from ..models.validation import validate_apm_package
     from ..utils.file_ops import robust_rmtree
+
+    original_target = target_path
+    target_path = _normalize_downloaded_package_root(dep_ref, target_path)
+    if target_path != original_target or isinstance(
+        getattr(dep_ref, "marketplace_manifest", None), dict
+    ):
+        validation_result = validate_apm_package(target_path)
 
     if target_path.is_dir():
         try:
             route_agent_plugin_package(target_path)
         except AgentPluginError:
-            if target_path.exists():
-                robust_rmtree(target_path, ignore_errors=True)
+            if original_target.exists():
+                robust_rmtree(original_target, ignore_errors=True)
             raise
     if not validation_result.is_valid:
-        if target_path.exists():
-            robust_rmtree(target_path, ignore_errors=True)
+        if original_target.exists():
+            robust_rmtree(original_target, ignore_errors=True)
         error_msg = f"Invalid APM package {dep_ref.repo_url}:\n"
         for error in validation_result.errors:
             error_msg += f"  - {error}\n"
         raise RuntimeError(error_msg.strip())
 
     if not validation_result.package:
-        if target_path.exists():
-            robust_rmtree(target_path, ignore_errors=True)
+        if original_target.exists():
+            robust_rmtree(original_target, ignore_errors=True)
         raise RuntimeError(
             f"Package validation succeeded but no package metadata found for {dep_ref.repo_url}"
         )
