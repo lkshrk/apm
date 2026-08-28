@@ -40,18 +40,10 @@ import click
 
 from apm_cli.core.command_logger import CommandLogger
 from apm_cli.deps.path_anchoring import resolve_local_dep_dir
-from apm_cli.install.drift_render import (
-    render_drift as render_drift,
-)
-from apm_cli.install.drift_render import (
-    render_drift_json as render_drift_json,
-)
-from apm_cli.install.drift_render import (
-    render_drift_sarif as render_drift_sarif,
-)
-from apm_cli.install.drift_render import (
-    render_drift_text as render_drift_text,
-)
+from apm_cli.install.drift_render import render_drift as render_drift
+from apm_cli.install.drift_render import render_drift_json as render_drift_json
+from apm_cli.install.drift_render import render_drift_sarif as render_drift_sarif
+from apm_cli.install.drift_render import render_drift_text as render_drift_text
 from apm_cli.utils.console import STATUS_SYMBOLS
 from apm_cli.utils.guards import _ReadOnlyProjectGuard
 
@@ -60,9 +52,7 @@ if TYPE_CHECKING:
     from apm_cli.integration.targets import TargetProfile
 
 
-# ---------------------------------------------------------------------------
-# Public dataclasses
-# ---------------------------------------------------------------------------
+# Public models
 
 
 @dataclass(frozen=True)
@@ -94,9 +84,7 @@ class DriftFinding:
     inline_diff: str = ""
 
 
-# ---------------------------------------------------------------------------
 # Errors
-# ---------------------------------------------------------------------------
 
 
 class CacheMissError(RuntimeError):
@@ -120,9 +108,7 @@ from apm_cli.utils.normalization import (  # noqa: E402, F401  -- re-exported; t
     _strip_build_id,
 )
 
-# ---------------------------------------------------------------------------
 # Scratch directory lifecycle
-# ---------------------------------------------------------------------------
 
 
 def _assert_scratch_bound(project_root: Path, scratch_root: Path) -> None:
@@ -227,9 +213,7 @@ class CheckLogger(CommandLogger):
         self._emit("warning", f"Drift detected: {n} file(s)")
 
 
-# ---------------------------------------------------------------------------
 # Package materialization
-# ---------------------------------------------------------------------------
 
 
 def _verify_remote_cache_candidate(lock_dep: LockedDependency, candidate: Path) -> None:
@@ -459,9 +443,7 @@ def _build_package_info(
     return info
 
 
-# ---------------------------------------------------------------------------
 # Replay orchestrator
-# ---------------------------------------------------------------------------
 
 
 def _make_integrators():
@@ -709,9 +691,7 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
     return scratch_root
 
 
-# ---------------------------------------------------------------------------
 # Diff engine
-# ---------------------------------------------------------------------------
 
 _INLINE_DIFF_BYTE_CAP = 100 * 1024  # 100 KB
 
