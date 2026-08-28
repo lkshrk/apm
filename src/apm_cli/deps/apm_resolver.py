@@ -45,17 +45,26 @@ def _normalize_downloaded_package_root(dep_ref: DependencyReference, install_pat
         return install_path
     manifest = getattr(dep_ref, "marketplace_manifest", None)
     apm_yml_path = install_path / "apm.yml"
-    if (
-        not apm_yml_path.exists()
-        and isinstance(manifest, dict)
-        and any(
-            manifest.get(key)
-            for key in ("agents", "commands", "hooks", "lspServers", "mcpServers", "skills")
-        )
-    ):
+    declared = tuple(
+        key
+        for key in ("lspServers", "mcpServers")
+        if isinstance(manifest, dict) and manifest.get(key)
+    )
+    if not apm_yml_path.exists() and declared:
         from apm_cli.deps.plugin_parser import synthesize_apm_yml_from_plugin
+        from apm_cli.utils.file_ops import robust_rmtree
 
-        synthesize_apm_yml_from_plugin(install_path, dict(manifest))
+        try:
+            apm_yml = synthesize_apm_yml_from_plugin(install_path, dict(manifest))
+            package = APMPackage.from_apm_yml(apm_yml)
+            if "lspServers" in declared and not package.get_lsp_dependencies():
+                raise ValueError("Marketplace LSP metadata did not materialize a valid dependency")
+            if "mcpServers" in declared and not package.get_mcp_dependencies():
+                raise ValueError("Marketplace MCP metadata did not materialize a valid dependency")
+        except Exception:
+            if install_path.exists():
+                robust_rmtree(install_path, ignore_errors=True)
+            raise
 
     if (
         not apm_yml_path.exists()

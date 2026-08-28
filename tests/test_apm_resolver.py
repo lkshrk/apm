@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 
 from apm_cli.marketplace.errors import BuildError, PluginNotFoundError
-from apm_cli.marketplace.models import MarketplacePlugin
+from apm_cli.marketplace.models import parse_marketplace_json
 from apm_cli.marketplace.resolver import MarketplacePluginResolution
 from src.apm_cli.deps.apm_resolver import APMDependencyResolver
 from src.apm_cli.deps.dependency_graph import (
@@ -885,20 +885,25 @@ class TestMarketplaceResolution(unittest.TestCase):
 
     @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
     def test_metadata_only_marketplace_dep_uses_catalog_components(self, mock_resolve):
-        plugin = MarketplacePlugin(
-            name="gopls-lsp",
-            source="./plugins/gopls-lsp",
-            manifest={
-                "name": "gopls-lsp",
-                "source": "./plugins/gopls-lsp",
-                "lspServers": {
-                    "gopls": {
-                        "command": "gopls",
-                        "extensionToLanguage": {".go": "go"},
-                    }
-                },
+        entry = {
+            "name": "gopls-lsp",
+            "source": "./plugins/gopls-lsp",
+            "lspServers": {
+                "gopls": {
+                    "command": "gopls",
+                    "extensionToLanguage": {".go": "go"},
+                }
             },
-        )
+            "dependencies": ["untrusted/injected-dependency"],
+        }
+        plugin = parse_marketplace_json(
+            {"name": "claude-plugins-official", "plugins": [entry]},
+            source_name="claude-plugins-official",
+        ).plugins[0]
+        entry["lspServers"]["gopls"]["command"] = "mutated"
+        assert plugin.manifest["lspServers"]["gopls"]["command"] == "gopls"
+        assert "dependencies" not in plugin.manifest
+        hash(plugin)
         mock_resolve.return_value = MarketplacePluginResolution(
             canonical="acme/gopls-lsp#main",
             plugin=plugin,

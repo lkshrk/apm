@@ -86,6 +86,21 @@ class TestValidateAndLoadPackage:
         assert [dep.name for dep in package.get_lsp_dependencies()] == ["gopls"]
         assert (tmp_path / "apm.yml").is_file()
 
+    def test_rejects_invalid_marketplace_metadata_and_cleans_target(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        (target / "README.md").write_text("catalog-only plugin")
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "bad-lsp",
+            "lspServers": {"gopls": {"command": "gopls"}},
+        }
+
+        with pytest.raises(ValueError, match="did not materialize"):
+            _validate_and_load_package(validate_apm_package(target), target, dep_ref)
+
+        assert not target.exists()
+
     def test_routes_one_immediate_child_skill(self, tmp_path: Path) -> None:
         skill = tmp_path / "shiplight"
         skill.mkdir()
