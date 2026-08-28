@@ -11,6 +11,34 @@ if TYPE_CHECKING:
     from ..models.validation import ValidationResult
 
 
+def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: Path) -> bool:
+    """Synthesize a package when deployable components exist only in the catalog."""
+    manifest = getattr(dep_ref, "marketplace_manifest", None)
+    declared = tuple(
+        key
+        for key in ("lspServers", "mcpServers")
+        if isinstance(manifest, dict) and manifest.get(key)
+    )
+    if (target_path / "apm.yml").exists() or not declared:
+        return False
+    from apm_cli.deps.plugin_parser import synthesize_apm_yml_from_plugin
+    from apm_cli.models.apm_package import APMPackage
+    from apm_cli.utils.file_ops import robust_rmtree
+
+    try:
+        apm_yml = synthesize_apm_yml_from_plugin(target_path, dict(manifest))
+        package = APMPackage.from_apm_yml(apm_yml)
+        if "lspServers" in declared and not package.get_lsp_dependencies():
+            raise ValueError("Marketplace LSP metadata did not materialize a valid dependency")
+        if "mcpServers" in declared and not package.get_mcp_dependencies():
+            raise ValueError("Marketplace MCP metadata did not materialize a valid dependency")
+    except Exception:
+        if target_path.exists():
+            robust_rmtree(target_path, ignore_errors=True)
+        raise
+    return True
+
+
 def _validate_and_load_package(
     validation_result: ValidationResult,
     target_path: Path,
@@ -35,7 +63,11 @@ def _validate_and_load_package(
     """
     from ..agent_plugins.errors import AgentPluginError
     from ..bundle.local_bundle import route_agent_plugin_package
+    from ..models.validation import validate_apm_package
     from ..utils.file_ops import robust_rmtree
+
+    if materialize_marketplace_manifest(dep_ref, target_path):
+        validation_result = validate_apm_package(target_path)
 
     if target_path.is_dir():
         try:
