@@ -7,7 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apm_cli.deps._shared import _validate_and_load_package
+from apm_cli.deps._shared import (
+    MarketplaceManifestMaterializationError,
+    _validate_and_load_package,
+    materialize_marketplace_manifest,
+)
 from apm_cli.models.apm_package import DependencyReference
 from apm_cli.models.validation import validate_apm_package
 
@@ -112,8 +116,7 @@ class TestValidateAndLoadPackage:
         with pytest.raises(ValueError) as exc_info:
             _validate_and_load_package(validate_apm_package(target), target, dep_ref)
 
-        assert dep_ref.repo_url in str(exc_info.value)
-        assert str(target) in str(exc_info.value)
+        assert "invalid marketplace metadata for 'plugins'" in str(exc_info.value)
         assert not target.exists()
 
     def test_rejects_invalid_marketplace_mcp_metadata_and_cleans_target(
@@ -132,6 +135,108 @@ class TestValidateAndLoadPackage:
             _validate_and_load_package(validate_apm_package(target), target, dep_ref)
 
         assert not target.exists()
+
+    @pytest.mark.parametrize(
+        ("field", "valid", "invalid"),
+        [
+            (
+                "lspServers",
+                {"command": "gopls", "extensionToLanguage": {".go": "go"}},
+                {"command": "gopls"},
+            ),
+            (
+                "mcpServers",
+                {"command": "echo", "args": ["ok"]},
+                {"args": ["missing-command"]},
+            ),
+        ],
+    )
+    def test_rejects_partially_invalid_marketplace_metadata(
+        self,
+        tmp_path: Path,
+        field: str,
+        valid: dict[str, object],
+        invalid: dict[str, object],
+    ) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "mixed-plugin",
+            field: {"valid": valid, "invalid": invalid},
+        }
+
+        with pytest.raises(
+            MarketplaceManifestMaterializationError,
+            match="did not materialize every declared server: invalid",
+        ):
+            materialize_marketplace_manifest(dep_ref, target)
+
+        assert not target.exists()
+
+    def test_rejects_dangling_apm_yml_symlink_without_writing_outside(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        outside = tmp_path / "outside.yml"
+        try:
+            (target / "apm.yml").symlink_to(outside)
+        except OSError:
+            pytest.skip("symlinks are unavailable")
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "catalog-only",
+            "mcpServers": {"server": {"command": "echo"}},
+        }
+
+        with pytest.raises(
+            MarketplaceManifestMaterializationError,
+            match="must not be symbolic links",
+        ):
+            materialize_marketplace_manifest(dep_ref, target)
+
+        assert not outside.exists()
+        assert not target.exists()
+
+    def test_rematerializes_when_catalog_manifest_variant_changes(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "catalog-only",
+            "mcpServers": {"first": {"command": "echo"}},
+        }
+
+        assert materialize_marketplace_manifest(dep_ref, target)
+        dep_ref.marketplace_manifest = {
+            "name": "catalog-only",
+            "mcpServers": {"second": {"command": "echo", "args": ["second"]}},
+        }
+
+        assert materialize_marketplace_manifest(dep_ref, target)
+        package = validate_apm_package(target).package
+        assert package is not None
+        assert [dependency.name for dependency in package.get_mcp_dependencies()] == ["second"]
+
+    def test_cleanup_failure_cannot_leave_generated_manifest(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "bad-plugin",
+            "mcpServers": {"invalid": {"args": ["missing-command"]}},
+        }
+
+        with (
+            patch("apm_cli.utils.file_ops.robust_rmtree", side_effect=OSError("locked")),
+            pytest.raises(
+                MarketplaceManifestMaterializationError,
+                match="rejected download cleanup also failed",
+            ),
+        ):
+            materialize_marketplace_manifest(dep_ref, target)
+
+        assert not (target / "apm.yml").exists()
+        assert not (target / ".apm-marketplace-stage.yml").exists()
 
     def test_raises_on_invalid_result(self, tmp_path: Path) -> None:
         dep_ref = _make_dep_ref("github.com/owner/bad-pkg")

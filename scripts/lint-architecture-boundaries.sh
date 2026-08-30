@@ -1772,6 +1772,39 @@ if ! grep -q 'structural_errors: tuple\[str, \.\.\.\] = ()' "$marketplace_struct
     violations=$((violations + 1))
 fi
 
+echo "[*] AC35: catalog-only marketplace materialization authority"
+catalog_materialization_owner="src/apm_cli/deps/_shared.py"
+catalog_materialization_consumer="src/apm_cli/deps/apm_resolver.py"
+catalog_local_consumer="src/apm_cli/install/phases/local_content.py"
+catalog_manifest_parallel_hits=$(
+    grep -rEn --include='*.py' 'marketplace_manifest' src/apm_cli \
+        | grep -v "^${catalog_materialization_owner}:" \
+        | grep -v "^${catalog_materialization_consumer}:" \
+        | grep -v '^src/apm_cli/marketplace/models.py:' \
+        | grep -v '^src/apm_cli/models/dependency/reference.py:' \
+        || true
+)
+catalog_synthesis_parallel_hits=$(
+    grep -rEn --include='*.py' 'synthesize_apm_yml_from_plugin\(' src/apm_cli \
+        | grep -v "^${catalog_materialization_owner}:" \
+        | grep -v '^src/apm_cli/deps/plugin_parser.py:' \
+        || true
+)
+if ! grep -q '^def materialize_marketplace_manifest(' "$catalog_materialization_owner" \
+    || ! grep -q 'from \._shared import MarketplaceManifestMaterializationError, materialize_marketplace_manifest' \
+        "$catalog_materialization_consumer" \
+    || ! grep -q 'materialize_marketplace_manifest(dep_ref, install_path)' \
+        "$catalog_materialization_consumer" \
+    || ! grep -q 'has_marketplace_deployable_manifest(dep_ref)' \
+        "$catalog_local_consumer" \
+    || [ -n "$catalog_manifest_parallel_hits" ] \
+    || [ -n "$catalog_synthesis_parallel_hits" ]; then
+    echo "[x] Catalog-only marketplace manifests must route through deps/_shared.py"
+    [ -n "$catalog_manifest_parallel_hits" ] && echo "$catalog_manifest_parallel_hits"
+    [ -n "$catalog_synthesis_parallel_hits" ] && echo "$catalog_synthesis_parallel_hits"
+    violations=$((violations + 1))
+fi
+
 echo "[*] AC29: dependency identity and materialization path authority"
 identity_owner="src/apm_cli/models/dependency/identity.py"
 materialization_owner="src/apm_cli/models/dependency/materialization.py"

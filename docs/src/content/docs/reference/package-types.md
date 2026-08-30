@@ -4,12 +4,12 @@ sidebar:
   order: 4
 ---
 
-APM supports six package layouts, each with distinct install semantics.
-Pick the layout that matches the author's intent -- APM preserves it.
+APM supports six source layouts plus catalog-only marketplace packages.
+Pick the form that matches the author's intent -- APM preserves it.
 
 ## Layout summary
 
-| Root signal | Author intent | Install semantic |
+| Package signal | Author intent | Install semantic |
 |---|---|---|
 | `.apm/` (with or without apm.yml) | "I have N independent primitives" | Hoist each primitive into the target's runtime dirs |
 | `SKILL.md` (alone or with apm.yml -- HYBRID) | "I am one skill bundle" | Copy the whole bundle to `<target>/skills/<name>/` |
@@ -17,6 +17,7 @@ Pick the layout that matches the author's intent -- APM preserves it.
 | `hooks/*.json` only (no apm.yml or SKILL.md) | "I ship a set of harness hooks" | Deploy each hook to the target's `hooks/` directory |
 | `plugin.json` (no `$schema`) / `.claude-plugin/` | Claude plugin collection | Dissect via plugin artifact mapping |
 | `plugin.json` with an Agent Plugins `$schema` | Portable Agent Plugin | Installed whole and registered when the effective targets include Copilot |
+| Marketplace entry with inline `lspServers` or `mcpServers` | Catalog owns server metadata | Synthesize and validate `apm.yml`, then deploy servers |
 
 ## APM package (`.apm/` directory)
 
@@ -192,6 +193,20 @@ target's hooks runtime path (e.g. `.github/hooks/` for Copilot,
 primitives. If you also ship skills or instructions, prefer the `.apm/`
 layout and put your hooks under `.apm/hooks/` so they install alongside
 the rest.
+
+## Catalog-only marketplace package
+
+A marketplace entry can supply a package's only APM metadata. When its
+downloaded source has no `apm.yml`, `SKILL.md`, or plugin manifest, APM uses one
+or both inline `lspServers` and `mcpServers` fields. It admits only `name`,
+`description`, `version`, `lspServers`, and `mcpServers`; unrelated catalog
+fields, including dependency fields, cannot add APM dependencies.
+
+APM stages and validates a synthesized `apm.yml` before committing it. Every
+declared server must validate. Any failure rejects the package and removes its
+download. A symlinked package path, `apm.yml`, or `.apm` path also fails closed.
+On warm installs, APM rematerializes the manifest when the admitted catalog
+metadata variant changes.
 
 ## Plugin collection (`plugin.json`)
 

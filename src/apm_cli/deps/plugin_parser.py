@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from ..utils.atomic_io import write_text_lf
+from ..utils.atomic_io import atomic_write_text, write_text_lf
 from ..utils.console import _rich_warning
 from ..utils.path_security import PathTraversalError, ensure_path_within
 
@@ -537,7 +537,15 @@ def _validate_declared_component_paths(plugin_path: Path, manifest: dict[str, An
             )
 
 
-def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) -> Path:
+def synthesize_apm_yml_from_plugin(
+    plugin_path: Path,
+    manifest: dict[str, Any],
+    *,
+    output_path: Path | None = None,
+    map_artifacts: bool = True,
+    merge_existing: bool = True,
+    header: str | None = None,
+) -> Path:
     """Synthesize apm.yml from plugin metadata.
 
     Maps the plugin's agents/, skills/, commands/, hooks/ directories and
@@ -554,6 +562,10 @@ def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) 
         plugin_path: Path to the plugin directory.
         manifest: Plugin metadata dict (only `name` is required; all other
                   fields are optional and default gracefully).
+        output_path: Optional staged manifest destination.
+        map_artifacts: Whether to copy plugin artifacts into ``.apm``.
+        merge_existing: Whether to preserve an existing package manifest.
+        header: Optional first line for generated-state metadata.
 
     Returns:
         Path: Path to the generated apm.yml.
@@ -563,12 +575,10 @@ def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) 
 
     _validate_declared_component_paths(plugin_path, manifest)
 
-    # Create .apm directory structure
-    apm_dir = plugin_path / ".apm"
-    apm_dir.mkdir(exist_ok=True)
-
-    # Map plugin structure into .apm/ subdirectories
-    _map_plugin_artifacts(plugin_path, apm_dir, manifest)
+    if map_artifacts:
+        apm_dir = plugin_path / ".apm"
+        apm_dir.mkdir(exist_ok=True)
+        _map_plugin_artifacts(plugin_path, apm_dir, manifest)
 
     # Extract MCP servers from plugin and convert to dependency format
     mcp_servers = _extract_mcp_servers(plugin_path, manifest)
@@ -586,13 +596,14 @@ def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) 
 
     # Load existing apm.yml as base so resolution-critical blocks are not
     # discarded when the synthesized manifest overwrites the file (#1666).
-    apm_yml_path = plugin_path / "apm.yml"
+    source_apm_yml_path = plugin_path / "apm.yml"
+    apm_yml_path = output_path or source_apm_yml_path
     existing_manifest: dict[str, Any] | None = None
-    if apm_yml_path.exists():
+    if merge_existing and source_apm_yml_path.exists():
         try:
             from ..utils.yaml_io import load_yaml
 
-            data = load_yaml(apm_yml_path)
+            data = load_yaml(source_apm_yml_path)
             if isinstance(data, dict):
                 existing_manifest = data
         except (OSError, yaml.YAMLError) as exc:
@@ -607,13 +618,18 @@ def synthesize_apm_yml_from_plugin(plugin_path: Path, manifest: dict[str, Any]) 
 
     # Generate apm.yml from plugin metadata, merging with existing manifest
     apm_yml_content = _generate_apm_yml(manifest, existing_manifest=existing_manifest)
+    if header:
+        apm_yml_content = f"{header}\n{apm_yml_content}"
 
     # LF-deterministic write (apm#2619): this synthetic manifest lands inside
     # the installed package tree that compute_package_hash() hashes raw, so a
     # platform-native text-mode write (CRLF on Windows) would make the
     # lockfile content_hash diverge across OSes. Mirrors the #2223 fix for
     # download_virtual_file_package().
-    write_text_lf(apm_yml_path, apm_yml_content)
+    if output_path is None:
+        write_text_lf(apm_yml_path, apm_yml_content)
+    else:
+        atomic_write_text(apm_yml_path, apm_yml_content, new_file_mode=0o644)
 
     return apm_yml_path
 

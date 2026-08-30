@@ -928,6 +928,57 @@ class TestMarketplaceResolution(unittest.TestCase):
             assert (modules / "acme" / "gopls-lsp" / "apm.yml").is_file()
 
     @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
+    def test_invalid_catalog_metadata_is_a_resolution_error(self, mock_resolve):
+        plugin = parse_marketplace_json(
+            {
+                "name": "catalog",
+                "plugins": [
+                    {
+                        "name": "mixed",
+                        "source": "./plugins/mixed",
+                        "mcpServers": {
+                            "valid": {"command": "echo"},
+                            "invalid": {"args": ["missing-command"]},
+                        },
+                    }
+                ],
+            },
+            source_name="catalog",
+        ).plugins[0]
+        mock_resolve.return_value = MarketplacePluginResolution(
+            canonical="acme/mixed#main",
+            plugin=plugin,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            modules = root / "apm_modules"
+            (root / "apm.yml").write_text(
+                "name: consumer\nversion: 1.0.0\n"
+                "dependencies:\n  apm:\n"
+                "    - name: mixed\n      marketplace: catalog\n"
+            )
+
+            def download(dep_ref, _modules_dir, _parent_chain=""):
+                path = dep_ref.get_install_path(modules)
+                path.mkdir(parents=True)
+                return path
+
+            result = APMDependencyResolver(
+                apm_modules_dir=modules,
+                download_callback=download,
+                max_parallel=1,
+            ).resolve_dependencies(root)
+
+            assert result.has_errors()
+            assert result.resolution_errors == [
+                "Marketplace package materialization failed: invalid marketplace metadata for "
+                "'acme/mixed': catalog MCP metadata did not materialize "
+                "every declared server: invalid"
+            ]
+            assert not (modules / "acme" / "mixed").exists()
+
+    @patch("apm_cli.marketplace.resolver.resolve_marketplace_plugin")
     def test_marketplace_dep_failure_surfaces_error(self, mock_resolve):
         mock_resolve.side_effect = PluginNotFoundError("bad-plugin", "fake-marketplace")
         with TemporaryDirectory() as temp_dir:

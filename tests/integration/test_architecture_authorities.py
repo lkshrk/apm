@@ -99,6 +99,26 @@ def test_git_semver_preflight_eligibility_has_single_owner() -> None:
     assert "| Git semver preflight eligibility and resolution |" in architecture
 
 
+def test_catalog_only_marketplace_materialization_has_single_owner() -> None:
+    """Catalog metadata must reach one transactional materialization boundary."""
+    root = Path(__file__).parents[2]
+    owner = (root / "src/apm_cli/deps/_shared.py").read_text(encoding="utf-8")
+    resolver = (root / "src/apm_cli/deps/apm_resolver.py").read_text(encoding="utf-8")
+    local_content = (root / "src/apm_cli/install/phases/local_content.py").read_text(
+        encoding="utf-8"
+    )
+    guard = (root / "scripts/lint-architecture-boundaries.sh").read_text(encoding="utf-8")
+    architecture = (root / ".apm/instructions/architecture.instructions.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert owner.count("def materialize_marketplace_manifest(") == 1
+    assert "materialize_marketplace_manifest(dep_ref, install_path)" in resolver
+    assert "has_marketplace_deployable_manifest(dep_ref)" in local_content
+    assert "Catalog-only marketplace manifests must route through deps/_shared.py" in guard
+    assert "| Catalog-only marketplace manifest materialization |" in architecture
+
+
 @pytest.mark.parametrize(
     ("relative_path", "source", "expected"),
     [

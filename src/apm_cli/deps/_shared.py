@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -11,37 +14,162 @@ if TYPE_CHECKING:
     from ..models.validation import ValidationResult
 
 
-def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: Path) -> bool:
-    """Synthesize a package when deployable components exist only in the catalog."""
+_MARKETPLACE_MANIFEST_HEADER = "# apm-marketplace-manifest-sha256: "
+
+
+class MarketplaceManifestMaterializationError(ValueError):
+    """Catalog metadata could not be materialized as a complete package."""
+
+
+def has_marketplace_deployable_manifest(dep_ref: DependencyReference) -> bool:
+    """Return whether catalog metadata declares an inline deployable surface."""
     manifest = getattr(dep_ref, "marketplace_manifest", None)
-    declared = tuple(
-        key
-        for key in ("lspServers", "mcpServers")
-        if isinstance(manifest, dict) and manifest.get(key)
+    return isinstance(manifest, dict) and any(
+        manifest.get(field) for field in ("lspServers", "mcpServers")
     )
-    if (target_path / "apm.yml").exists() or not declared:
+
+
+def _manifest_digest(manifest: dict[str, object]) -> str:
+    """Return a deterministic digest for consumer materialization state."""
+    encoded = json.dumps(
+        manifest,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _generated_manifest_digest(apm_yml_path: Path) -> str | None:
+    """Read the catalog digest marker from an APM-generated manifest."""
+    try:
+        with apm_yml_path.open(encoding="utf-8") as manifest_file:
+            first_line = manifest_file.readline().rstrip("\r\n")
+    except OSError:
+        return None
+    if not first_line.startswith(_MARKETPLACE_MANIFEST_HEADER):
+        return None
+    digest = first_line.removeprefix(_MARKETPLACE_MANIFEST_HEADER)
+    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
+        return digest
+    return None
+
+
+def _declared_server_names(manifest: dict[str, object], field: str) -> set[str]:
+    """Return validated inline server names from admitted catalog metadata."""
+    raw_servers = manifest.get(field)
+    if not raw_servers:
+        return set()
+    if not isinstance(raw_servers, dict):
+        raise MarketplaceManifestMaterializationError(
+            f"catalog field '{field}' must be an inline server mapping"
+        )
+    names = set(raw_servers)
+    if any(not isinstance(name, str) or not name for name in names):
+        raise MarketplaceManifestMaterializationError(
+            f"catalog field '{field}' contains an invalid server name"
+        )
+    return names
+
+
+def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: Path) -> bool:
+    """Atomically synthesize a complete package from admitted catalog metadata."""
+    manifest = getattr(dep_ref, "marketplace_manifest", None)
+    if not has_marketplace_deployable_manifest(dep_ref) or not isinstance(manifest, dict):
         return False
+
     from apm_cli.deps.plugin_parser import synthesize_apm_yml_from_plugin
     from apm_cli.models.apm_package import APMPackage
     from apm_cli.utils.file_ops import robust_rmtree
+    from apm_cli.utils.yaml_io import load_yaml
 
+    apm_yml_path = target_path / "apm.yml"
+    apm_dir = target_path / ".apm"
+    stage_path = target_path / ".apm-marketplace-stage.yml"
     try:
-        apm_yml = synthesize_apm_yml_from_plugin(target_path, dict(manifest))
-        package = APMPackage.from_apm_yml(apm_yml)
-        if "lspServers" in declared and not package.get_lsp_dependencies():
-            raise ValueError(
-                f"Marketplace LSP metadata for {dep_ref.repo_url} at {target_path} "
-                "did not materialize a valid dependency"
+        declared_lsp = _declared_server_names(manifest, "lspServers")
+        declared_mcp = _declared_server_names(manifest, "mcpServers")
+        if not declared_lsp and not declared_mcp:
+            return False
+        if target_path.is_symlink() or apm_yml_path.is_symlink():
+            raise MarketplaceManifestMaterializationError(
+                "catalog-only package paths must not be symbolic links"
             )
-        if "mcpServers" in declared and not package.get_mcp_dependencies():
-            raise ValueError(
-                f"Marketplace MCP metadata for {dep_ref.repo_url} at {target_path} "
-                "did not materialize a valid dependency"
+        digest = _manifest_digest(manifest)
+        if apm_yml_path.exists():
+            if not apm_yml_path.is_file():
+                raise MarketplaceManifestMaterializationError(
+                    "catalog-only package has a non-file apm.yml"
+                )
+            generated_digest = _generated_manifest_digest(apm_yml_path)
+            if generated_digest is None:
+                return False
+            if generated_digest == digest:
+                return False
+
+        if stage_path.exists() or stage_path.is_symlink():
+            stage_path.unlink()
+        staged_apm_yml = synthesize_apm_yml_from_plugin(
+            target_path,
+            dict(manifest),
+            output_path=stage_path,
+            map_artifacts=False,
+            merge_existing=False,
+            header=f"{_MARKETPLACE_MANIFEST_HEADER}{digest}",
+        )
+        staged_data = load_yaml(staged_apm_yml)
+        if not isinstance(staged_data, dict):
+            raise MarketplaceManifestMaterializationError(
+                "catalog metadata produced a non-mapping manifest"
             )
-    except Exception:
+        package = APMPackage.from_mapping(
+            staged_data,
+            package_path=target_path,
+            manifest_path=staged_apm_yml,
+        )
+        actual_lsp = {dependency.name for dependency in package.get_lsp_dependencies()}
+        actual_mcp = {dependency.name for dependency in package.get_mcp_dependencies()}
+        if actual_lsp != declared_lsp:
+            missing = ", ".join(sorted(declared_lsp - actual_lsp)) or "unknown"
+            raise MarketplaceManifestMaterializationError(
+                f"catalog LSP metadata did not materialize every declared server: {missing}"
+            )
+        if actual_mcp != declared_mcp:
+            missing = ", ".join(sorted(declared_mcp - actual_mcp)) or "unknown"
+            raise MarketplaceManifestMaterializationError(
+                f"catalog MCP metadata did not materialize every declared server: {missing}"
+            )
+        if apm_dir.is_symlink() or (apm_dir.exists() and not apm_dir.is_dir()):
+            raise MarketplaceManifestMaterializationError(
+                "catalog-only package has an unsafe .apm path"
+            )
+        apm_dir.mkdir(exist_ok=True)
+        os.replace(stage_path, apm_yml_path)
+    except Exception as exc:
+        stage_cleanup_error: OSError | None = None
+        if stage_path.exists() or stage_path.is_symlink():
+            try:
+                stage_path.unlink()
+            except OSError as cleanup_exc:
+                stage_cleanup_error = cleanup_exc
         if target_path.exists():
-            robust_rmtree(target_path, ignore_errors=True)
-        raise
+            try:
+                robust_rmtree(target_path)
+            except OSError as cleanup_exc:
+                cleanup_detail = str(cleanup_exc)
+                if stage_cleanup_error is not None:
+                    cleanup_detail += f"; staging cleanup failed: {stage_cleanup_error}"
+                raise MarketplaceManifestMaterializationError(
+                    f"invalid marketplace metadata for '{dep_ref.get_display_name()}'; "
+                    f"rejected download cleanup also failed: {cleanup_detail}"
+                ) from exc
+        if isinstance(exc, MarketplaceManifestMaterializationError):
+            raise MarketplaceManifestMaterializationError(
+                f"invalid marketplace metadata for '{dep_ref.get_display_name()}': {exc}"
+            ) from exc
+        raise MarketplaceManifestMaterializationError(
+            f"invalid marketplace metadata for '{dep_ref.get_display_name()}': {exc}"
+        ) from exc
     return True
 
 
