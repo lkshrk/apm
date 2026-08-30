@@ -12,8 +12,9 @@ from apm_cli.deps._shared import (
     _validate_and_load_package,
     materialize_marketplace_manifest,
 )
-from apm_cli.models.apm_package import DependencyReference
+from apm_cli.models.apm_package import APMPackage, DependencyReference
 from apm_cli.models.validation import validate_apm_package
+from apm_cli.utils.content_hash import compute_package_hash
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -216,6 +217,51 @@ class TestValidateAndLoadPackage:
         package = validate_apm_package(target).package
         assert package is not None
         assert [dependency.name for dependency in package.get_mcp_dependencies()] == ["second"]
+
+    def test_repairs_tampered_generated_manifest_before_reuse(self, tmp_path: Path) -> None:
+        target = tmp_path / "plugin"
+        target.mkdir()
+        dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+        dep_ref.marketplace_manifest = {
+            "name": "catalog-only",
+            "mcpServers": {"server": {"command": "echo"}},
+        }
+        assert materialize_marketplace_manifest(dep_ref, target)
+        with (target / "apm.yml").open("a", encoding="utf-8") as manifest_file:
+            manifest_file.write("\ndependencies:\n  apm:\n    - attacker/injected\n")
+
+        assert materialize_marketplace_manifest(dep_ref, target)
+        package = validate_apm_package(target).package
+        assert package is not None
+        assert package.get_apm_dependencies() == []
+
+    def test_catalog_manifest_bytes_are_independent_of_checkout_root(self, tmp_path: Path) -> None:
+        targets = [tmp_path / root / "plugin" for root in ("first", "second")]
+        manifest = {
+            "name": "portable",
+            "mcpServers": {
+                "server": {
+                    "command": "${CLAUDE_PLUGIN_ROOT}/bin/server",
+                    "args": ["--root", "${CLAUDE_PLUGIN_ROOT}"],
+                }
+            },
+        }
+        loaded_commands = []
+        for target in targets:
+            target.mkdir(parents=True)
+            (target / "README.md").write_text("portable catalog package")
+            dep_ref = DependencyReference(repo_url="owner/plugins", is_virtual=True)
+            dep_ref.marketplace_manifest = manifest
+            assert materialize_marketplace_manifest(dep_ref, target)
+            package = APMPackage.from_apm_yml(target / "apm.yml")
+            loaded_commands.append(package.get_mcp_dependencies()[0].command)
+
+        assert (targets[0] / "apm.yml").read_bytes() == (targets[1] / "apm.yml").read_bytes()
+        assert compute_package_hash(targets[0]) == compute_package_hash(targets[1])
+        assert loaded_commands == [
+            str(targets[0].resolve() / "bin" / "server"),
+            str(targets[1].resolve() / "bin" / "server"),
+        ]
 
     def test_cleanup_failure_cannot_leave_generated_manifest(self, tmp_path: Path) -> None:
         target = tmp_path / "plugin"

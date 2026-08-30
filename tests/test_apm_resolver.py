@@ -973,7 +973,7 @@ class TestMarketplaceResolution(unittest.TestCase):
             assert result.has_errors()
             assert result.resolution_errors == [
                 "Marketplace package materialization failed: invalid marketplace metadata for "
-                "'acme/mixed': catalog MCP metadata did not materialize "
+                "'mixed@catalog': catalog MCP metadata did not materialize "
                 "every declared server: invalid"
             ]
             assert not (modules / "acme" / "mixed").exists()

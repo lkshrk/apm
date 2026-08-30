@@ -26,6 +26,7 @@ from apm_cli.agent_plugins import (
 from apm_cli.bundle.local_bundle import route_agent_plugin_package
 from apm_cli.commands.install import install
 from apm_cli.commands.marketplace import marketplace as marketplace_group
+from apm_cli.deps.apm_resolver import APMDependencyResolver
 from apm_cli.marketplace import registry
 from apm_cli.marketplace.resolver import resolve_marketplace_plugin
 from apm_cli.models.dependency.reference import DependencyReference
@@ -218,8 +219,70 @@ def test_invalid_catalog_only_metadata_fails_install_resolution(
     result = CliRunner().invoke(install, [])
 
     assert result.exit_code != 0
-    assert "invalid marketplace metadata" in result.output
+    normalized_output = " ".join(result.output.split())
+    assert "invalid marketplace metadata for 'invalid-catalog@local-mkt'" in normalized_output
+    assert normalized_output.count("invalid marketplace metadata") == 1
     assert not (consumer / "apm.lock.yaml").exists()
+
+
+def test_catalog_only_marketplace_rejects_symlinked_apm_dir(tmp_path: Path) -> None:
+    repo = tmp_path / "mkt"
+    manifest = {
+        "name": "local-mkt",
+        "owner": "test",
+        "plugins": [
+            {
+                "name": "symlinked",
+                "source": "./plugins/symlinked",
+                "mcpServers": {"server": {"command": "echo"}},
+            }
+        ],
+    }
+    _seed_marketplace(repo, manifest=manifest)
+    plugin_dir = repo / "plugins" / "symlinked"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "README.md").write_text("symlinked catalog package")
+    registration = CliRunner().invoke(
+        marketplace_group,
+        ["add", str(repo), "--name", "local-mkt"],
+    )
+    assert registration.exit_code == 0, registration.output
+    consumer = tmp_path / "consumer"
+    consumer.mkdir()
+    (consumer / "apm.yml").write_text(
+        "name: consumer\nversion: 1.0.0\n"
+        "dependencies:\n  apm:\n"
+        "    - name: symlinked\n      marketplace: local-mkt\n"
+    )
+    modules = consumer / "apm_modules"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    downloaded: list[Path] = []
+
+    def download_with_symlink(
+        dep_ref: DependencyReference,
+        _modules_dir: Path,
+        _parent_chain: str = "",
+    ) -> Path:
+        destination = dep_ref.get_install_path(modules)
+        destination.mkdir(parents=True)
+        try:
+            (destination / ".apm").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks are unavailable")
+        downloaded.append(destination)
+        return destination
+
+    graph = APMDependencyResolver(
+        apm_modules_dir=modules,
+        download_callback=download_with_symlink,
+        max_parallel=1,
+    ).resolve_dependencies(consumer)
+
+    assert graph.has_errors()
+    assert "unsafe .apm path" in graph.resolution_errors[0]
+    assert list(outside.iterdir()) == []
+    assert downloaded and not downloaded[0].exists()
 
 
 def test_install_rejects_local_marketplace_symlink_escape(tmp_path: Path) -> None:

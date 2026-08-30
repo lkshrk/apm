@@ -1777,6 +1777,8 @@ catalog_materialization_owner="src/apm_cli/deps/_shared.py"
 catalog_materialization_consumer="src/apm_cli/deps/apm_resolver.py"
 catalog_local_consumer="src/apm_cli/install/phases/local_content.py"
 catalog_local_install_consumer="src/apm_cli/install/sources.py"
+plugin_root_placeholder_owner="src/apm_cli/deps/plugin_parser.py"
+plugin_root_placeholder_consumer="src/apm_cli/models/apm_package.py"
 catalog_manifest_parallel_hits=$(
     grep -rEn --include='*.py' 'marketplace_manifest' src/apm_cli \
         | grep -v "^${catalog_materialization_owner}:" \
@@ -1802,6 +1804,10 @@ if ! grep -q '^def materialize_marketplace_manifest(' "$catalog_materialization_
         "$catalog_local_consumer" \
     || ! grep -q 'materialize_marketplace_manifest(dep_ref, install_path)' \
         "$catalog_local_install_consumer" \
+    || ! grep -q '^def resolve_plugin_root_placeholders(' \
+        "$plugin_root_placeholder_owner" \
+    || ! grep -q 'resolve_plugin_root_placeholders(' \
+        "$plugin_root_placeholder_consumer" \
     || [ -n "$catalog_manifest_parallel_hits" ] \
     || [ -n "$catalog_synthesis_parallel_hits" ]; then
     echo "[x] Catalog-only marketplace manifests must route through deps/_shared.py"

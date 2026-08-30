@@ -108,6 +108,8 @@ def test_catalog_only_marketplace_materialization_has_single_owner() -> None:
         encoding="utf-8"
     )
     install_sources = (root / "src/apm_cli/install/sources.py").read_text(encoding="utf-8")
+    plugin_parser = (root / "src/apm_cli/deps/plugin_parser.py").read_text(encoding="utf-8")
+    package_model = (root / "src/apm_cli/models/apm_package.py").read_text(encoding="utf-8")
     guard = (root / "scripts/lint-architecture-boundaries.sh").read_text(encoding="utf-8")
     architecture = (root / ".apm/instructions/architecture.instructions.md").read_text(
         encoding="utf-8"
@@ -117,8 +119,13 @@ def test_catalog_only_marketplace_materialization_has_single_owner() -> None:
     assert "materialize_marketplace_manifest(dep_ref, install_path)" in resolver
     assert "has_marketplace_deployable_manifest(dep_ref)" in local_content
     assert "materialize_marketplace_manifest(dep_ref, install_path)" in install_sources
+    assert "resolve_plugin_root_placeholders(" in plugin_parser
+    assert "resolve_plugin_root_placeholders(" in package_model
     assert "Catalog-only marketplace manifests must route through deps/_shared.py" in guard
     assert "| Catalog-only marketplace manifest materialization |" in architecture
+    assert "| Legacy plugin declared-skill membership and plugin-root placeholder expansion |" in (
+        architecture
+    )
 
 
 @pytest.mark.parametrize(

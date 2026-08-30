@@ -516,6 +516,8 @@ class APMDependencyResolver:
         manifest = getattr(resolution.plugin, "manifest", None)
         if isinstance(manifest, dict) and manifest:
             resolved.marketplace_manifest = dict(manifest)
+            resolved.marketplace_name = dep_ref.marketplace_name
+            resolved.marketplace_plugin_name = dep_ref.marketplace_plugin_name
         self._marketplace_provenance[resolved.get_unique_key()] = resolution.provenance(
             dep_ref.marketplace_name,
             dep_ref.marketplace_plugin_name,

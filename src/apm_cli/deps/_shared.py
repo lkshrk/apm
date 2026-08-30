@@ -29,6 +29,15 @@ def has_marketplace_deployable_manifest(dep_ref: DependencyReference) -> bool:
     )
 
 
+def _marketplace_display_name(dep_ref: DependencyReference) -> str:
+    """Return a stable marketplace identity without checkout paths."""
+    plugin_name = getattr(dep_ref, "marketplace_plugin_name", None)
+    marketplace_name = getattr(dep_ref, "marketplace_name", None)
+    if plugin_name and marketplace_name:
+        return f"{plugin_name}@{marketplace_name}"
+    return dep_ref.get_display_name()
+
+
 def _manifest_digest(manifest: dict[str, object]) -> str:
     """Return a deterministic digest for consumer materialization state."""
     encoded = json.dumps(
@@ -40,19 +49,14 @@ def _manifest_digest(manifest: dict[str, object]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _generated_manifest_digest(apm_yml_path: Path) -> str | None:
-    """Read the catalog digest marker from an APM-generated manifest."""
+def _is_generated_marketplace_manifest(apm_yml_path: Path) -> bool:
+    """Return whether a manifest carries APM's catalog-generation marker."""
     try:
         with apm_yml_path.open(encoding="utf-8") as manifest_file:
             first_line = manifest_file.readline().rstrip("\r\n")
     except OSError:
-        return None
-    if not first_line.startswith(_MARKETPLACE_MANIFEST_HEADER):
-        return None
-    digest = first_line.removeprefix(_MARKETPLACE_MANIFEST_HEADER)
-    if len(digest) == 64 and all(character in "0123456789abcdef" for character in digest):
-        return digest
-    return None
+        return False
+    return first_line.startswith(_MARKETPLACE_MANIFEST_HEADER)
 
 
 def _declared_server_names(manifest: dict[str, object], field: str) -> set[str]:
@@ -80,6 +84,7 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
 
     from apm_cli.deps.plugin_parser import synthesize_apm_yml_from_plugin
     from apm_cli.models.apm_package import APMPackage
+    from apm_cli.utils.atomic_io import atomic_write_text
     from apm_cli.utils.file_ops import robust_rmtree
     from apm_cli.utils.yaml_io import load_yaml
 
@@ -96,15 +101,14 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
                 "catalog-only package paths must not be symbolic links"
             )
         digest = _manifest_digest(manifest)
+        existing_generated = False
         if apm_yml_path.exists():
             if not apm_yml_path.is_file():
                 raise MarketplaceManifestMaterializationError(
                     "catalog-only package has a non-file apm.yml"
                 )
-            generated_digest = _generated_manifest_digest(apm_yml_path)
-            if generated_digest is None:
-                return False
-            if generated_digest == digest:
+            existing_generated = _is_generated_marketplace_manifest(apm_yml_path)
+            if not existing_generated:
                 return False
 
         if stage_path.exists() or stage_path.is_symlink():
@@ -115,7 +119,8 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
             output_path=stage_path,
             map_artifacts=False,
             merge_existing=False,
-            header=f"{_MARKETPLACE_MANIFEST_HEADER}{digest}",
+            substitute_plugin_root=False,
+            warn_on_invalid_servers=False,
         )
         staged_data = load_yaml(staged_apm_yml)
         if not isinstance(staged_data, dict):
@@ -144,6 +149,15 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
                 "catalog-only package has an unsafe .apm path"
             )
         apm_dir.mkdir(exist_ok=True)
+        staged_body = stage_path.read_text(encoding="utf-8")
+        atomic_write_text(
+            stage_path,
+            f"{_MARKETPLACE_MANIFEST_HEADER}{digest}\n{staged_body}",
+            new_file_mode=0o644,
+        )
+        if existing_generated and apm_yml_path.read_bytes() == stage_path.read_bytes():
+            stage_path.unlink()
+            return False
         os.replace(stage_path, apm_yml_path)
     except Exception as exc:
         stage_cleanup_error: OSError | None = None
@@ -160,15 +174,15 @@ def materialize_marketplace_manifest(dep_ref: DependencyReference, target_path: 
                 if stage_cleanup_error is not None:
                     cleanup_detail += f"; staging cleanup failed: {stage_cleanup_error}"
                 raise MarketplaceManifestMaterializationError(
-                    f"invalid marketplace metadata for '{dep_ref.get_display_name()}'; "
+                    f"invalid marketplace metadata for '{_marketplace_display_name(dep_ref)}'; "
                     f"rejected download cleanup also failed: {cleanup_detail}"
                 ) from exc
         if isinstance(exc, MarketplaceManifestMaterializationError):
             raise MarketplaceManifestMaterializationError(
-                f"invalid marketplace metadata for '{dep_ref.get_display_name()}': {exc}"
+                f"invalid marketplace metadata for '{_marketplace_display_name(dep_ref)}': {exc}"
             ) from exc
         raise MarketplaceManifestMaterializationError(
-            f"invalid marketplace metadata for '{dep_ref.get_display_name()}': {exc}"
+            f"invalid marketplace metadata for '{_marketplace_display_name(dep_ref)}': {exc}"
         ) from exc
     return True
 

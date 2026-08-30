@@ -324,7 +324,7 @@ def _fail_on_resolution_errors(ctx: InstallContext, dependency_graph) -> None:
     if not dependency_graph.resolution_errors:
         return
     for error in dependency_graph.resolution_errors:
-        if ctx.logger:
+        if ctx.logger and not error.startswith("Marketplace package materialization failed:"):
             ctx.logger.error(error)
     joined_errors = "; ".join(dependency_graph.resolution_errors)
     raise RuntimeError(f"Dependency resolution failed: {joined_errors}")
