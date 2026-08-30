@@ -1776,10 +1776,13 @@ echo "[*] AC35: catalog-only marketplace materialization authority"
 catalog_materialization_owner="src/apm_cli/deps/_shared.py"
 catalog_materialization_consumer="src/apm_cli/deps/apm_resolver.py"
 catalog_local_consumer="src/apm_cli/install/phases/local_content.py"
+catalog_local_install_consumer="src/apm_cli/install/sources.py"
 catalog_manifest_parallel_hits=$(
     grep -rEn --include='*.py' 'marketplace_manifest' src/apm_cli \
         | grep -v "^${catalog_materialization_owner}:" \
         | grep -v "^${catalog_materialization_consumer}:" \
+        | grep -v "^${catalog_local_consumer}:" \
+        | grep -v "^${catalog_local_install_consumer}:" \
         | grep -v '^src/apm_cli/marketplace/models.py:' \
         | grep -v '^src/apm_cli/models/dependency/reference.py:' \
         || true
@@ -1797,6 +1800,8 @@ if ! grep -q '^def materialize_marketplace_manifest(' "$catalog_materialization_
         "$catalog_materialization_consumer" \
     || ! grep -q 'has_marketplace_deployable_manifest(dep_ref)' \
         "$catalog_local_consumer" \
+    || ! grep -q 'materialize_marketplace_manifest(dep_ref, install_path)' \
+        "$catalog_local_install_consumer" \
     || [ -n "$catalog_manifest_parallel_hits" ] \
     || [ -n "$catalog_synthesis_parallel_hits" ]; then
     echo "[x] Catalog-only marketplace manifests must route through deps/_shared.py"

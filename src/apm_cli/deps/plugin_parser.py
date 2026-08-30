@@ -1335,14 +1335,35 @@ def _union_dep_list(
 ) -> None:
     """Append *new_entries* into ``merged[key]`` without duplicates.
 
-    Both string entries and dict entries (e.g. ``{git: parent, path: ...}``)
-    are handled.  Equality is checked with ``==`` which works correctly for
-    both types.
+    Both string entries and nested mapping entries are handled. A hashable
+    structural key keeps merging linear while preserving equality semantics.
     """
     existing = merged.setdefault(key, [])
+    seen = {_dependency_entry_key(entry) for entry in existing}
     for entry in new_entries:
-        if entry not in existing:
-            existing.append(entry)
+        entry_key = _dependency_entry_key(entry)
+        if entry_key in seen:
+            continue
+        existing.append(entry)
+        seen.add(entry_key)
+
+
+def _dependency_entry_key(value: Any) -> Any:
+    """Return a hashable structural key for a manifest dependency entry."""
+    if isinstance(value, dict):
+        return (
+            "dict",
+            frozenset((key, _dependency_entry_key(item)) for key, item in value.items()),
+        )
+    if isinstance(value, list):
+        return ("list", tuple(_dependency_entry_key(item) for item in value))
+    if isinstance(value, tuple):
+        return ("tuple", tuple(_dependency_entry_key(item) for item in value))
+    try:
+        hash(value)
+    except TypeError:
+        return ("repr", repr(value))
+    return ("scalar", type(value).__qualname__, value)
 
 
 def synthesize_plugin_json_from_apm_yml(apm_yml_path: Path) -> dict:

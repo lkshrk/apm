@@ -26,10 +26,10 @@ from apm_cli.agent_plugins import (
 from apm_cli.bundle.local_bundle import route_agent_plugin_package
 from apm_cli.commands.install import install
 from apm_cli.commands.marketplace import marketplace as marketplace_group
-from apm_cli.deps.apm_resolver import APMDependencyResolver
 from apm_cli.marketplace import registry
 from apm_cli.marketplace.resolver import resolve_marketplace_plugin
 from apm_cli.models.dependency.reference import DependencyReference
+from apm_cli.models.validation import validate_apm_package
 
 GIT_AVAILABLE = shutil.which("git") is not None
 pytestmark = pytest.mark.skipif(not GIT_AVAILABLE, reason="git executable not available")
@@ -120,7 +120,10 @@ def test_install_resolves_local_marketplace_to_on_disk_path(tmp_path: Path) -> N
     assert Path(dep_ref.local_path).resolve() == skill_path.resolve()
 
 
-def test_catalog_only_marketplace_materializes_all_inline_servers(tmp_path: Path) -> None:
+def test_catalog_only_marketplace_installs_all_inline_servers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo = tmp_path / "mkt"
     manifest = {
         "name": "local-mkt",
@@ -154,47 +157,24 @@ def test_catalog_only_marketplace_materializes_all_inline_servers(tmp_path: Path
     consumer.mkdir()
     (consumer / "apm.yml").write_text(
         "name: consumer\nversion: 1.0.0\n"
+        "targets:\n  - copilot\n"
         "dependencies:\n  apm:\n"
         "    - name: catalog-only\n      marketplace: local-mkt\n"
     )
+    monkeypatch.chdir(consumer)
 
+    install_result = CliRunner().invoke(install, ["--trust-bin", "--no-policy"])
+
+    assert install_result.exit_code == 0, install_result.output
     modules = consumer / "apm_modules"
-
-    def copy_local_dependency(
-        dep_ref: DependencyReference,
-        _modules_dir: Path,
-        _parent_chain: str = "",
-    ) -> Path:
-        destination = dep_ref.get_install_path(modules)
-        shutil.copytree(Path(dep_ref.local_path), destination)
-        return destination
-
-    graph = APMDependencyResolver(
-        apm_modules_dir=modules,
-        download_callback=copy_local_dependency,
-        max_parallel=1,
-    ).resolve_dependencies(consumer)
-
-    assert not graph.has_errors(), graph.resolution_errors
-    packages = [node.package for node in graph.dependency_tree.nodes.values()]
-    assert {
-        dependency.name
-        for package in packages
-        if package is not None
-        for dependency in package.get_lsp_dependencies()
-    } == {"gopls"}
-    assert {
-        dependency.name
-        for package in packages
-        if package is not None
-        for dependency in package.get_mcp_dependencies()
-    } == {"tools"}
     generated_manifests = list(modules.rglob("apm.yml"))
     assert len(generated_manifests) == 1
-    assert all(
-        dependency.repo_url != "untrusted/injected"
-        for dependency in graph.flattened_dependencies.dependencies.values()
-    )
+    package = validate_apm_package(generated_manifests[0].parent).package
+    assert package is not None
+    assert {dependency.name for dependency in package.get_lsp_dependencies()} == {"gopls"}
+    assert {dependency.name for dependency in package.get_mcp_dependencies()} == {"tools"}
+    assert package.get_apm_dependencies() == []
+    assert (consumer / "apm.lock.yaml").is_file()
 
 
 def test_invalid_catalog_only_metadata_fails_install_resolution(
