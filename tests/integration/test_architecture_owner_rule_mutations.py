@@ -352,10 +352,10 @@ MUTATIONS: tuple[MutationCase, ...] = (
     MutationCase(
         guard_id="install-deployment-prospective-dry-run-plan",
         rule_id="install-deployment-prospective-dry-run-plan",
-        path="src/apm_cli/commands/install.py",
-        old="mcp_deps=list(prospective_plan.selected_mcp_dependencies) or None",
-        new="mcp_deps=mcp_deps if should_install_mcp else None",
-        intent="Dry-run policy checks bypass the plan-owned MCP selection.",
+        path="src/apm_cli/install/presentation/dry_run.py",
+        old="for dep in plan.selected_lsp_dependencies:",
+        new="for dep in plan.lsp_dependencies:",
+        intent="Dry-run LSP rendering bypasses plan-owned service selection.",
     ),
     MutationCase(
         guard_id="install-deployment-provenance-state",

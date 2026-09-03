@@ -14,7 +14,7 @@ from apm_cli.deps.lockfile import LockFile
 from apm_cli.utils.yaml_io import dump_yaml, load_yaml
 from tests.utils.apm_lifecycle_runner import ApmLifecycleRunner, CommandResult
 from tests.utils.isolated_apm_environment import IsolatedApmEnvironment
-from tests.utils.lifecycle_state import LifecycleStateSnapshot
+from tests.utils.lifecycle_state import LifecycleStateRoot, LifecycleStateSnapshot
 from tests.utils.local_git_repository import (
     GitCommit,
     LocalGitRepository,
@@ -242,6 +242,68 @@ def _assert_same_state(
     assert actual.lsp_state_bytes == expected.lsp_state_bytes, "LSP state diverged"
     assert actual.files == expected.files, "materialized files diverged"
     assert actual.semantic_bytes == expected.semantic_bytes, "semantic state diverged"
+
+
+def test_required_lsp_only_dry_run_reports_plan_without_writing_state(
+    tmp_path: Path,
+    apm_binary_path: Path,
+) -> None:
+    """Real CLI dry-run proof for LSP-only manifests."""
+    scenario = _new_scenario(tmp_path / "lsp-only-dry-run", apm_binary_path)
+    project = scenario.consumers.create(
+        "lsp-only-consumer",
+        lsp_dependencies=(
+            "typescript-language-server",
+            {
+                "name": "pyright",
+                "command": "pyright-langserver",
+                "extensionToLanguage": {".py": "python"},
+            },
+        ),
+        targets=("claude", "copilot"),
+    )
+    capture_args = {
+        "targets": ("claude", "copilot"),
+        "config_paths": (
+            PurePosixPath("apm_modules"),
+            PurePosixPath(".github/lsp.json"),
+            PurePosixPath(".claude/skills/apm-lsp/.claude-plugin/plugin.json"),
+        ),
+        "external_roots": (
+            LifecycleStateRoot(
+                root_id="apm-home",
+                target="claude",
+                scope="user",
+                path=scenario.isolated.config_root,
+                config_paths=(
+                    PurePosixPath("apm.yml"),
+                    PurePosixPath("config.json"),
+                ),
+            ),
+        ),
+    }
+    before = LifecycleStateSnapshot.capture(project.root, **capture_args)
+
+    result = _run_success(
+        scenario,
+        project,
+        (*_INSTALL_ARGS, "--dry-run"),
+        environment=scenario.environment,
+        scenario_id="lsp-only-dry-run-install",
+    )
+    after = LifecycleStateSnapshot.capture(project.root, **capture_args)
+
+    assert "LSP servers to configure (2):" in result.stdout
+    assert "typescript-language-server" in result.stdout
+    assert "pyright" in result.stdout
+    assert "No dependencies found" not in result.stdout
+    assert after.lockfile_bytes is None
+    assert after.file("apm_modules").kind == "missing"
+    assert after.file(".github/lsp.json").kind == "missing"
+    assert after.file(".claude/skills/apm-lsp/.claude-plugin/plugin.json").kind == "missing"
+    assert after.file("apm.yml", root_id="apm-home").kind == "missing"
+    assert after.file("config.json", root_id="apm-home").kind == "missing"
+    _assert_same_state(before, after)
 
 
 def _hook_commands(settings_path: Path) -> list[str]:
