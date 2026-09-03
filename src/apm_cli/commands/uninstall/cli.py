@@ -515,7 +515,7 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
             elif isinstance(cleanup_error, MCPUninstallCleanupError):
                 recovery = (
                     " Fix the reported target configs, then run 'apm install' "
-                    "to reconcile stale MCP entries."
+                    "to reconcile stale MCP entries; lock ownership was retained."
                 )
             logger.error(
                 "Uninstall incomplete: package removal completed, but MCP cleanup failed: "

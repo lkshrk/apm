@@ -2279,8 +2279,9 @@ class TestInstallMcpFlag:
         assert "Skipped workspace-only runtimes" not in result.output
         assert not user_manifest.exists()
 
-    def test_global_mcp_names_disabled_experimental_target(self, tmp_path, monkeypatch):
+    def test_global_mcp_accepts_explicit_hermes_target(self, tmp_path, monkeypatch):
         fake_home = tmp_path / "home"
+        user_manifest = fake_home / ".apm" / "apm.yml"
         project = tmp_path / "project"
         project.mkdir()
         monkeypatch.chdir(project)
@@ -2304,9 +2305,20 @@ class TestInstallMcpFlag:
         ):
             result = self.runner.invoke(cli, argv[1:])
 
-        assert result.exit_code == 2, (result.output, result.exception)
-        assert "hermes; source: --target flag" in result.output
-        assert "enable selected experimental targets" in result.output
+        assert result.exit_code == 0, (result.output, result.exception)
+        assert "enable selected experimental targets" not in result.output
+        assert "Targeting specific runtime: hermes" in result.output
+        manifest = yaml.safe_load(user_manifest.read_text(encoding="utf-8"))
+        assert manifest["targets"] == ["hermes"]
+        assert manifest["dependencies"]["mcp"] == [
+            {
+                "args": ["ready"],
+                "command": "echo",
+                "name": "probe",
+                "registry": False,
+                "transport": "stdio",
+            }
+        ]
 
     def test_global_mcp_rejects_unsupported_saved_target_without_fallback(
         self, tmp_path, monkeypatch
