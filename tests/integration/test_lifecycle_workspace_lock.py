@@ -248,8 +248,9 @@ def test_install_serializes_other_lifecycle_commands(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+        startup_sensitive = contender_args[0] in {"audit", "lifecycle"}
         with pytest.raises(subprocess.TimeoutExpired):
-            contender.wait(timeout=0.5)
+            contender.wait(timeout=2.0 if startup_sensitive else 0.5)
 
         release.write_text("release", encoding="ascii")
         install_stdout, install_stderr = install.communicate(timeout=30)
