@@ -487,10 +487,7 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
 
         mcp_cleanup_error = None
         try:
-            has_mcp_ownership = bool(_pre_uninstall_mcp_servers) or bool(
-                lockfile and lockfile.mcp_target_servers
-            )
-            if has_mcp_ownership:
+            if _pre_uninstall_mcp_servers or (lockfile and lockfile.mcp_target_servers):
                 apm_package = APMPackage.from_apm_yml(manifest_path)
                 _cleanup_stale_mcp(
                     apm_package,

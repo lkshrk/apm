@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from apm_cli.commands.uninstall.engine import (
+    MCPUninstallCleanupError,
     _build_children_index,
     _cleanup_stale_mcp,
     _dry_run_uninstall,
@@ -543,7 +544,10 @@ class TestCleanupStaleMcp:
         with patch("apm_cli.commands.uninstall.engine.MCPIntegrator") as mock_mcp:
             mock_mcp.get_server_names.return_value = set()
             mock_mcp.remove_stale.side_effect = RequiredIntegrationError("cleanup failed")
-            with pytest.raises(RequiredIntegrationError, match="cleanup failed"):
+            with pytest.raises(
+                MCPUninstallCleanupError,
+                match=r"MCP cleanup failed.*cleanup failed",
+            ):
                 _cleanup_stale_mcp(
                     apm_package,
                     lockfile,
@@ -563,7 +567,6 @@ class TestCleanupStaleMcp:
         from types import SimpleNamespace
 
         from apm_cli.core.scope import InstallScope
-        from apm_cli.install.errors import RequiredIntegrationError
 
         if not user_scope:
             (tmp_path / ".claude").mkdir()
@@ -587,7 +590,7 @@ class TestCleanupStaleMcp:
                 side_effect=OSError("simulated crash"),
             ),
             patch("pathlib.Path.home", return_value=tmp_path),
-            pytest.raises(RequiredIntegrationError, match="MCP cleanup failed"),
+            pytest.raises(MCPUninstallCleanupError, match=r"MCP cleanup failed"),
         ):
             _cleanup_stale_mcp(
                 MagicMock(),
