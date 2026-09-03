@@ -169,3 +169,58 @@ def test_global_audit_external_target_is_read_only_and_detects_drift(
     else:
         assert checks["deployed-files-present"]["passed"] is False
     assert _tree_snapshot(external_root) == before_audit
+
+
+def test_global_audit_scans_unrecorded_external_target_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Critical hidden Unicode under a governed external root cannot evade audit."""
+    isolated = IsolatedApmEnvironment.create(tmp_path / "global-audit-unicode", base_env=os.environ)
+    external_root = isolated.root / "external-hermes"
+    environment = isolated.subprocess_env()
+    environment.update({"APM_NO_CACHE": "1", "HERMES_HOME": str(external_root)})
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    package = isolated.package_root / "demo-package"
+    source_skill = package / ".apm" / "skills" / "demo" / "SKILL.md"
+    source_skill.parent.mkdir(parents=True)
+    (package / "apm.yml").write_text("name: demo-package\nversion: 1.0.0\n", encoding="utf-8")
+    source_skill.write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n# Original\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(isolated.work_root)
+    install = CliRunner().invoke(
+        cli,
+        [
+            "install",
+            "--global",
+            str(package),
+            "--target",
+            "hermes",
+            "--no-policy",
+            "--parallel-downloads",
+            "0",
+        ],
+        env=environment,
+    )
+    assert install.exit_code == 0, install.output
+    unrecorded = external_root / "skills" / "unrecorded" / "SKILL.md"
+    unrecorded.parent.mkdir()
+    unrecorded.write_text(f"# Hidden {chr(0x202E)} marker\n", encoding="utf-8")
+    before_audit = _tree_snapshot(external_root)
+
+    monkeypatch.chdir(isolated.config_root)
+    audit = CliRunner().invoke(
+        cli,
+        ["audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"],
+        env=environment,
+    )
+    assert audit.exit_code == 1, audit.output
+    payload = json.loads(audit.output[audit.output.index("{") :])
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert checks["content-integrity"]["passed"] is False
+    assert _tree_snapshot(external_root) == before_audit

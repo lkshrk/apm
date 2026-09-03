@@ -29,10 +29,12 @@ from scripts.architecture_linter.checks.install_dry_run_plan import (
 from scripts.architecture_linter.checks.install_frozen_and_audit import (
     _GUARD_AUDIT_REPLAY,
     _GUARD_FROZEN,
+    _GUARD_LIFECYCLE_SERIALIZATION,
     _GUARD_MCP_OWNERSHIP,
     _GUARD_UNINSTALL_REACHABILITY,
     check_audit_replay,
     check_frozen,
+    check_lifecycle_serialization,
     check_mcp_ownership_migration,
     check_uninstall_reachability,
 )
@@ -152,6 +154,11 @@ RULES: tuple[Rule, ...] = (
         _GUARD_AUDIT_REPLAY,
         "CI audit scratch materialization routes through install/audit_replay.py.",
         check_audit_replay,
+    ),
+    _rule(
+        _GUARD_LIFECYCLE_SERIALIZATION,
+        "Lifecycle mutators route through install/locking.py.",
+        check_lifecycle_serialization,
     ),
     _rule(
         _GUARD_UNINSTALL_SELECTION,

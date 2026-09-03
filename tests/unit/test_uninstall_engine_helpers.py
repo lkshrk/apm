@@ -471,6 +471,33 @@ class TestCleanupStaleMcp:
             fail_on_write_error=True,
         )
 
+    def test_target_ownership_limits_cleanup_to_owning_runtime(self, tmp_path):
+        """A server name owned in one runtime must not be removed from all runtimes."""
+        lockfile = LockFile(
+            mcp_servers=["shared-name"],
+            mcp_target_servers={"hermes": ["shared-name"]},
+        )
+
+        with patch("apm_cli.commands.uninstall.engine.MCPIntegrator") as mock_mcp:
+            mock_mcp.get_server_names.return_value = set()
+            _cleanup_stale_mcp(
+                MagicMock(),
+                lockfile,
+                tmp_path / "apm.lock.yaml",
+                {"shared-name"},
+                modules_dir=tmp_path / "apm_modules",
+                persist=False,
+            )
+
+        mock_mcp.remove_stale.assert_called_once_with(
+            {"shared-name"},
+            runtime="hermes",
+            project_root=None,
+            user_scope=False,
+            scope=None,
+            fail_on_write_error=True,
+        )
+
     @pytest.mark.windows_compat
     def test_cleanup_failure_retains_lock_ownership(self, tmp_path):
         """Native cleanup must succeed before in-memory ownership is dropped."""

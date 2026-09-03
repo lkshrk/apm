@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from apm_cli.integration.targets import TargetProfile
+from apm_cli.utils.path_security import PathTraversalError, ensure_path_within
 
 _EXTERNAL_REPLAY_ROOT = ".apm-audit-targets"
 
@@ -26,6 +27,23 @@ def external_replay_root(scratch_root: Path, target: TargetProfile) -> Path:
     return scratch_root / _EXTERNAL_REPLAY_ROOT / target.name
 
 
+def external_target_relative_roots(target: TargetProfile) -> set[str]:
+    """Return bounded paths governed below an external target root."""
+    roots: set[str] = set()
+    for mapping in target.primitives.values():
+        if mapping.deploy_root:
+            deploy_root = Path(mapping.deploy_root)
+            if not deploy_root.is_absolute():
+                roots.add(deploy_root.parts[0])
+                continue
+        if mapping.subdir:
+            roots.add(Path(mapping.subdir).parts[0])
+        elif mapping.extension:
+            roots.add(mapping.extension.lstrip("/"))
+    roots.update(Path(path).parts[0] for path in target.generated_files if Path(path).parts)
+    return roots
+
+
 def claims_for_root(
     claims: dict[str, str],
     root: Path,
@@ -39,8 +57,9 @@ def claims_for_root(
         candidate = Path(path)
         if candidate.is_absolute():
             try:
-                relative = candidate.resolve().relative_to(root)
-            except ValueError:
+                validated = ensure_path_within(candidate, root)
+                relative = validated.relative_to(root)
+            except (PathTraversalError, ValueError):
                 continue
             rebased[relative.as_posix()] = owner
         elif not absolute_only:

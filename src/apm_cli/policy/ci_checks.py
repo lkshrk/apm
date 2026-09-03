@@ -468,6 +468,7 @@ def _check_content_integrity(
         project_root,
         lockfile=lock,
         include_deployed_trees=True,
+        targets=targets,
     )
 
     # Only critical findings fail this check
@@ -737,6 +738,11 @@ def _check_drift(
         live_root = target.managed_deploy_root
         if live_root is None:
             continue
+        from ..install.audit_target_roots import external_target_relative_roots
+
+        governed_roots = external_target_relative_roots(target)
+        if not governed_roots:
+            continue
         comparison_target = replace(target, root_dir=".", resolved_deploy_root=None)
         external_findings = diff_scratch_against_project(
             external_replay_root(scratch, target),
@@ -744,6 +750,7 @@ def _check_drift(
             lockfile,
             [comparison_target],
             absolute_claims_only=True,
+            governed_roots=governed_roots,
         )
         findings.extend(
             replace(finding, path=str(live_root / finding.path)) for finding in external_findings

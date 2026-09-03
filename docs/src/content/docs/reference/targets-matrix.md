@@ -95,12 +95,12 @@ user-scope `mcp.json`. That global signal does not auto-select file-primitive
 deployment. When `intellij` is selected explicitly, package file primitives use
 the Copilot profile. `intellij` does not participate in plain `all` expansion.
 
-`agent-skills` is a canonical target key; `antigravity` is explicit-only for
-auto-detection. Both are available with `--target` and can be listed in a
+`agent-skills` and `hermes` are canonical target keys; `antigravity` and
+`hermes` are explicit-only for auto-detection. All are available with `--target` and can be listed in a
 project's `apm.yml` `targets:` field so contributors running plain `apm
 install` pick them up automatically.
 
-`copilot-cowork`, `copilot-app`, `grok-cloud`, `openclaw`, and `hermes` are
+`copilot-cowork`, `copilot-app`, `grok-cloud`, and `openclaw` are
 experimental targets that require `apm experimental enable <name>` before use.
 They are selected with `--target` only and cannot be listed in `apm.yml` (the
 canonical targets validator will reject them).

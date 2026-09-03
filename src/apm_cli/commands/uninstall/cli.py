@@ -530,7 +530,8 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
             logger.error(
                 "Uninstall incomplete: package removal completed, but MCP cleanup failed: "
                 f"{type(cleanup_error).__name__}: {cleanup_error}. Fix the target config, "
-                "then retry so lock ownership can be reconciled."
+                "then run 'apm install' to reconcile stale MCP entries; lock ownership "
+                "was retained."
             )
             logger.verbose_detail(traceback.format_exc().rstrip())
 

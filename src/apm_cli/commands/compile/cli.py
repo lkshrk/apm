@@ -24,6 +24,7 @@ from ...core.target_catalog import (
     target_help_fragment,
 )
 from ...core.target_detection import TargetParamType, should_compile_agents_md
+from ...install.locking import serialized_lifecycle_unless
 from ...primitives.discovery import clear_discovery_cache, discover_primitives
 from ...utils import perf_stats
 from ...utils.console import (
@@ -374,7 +375,6 @@ def _resolve_effective_target(
     )
     return detected_target, detection_reason, config_target
 
-
 def _global_compile_targets(source_root: Path) -> tuple[list[TargetProfile], list[str] | None]:
     """Return the target profiles ``apm compile -g`` should write.
 
@@ -402,6 +402,7 @@ def _global_compile_targets(source_root: Path) -> tuple[list[TargetProfile], lis
     return [profile for profile in profiles if profile is not None], declared
 
 
+@serialized_lifecycle_unless("dry_run")
 def _handle_global_flag(dry_run: bool, logger: CommandLogger) -> int:
     """Handle --global compilation of user-scope root context files.
 
@@ -770,6 +771,7 @@ def _report_protected_no_write(
     )
 
 
+@serialized_lifecycle_unless("dry_run")
 def _run_compilation(
     logger: CommandLogger,
     target: str | list[str] | None,

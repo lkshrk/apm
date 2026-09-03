@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Hermes is now a stable explicit-only target, and lifecycle state mutations
+  share one cross-process lock to prevent concurrent updates from losing state.
+  (by @lkshrk; closes #2608) (#2655)
 - Architecture ownership guards now use a sharded JSON registry and a
   single-process Python linter while preserving exact-revision compatibility
   and reducing warm median lint time by 75%. (#2739)
@@ -23,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole-file line-ending change. (closes #2624) (#2675)
 - `apm compile` now preserves hand-authored root `AGENTS.md` and `CLAUDE.md`
   files, including `--root` destinations, instead of replacing them. (#2779)
+- `apm uninstall` now removes MCP servers only from recorded owning runtimes,
+  accepts JetBrains Copilot JSONC, and reports target cleanup failures after
+  attempting every owner. (by @aryansk, fixes #2551) (#2591)
+- Global audit now checks external deployment roots without mutating them, and
+  uninstall/prune remove only runtime-scoped APM-owned MCP entries while
+  preserving same-named user configuration. (by @lkshrk; closes #2608) (#2655)
+- `apm install` now preserves previously deployed skills when package
+  integration is skipped instead of treating them as stale cleanup candidates.
+  (#2758)
 - `apm compile -g` now honors `target:` and `targets:` in `~/.apm/apm.yml`,
   limiting output to declared harnesses and avoiding stray `$HOME` directories
   when targets are configured. (by @tillig, #2772)

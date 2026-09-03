@@ -121,6 +121,13 @@
       "guards": ["install-deployment-audit-replay"]
     },
     {
+      "id": "cross-process-lifecycle-serialization",
+      "decision": "Cross-process lifecycle mutation serialization",
+      "owner": "install/locking.py (lifecycle_operation, serialized_lifecycle)",
+      "selectors": ["src/apm_cli/install/locking.py"],
+      "guards": ["install-deployment-lifecycle-serialization"]
+    },
+    {
       "id": "dependency-cli-selection",
       "decision": "Dependency CLI identifier parsing + uninstall selection",
       "owner": "models/dependency/selection.py (via DependencyReference)",

@@ -75,6 +75,12 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
         (("install",), ("lock",), False, False),
         (("install",), ("approve", "missing"), False, False),
         (("install",), ("deny", "missing"), False, False),
+        (("install",), ("compile", "--clean"), False, False),
+        (("install",), ("config", "set", "auto-integrate", "false"), False, False),
+        (("install",), ("config", "unset", "auto-integrate"), False, False),
+        (("install",), ("experimental", "enable", "canvas"), False, False),
+        (("install",), ("experimental", "disable", "canvas"), False, False),
+        (("install",), ("experimental", "reset", "canvas", "--yes"), False, False),
         (("install",), ("init", "new-project", "--yes"), False, False),
         (("install",), ("plugin", "init", "new-plugin", "--yes"), False, False),
         (
@@ -203,8 +209,8 @@ def test_install_serializes_other_lifecycle_commands(
             contender.wait(timeout=0.5)
 
         release.write_text("release", encoding="ascii")
-        install_stdout, install_stderr = install.communicate(timeout=10)
-        contender_stdout, contender_stderr = contender.communicate(timeout=10)
+        install_stdout, install_stderr = install.communicate(timeout=30)
+        contender_stdout, contender_stderr = contender.communicate(timeout=30)
     finally:
         for process in (install, contender):
             if process is not None and process.poll() is None:

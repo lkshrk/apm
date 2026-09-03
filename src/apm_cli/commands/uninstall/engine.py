@@ -1400,12 +1400,15 @@ def _cleanup_stale_mcp(
 ):
     """Remove MCP servers that are no longer needed after uninstall."""
     managed_servers = set(old_mcp_servers or ())
+    target_ownership = {}
     if lockfile is not None:
         managed_servers.update(getattr(lockfile, "mcp_servers", ()) or ())
         target_ownership = getattr(lockfile, "mcp_target_servers", {}) or {}
         if isinstance(target_ownership, dict):
             for servers in target_ownership.values():
                 managed_servers.update(servers or ())
+        else:
+            target_ownership = {}
     if not managed_servers:
         return
     from apm_cli.integration.mcp_config_view import CurrentMcpConfigView

@@ -81,7 +81,8 @@ warning -- prefer `--all`.
 Every accepted project target is also accepted by `compile`. `grok-build`
 produces `AGENTS.md`. Targets without root-context output, including
 `agent-skills` and the experimental `grok-cloud` target, are successful no-ops.
-`antigravity` is explicit-only and `intellij` is MCP-only. Neither is included in `all`.
+`antigravity` and `hermes` are explicit-only, while `intellij` is MCP-only.
+None is included in `all`.
 For `intellij`, file primitives use the Copilot profile and produce `AGENTS.md`;
 IntelliJ-specific integration remains MCP-only. Use `apm install` or
 `apm deps update` when you want shared `.agents/skills/` output.

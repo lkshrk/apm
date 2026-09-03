@@ -847,6 +847,7 @@ def diff_scratch_against_project(
     *,
     tracked_files: frozenset[str] | None = None,
     absolute_claims_only: bool = False,
+    governed_roots: set[str] | None = None,
 ) -> list[DriftFinding]:
     """Compare the replay scratch tree against the project tree.
 
@@ -877,7 +878,7 @@ def diff_scratch_against_project(
     """
     scratch_root = scratch_root.resolve()
     project_root = project_root.resolve()
-    governed = _governed_root_dirs(targets)
+    governed = governed_roots if governed_roots is not None else _governed_root_dirs(targets)
     scratch_files = _walk_managed(scratch_root, governed)
     project_files = _walk_managed(project_root, governed)
     from apm_cli.install.audit_target_roots import claims_for_root

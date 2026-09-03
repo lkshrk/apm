@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
 import threading
 import weakref
@@ -45,7 +46,9 @@ def acquire_lifecycle_lock(*, timeout: float = LIFECYCLE_LOCK_TIMEOUT) -> FileLo
         lock.acquire(timeout=timeout)
     except Timeout as exc:
         raise LifecycleBusyError(
-            f"APM state is busy: waited {timeout:g}s for lifecycle lock {lock.lock_file}"
+            f"Another APM operation is still running; waited {timeout:g}s. "
+            "Wait for it to finish or stop it, then retry. "
+            f"Lifecycle lock: {lock.lock_file}"
         ) from exc
     return lock
 
@@ -69,3 +72,24 @@ def serialized_lifecycle(run: Callable[..., _T]) -> Callable[..., _T]:
             return run(*args, **kwargs)
 
     return wrapped
+
+
+def serialized_lifecycle_unless(
+    read_only_argument: str,
+) -> Callable[[Callable[..., _T]], Callable[..., _T]]:
+    """Serialize a callback unless its named read-only option is true."""
+
+    def decorate(run: Callable[..., _T]) -> Callable[..., _T]:
+        signature = inspect.signature(run)
+
+        @wraps(run)
+        def wrapped(*args: Any, **kwargs: Any) -> _T:
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+            if arguments.get(read_only_argument, False):
+                return run(*args, **kwargs)
+            with lifecycle_operation():
+                return run(*args, **kwargs)
+
+        return wrapped
+
+    return decorate
