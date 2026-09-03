@@ -67,7 +67,10 @@ def _reject_symlink_config(
         has_symlink = True
     if not has_symlink:
         return False
-    message = f"Refusing to clean symlinked MCP config: {label} ({config_path})"
+    message = (
+        f"Refusing to clean symlinked MCP config: {label} ({config_path}). "
+        "Replace the symlink with a regular file or directory, then retry."
+    )
     if fail_on_write_error:
         from apm_cli.install.errors import RequiredIntegrationError
 

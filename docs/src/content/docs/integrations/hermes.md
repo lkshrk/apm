@@ -22,17 +22,17 @@ So the `hermes` target reuses APM's existing skill and `AGENTS.md` output paths 
 |---------------|----------------|----------|
 | skills | Skills system (agentskills.io) | `.agents/skills/<name>/SKILL.md` (project) or `~/.hermes/skills/<name>/SKILL.md` (`--global`) |
 | instructions | Context file (`AGENTS.md`) | `AGENTS.md` at the project root |
-| MCP servers | `mcp_servers:` block | `~/.hermes/config.yaml` (user scope) |
+| MCP servers | `mcp_servers:` block | `~/.hermes/config.yaml` (home-scoped for every explicit selection) |
 
 At project scope, skills land in `.agents/skills/`, which Hermes reads through its `skills.external_dirs` setting. At user scope (`--global`), skills land directly in the Hermes home.
 
 ## Install
 
 ```bash
-# Project scope: skills -> .agents/skills/, plus AGENTS.md on compile
+# Project scope: skills -> .agents/skills/, MCP -> ~/.hermes/config.yaml
 apm install --target hermes
 
-# User scope: skills -> ~/.hermes/skills/, MCP servers -> ~/.hermes/config.yaml
+# User scope: skills -> ~/.hermes/skills/, MCP -> ~/.hermes/config.yaml
 apm install --target hermes --global
 ```
 
@@ -51,7 +51,9 @@ When `HERMES_HOME` lives under `$HOME`, APM keeps the deploy root home-relative;
 
 ## MCP servers
 
-When `hermes` is selected explicitly, APM writes MCP servers into the `mcp_servers:` block of `~/.hermes/config.yaml`:
+When `hermes` is selected explicitly, APM writes MCP servers into the
+home-scoped `mcp_servers:` block of `~/.hermes/config.yaml`, even when package
+skills use project scope:
 
 Explicit selection does not require an existing Hermes home or a `hermes`
 binary on `PATH`; APM creates the configured home as needed. Runtime-presence

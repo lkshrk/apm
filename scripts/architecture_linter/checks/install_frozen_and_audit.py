@@ -302,6 +302,9 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
     """Every declared lifecycle mutator must route through install/locking.py."""
     rule_id = _GUARD_LIFECYCLE_SERIALIZATION
     required = {
+        "src/apm_cli/commands/audit.py": {
+            "audit": "serialized_lifecycle_when",
+        },
         "src/apm_cli/commands/approve.py": {
             "approve_cmd": "serialized_lifecycle",
             "deny_cmd": "serialized_lifecycle",
@@ -325,6 +328,9 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
         },
         "src/apm_cli/commands/init.py": {"init": "serialized_lifecycle"},
         "src/apm_cli/commands/install.py": {"install": "serialized_lifecycle"},
+        "src/apm_cli/commands/lifecycle.py": {
+            "lifecycle_init": "serialized_lifecycle",
+        },
         "src/apm_cli/commands/lock.py": {"_run_lock": "serialized_lifecycle"},
         "src/apm_cli/commands/marketplace/__init__.py": {
             "add": "serialized_lifecycle",

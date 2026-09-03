@@ -23,6 +23,7 @@ from ..core.deployment_ledger import (
     DeploymentOwnerViolation,
 )
 from ..deps.lockfile import LockFile, get_lockfile_path
+from ..install.locking import serialized_lifecycle_when
 from ..policy._help_text import POLICY_SOURCE_FORMS_HELP
 from ..security.content_scanner import ContentScanner, ScanFinding
 from ..security.file_scanner import scan_project_files
@@ -1258,6 +1259,7 @@ def _audit_content_scan(
     ),
 )
 @click.pass_context
+@serialized_lifecycle_when("strip", unless_argument="dry_run")
 def audit(  # noqa: PLR0913 -- Click handler
     ctx,
     package,

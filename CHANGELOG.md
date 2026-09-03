@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Hermes is now a stable explicit-only target, and lifecycle state mutations
-  share one cross-process lock to prevent concurrent updates from losing state.
+- Hermes is now a stable explicit-only target, and state-mutating APM commands
+  share one per-user cross-process lock to prevent concurrent updates from losing state.
   (by @lkshrk; closes #2608) (#2655)
 - Architecture ownership guards now use a sharded JSON registry and a
   single-process Python linter while preserving exact-revision compatibility

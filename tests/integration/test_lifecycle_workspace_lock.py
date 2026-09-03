@@ -51,6 +51,36 @@ _BLOCKING_INSTALL = textwrap.dedent(
     """
 )
 
+_WATCHING_COMPILE = textwrap.dedent(
+    """
+    import os
+    from pathlib import Path
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from apm_cli.commands.compile.watcher import _watch_mode
+
+    marker = Path(os.environ["APM_TEST_WATCH_COMPILED"])
+
+    class MarkerCompiler:
+        def __init__(self, project_root):
+            self.project_root = project_root
+
+        def compile(self, config):
+            marker.write_text("compiled", encoding="ascii")
+            return SimpleNamespace(success=True, output_path="AGENTS.md", errors=[])
+
+    with (
+        patch(
+            "apm_cli.commands.compile.watcher.CompilationConfig.from_apm_yml",
+            return_value=object(),
+        ),
+        patch("apm_cli.commands.compile.watcher.AgentsCompiler", MarkerCompiler),
+    ):
+        _watch_mode("AGENTS.md", None, False, False)
+    """
+)
+
 
 def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
     deadline = time.monotonic() + 10
@@ -81,6 +111,13 @@ def _wait_for_path(path: Path, process: subprocess.Popen[str]) -> None:
         (("install",), ("experimental", "enable", "canvas"), False, False),
         (("install",), ("experimental", "disable", "canvas"), False, False),
         (("install",), ("experimental", "reset", "canvas", "--yes"), False, False),
+        (("install",), ("lifecycle", "init", "--force"), False, False),
+        (
+            ("install",),
+            ("audit", "--file", "__AUDIT_FILE__", "--strip"),
+            False,
+            False,
+        ),
         (("install",), ("init", "new-project", "--yes"), False, False),
         (("install",), ("plugin", "init", "new-plugin", "--yes"), False, False),
         (
@@ -194,7 +231,13 @@ def test_install_serializes_other_lifecycle_commands(
     try:
         _wait_for_path(ready, install)
         resolved_contender_args = tuple(
-            str(marketplace_source) if arg == "__MARKETPLACE_SOURCE__" else arg
+            (
+                str(marketplace_source)
+                if arg == "__MARKETPLACE_SOURCE__"
+                else str(manifest)
+                if arg == "__AUDIT_FILE__"
+                else arg
+            )
             for arg in contender_args
         )
         contender = subprocess.Popen(
@@ -222,9 +265,76 @@ def test_install_serializes_other_lifecycle_commands(
     assert contender.returncode in {0, 1}, (contender_stdout, contender_stderr)
     if contender_args[0] == "deny":
         assert "missing:" in manifest.read_text(encoding="ascii")
+    elif contender_args[:2] == ("lifecycle", "init"):
+        assert "lifecycle:" in manifest.read_text(encoding="ascii")
     elif contender_args[:2] == ("marketplace", "init"):
         assert "marketplace:" in manifest.read_text(encoding="ascii")
     else:
         assert manifest.read_text(encoding="ascii") == original_manifest
     if cross_project:
         assert (contender_workspace / "apm.yml").read_text(encoding="ascii") == original_manifest
+
+
+def test_compile_watch_startup_waits_for_active_lifecycle_operation(
+    tmp_path: Path,
+) -> None:
+    """Watch startup must not compile until the active install releases its lock."""
+    home = tmp_path / "home"
+    home.mkdir()
+    manifest = tmp_path / "apm.yml"
+    manifest.write_text(
+        "name: fixture\nversion: 1.0.0\ntargets:\n  - copilot\n",
+        encoding="ascii",
+    )
+    ready = tmp_path / "install-ready"
+    release = tmp_path / "install-release"
+    output = tmp_path / "watch-compiled"
+    environment = {
+        **os.environ,
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "HOMEDRIVE": home.drive,
+        "HOMEPATH": str(home)[len(home.drive) :],
+        "APM_TEST_LOCK_READY": str(ready),
+        "APM_TEST_LOCK_RELEASE": str(release),
+        "APM_TEST_WATCH_COMPILED": str(output),
+    }
+    install = subprocess.Popen(
+        [sys.executable, "-c", _BLOCKING_INSTALL],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    watcher = None
+    try:
+        _wait_for_path(ready, install)
+        watcher = subprocess.Popen(
+            [sys.executable, "-c", _WATCHING_COMPILE],
+            cwd=tmp_path,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        time.sleep(0.5)
+        assert watcher.poll() is None
+        assert not output.exists()
+
+        release.write_text("release", encoding="ascii")
+        install_stdout, install_stderr = install.communicate(timeout=30)
+        deadline = time.monotonic() + 30
+        while not output.exists() and time.monotonic() < deadline:
+            if watcher.poll() is not None:
+                stdout, stderr = watcher.communicate()
+                pytest.fail(f"watch exited before compile: {stdout}\n{stderr}")
+            time.sleep(0.05)
+        assert output.is_file()
+    finally:
+        for process in (install, watcher):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+
+    assert install.returncode == 0, (install_stdout, install_stderr)

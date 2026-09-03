@@ -1,5 +1,6 @@
 """Unit contracts for workspace lifecycle serialization."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +40,27 @@ def test_lifecycle_lock_uses_isolated_windows_home(
         assert Path(lock.lock_file) == (home / ".apm" / ".apm-lifecycle.lock").resolve()
     finally:
         lock.release()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires elevated Windows rights")
+def test_lifecycle_lock_rejects_symlink_without_touching_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    lock_dir = home / ".apm"
+    lock_dir.mkdir(parents=True)
+    victim = tmp_path / "victim"
+    original = b"preserve me"
+    victim.write_bytes(original)
+    (lock_dir / ".apm-lifecycle.lock").symlink_to(victim)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    with pytest.raises(LifecycleBusyError, match="Replace the symlink"):
+        acquire_lifecycle_lock()
+
+    assert victim.read_bytes() == original
+    assert (lock_dir / ".apm-lifecycle.lock").is_symlink()
 
 
 def test_busy_error_names_lock_path_and_wait(tmp_path: Path, monkeypatch) -> None:

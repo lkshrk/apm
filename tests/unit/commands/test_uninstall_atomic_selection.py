@@ -242,8 +242,6 @@ def test_mcp_cleanup_failure_preserves_lock_and_live_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Uninstall must not persist dropped ownership after native cleanup fails."""
-    from apm_cli.install.errors import RequiredIntegrationError
-
     project = tmp_path / "project"
     project.mkdir()
     package = "owner/installed"
@@ -258,7 +256,7 @@ def test_mcp_cleanup_failure_preserves_lock_and_live_config(
     config_path = project / ".agents" / "mcp_config.json"
     config_path.parent.mkdir()
     config_path.write_text(
-        '{"mcpServers":{"owned-server":{"command":"keep"}}}',
+        '{"mcpServers":["malformed"]}',
         encoding="utf-8",
     )
     lock_before = lock_path.read_bytes()
@@ -279,14 +277,13 @@ def test_mcp_cleanup_failure_preserves_lock_and_live_config(
             "apm_cli.commands.uninstall.cli._sync_integrations_after_uninstall",
             return_value=({}, {}),
         ),
-        patch(
-            "apm_cli.commands.uninstall.cli._cleanup_stale_mcp",
-            side_effect=RequiredIntegrationError("native config malformed"),
-        ),
     ):
         result = CliRunner().invoke(uninstall, [package])
 
     assert result.exit_code != 0
+    assert "MCP cleanup failed" in result.output
+    assert "apm install" in result.output
+    assert "lock ownership was retained" in result.output
     assert lock_path.read_bytes() == lock_before
     assert config_path.read_bytes() == config_before
 
