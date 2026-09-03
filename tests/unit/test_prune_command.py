@@ -31,6 +31,7 @@ from apm_cli.core.deployment_state import (
     DeploymentRecord,
     LocatorKind,
 )
+from apm_cli.core.scope import InstallScope
 from apm_cli.deps.lockfile import LockedDependency, LockFile
 from apm_cli.integration.cleanup import remove_stale_deployed_files
 from apm_cli.models.apm_package import clear_apm_yml_cache
@@ -441,10 +442,11 @@ dependencies:
             with patch(
                 "apm_cli.commands.uninstall.engine._cleanup_stale_mcp",
                 side_effect=RequiredIntegrationError("native config malformed"),
-            ):
+            ) as cleanup:
                 result = self.runner.invoke(cli, ["prune"])
 
             assert result.exit_code != 0
+            assert cleanup.call_args.kwargs["scope"] is InstallScope.PROJECT
             assert lock_path.read_bytes() == lock_before
             assert config_path.read_bytes() == config_before
 

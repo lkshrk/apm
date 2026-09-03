@@ -52,6 +52,28 @@ if TYPE_CHECKING:
 _log = logging.getLogger(__name__)
 
 
+def _reject_symlink_config(
+    config_path: Path,
+    label: str,
+    logger: CommandLogger | None,
+    *,
+    fail_on_write_error: bool,
+) -> bool:
+    """Reject MCP cleanup through a symlink without reading its target."""
+    if not config_path.is_symlink():
+        return False
+    message = f"Refusing to clean symlinked MCP config: {label} ({config_path})"
+    if fail_on_write_error:
+        from apm_cli.install.errors import RequiredIntegrationError
+
+        raise RequiredIntegrationError(message)
+    if logger is not None:
+        logger.warning(message)
+    else:
+        _rich_warning(message, symbol="warning")
+    return True
+
+
 def _is_vscode_available(project_root: Path | str | None = None) -> bool:
     """Return True when VS Code can be targeted for MCP configuration.
 
@@ -94,7 +116,15 @@ def _clean_json_mcp_config(
     Returns:
         Number of entries removed.
     """
-    if not config_path.exists():
+    if (
+        _reject_symlink_config(
+            config_path,
+            label,
+            logger,
+            fail_on_write_error=fail_on_write_error,
+        )
+        or not config_path.exists()
+    ):
         return 0
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -137,7 +167,15 @@ def _clean_hermes_mcp_config(
 ) -> int:
     """Atomically remove stale servers from Hermes' YAML config."""
     label = "Hermes config.yaml"
-    if not config_path.exists():
+    if (
+        _reject_symlink_config(
+            config_path,
+            label,
+            logger,
+            fail_on_write_error=fail_on_write_error,
+        )
+        or not config_path.exists()
+    ):
         return 0
     try:
         config = load_yaml(config_path)
@@ -190,7 +228,15 @@ def _clean_toml_mcp_config(
     Returns:
         Number of entries removed.
     """
-    if not config_path.exists():
+    if (
+        _reject_symlink_config(
+            config_path,
+            label,
+            logger,
+            fail_on_write_error=fail_on_write_error,
+        )
+        or not config_path.exists()
+    ):
         return 0
     try:
         config = tomlkit.parse(config_path.read_text(encoding="utf-8"))
@@ -244,7 +290,15 @@ def _clean_claude_config(
         Number of entries removed.
     """
     label = "~/.claude.json" if is_user_scope else ".mcp.json"
-    if not config_path.exists():
+    if (
+        _reject_symlink_config(
+            config_path,
+            label,
+            logger,
+            fail_on_write_error=fail_on_write_error,
+        )
+        or not config_path.exists()
+    ):
         return 0
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))

@@ -119,7 +119,7 @@ from ..core.command_logger import InstallLogger, _ValidationOutcome
 from ..core.project_name import (
     resolve_bootstrap_project_name as _resolve_bootstrap_project_name,
 )
-from ..core.target_catalog import target_help_fragment
+from ..core.target_catalog import target_all_exclusion_help, target_help_fragment
 from ..core.target_detection import TargetParamType, manifest_targets_from_target_option
 from ..install.mcp.args import parse_env_pairs as _parse_mcp_env_pairs
 from ..install.mcp.args import parse_header_pairs as _parse_mcp_header_pairs
@@ -945,8 +945,8 @@ def _handle_mcp_install(  # noqa: PLR0913
     help=f"Target harness(es) to deploy to. Use commas for multiple targets; repeating the flag "
     f"keeps only the last value (use commas instead). {target_help_fragment('install')} "
     "IntelliJ-specific integration is MCP-only; file primitives use the Copilot profile. "
-    "'all' excludes agent-skills, antigravity, experimental targets, and intellij; combine "
-    "explicit-only targets when needed. Experimental targets require their feature flags. "
+    f"{target_all_exclusion_help()} Combine explicit-only targets when needed. "
+    "Experimental targets require their feature flags. "
     "Target resolution: --runtime/--target > apm.yml targets: > apm config set target ... > "
     "auto-detect (only when no higher-priority selection exists). With nothing to detect, install "
     "exits 2 with a teaching message. For 'apm compile', use '--all'; '--target all' "

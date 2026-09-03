@@ -1,5 +1,6 @@
 """Characterisation tests for MCPIntegrator.remove_stale()."""
 
+import os
 from pathlib import Path  # noqa: F401
 from unittest.mock import MagicMock, patch
 
@@ -272,6 +273,33 @@ def test_remove_stale_hermes_failure_preserves_live_bytes(tmp_path, monkeypatch,
     assert preserved_stat.st_uid == original_stat.st_uid
     assert preserved_stat.st_gid == original_stat.st_gid
     assert list(hermes_home.glob("apm-atomic-*")) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires elevated Windows rights")
+def test_remove_stale_rejects_symlinked_hermes_config(tmp_path, monkeypatch):
+    """Strict cleanup must preserve both a config symlink and its target."""
+    from apm_cli.install.errors import RequiredIntegrationError
+    from apm_cli.integration.mcp_integrator import MCPIntegrator
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    target = tmp_path / "user-config.yaml"
+    original = b"mcp_servers:\n  stale:\n    command: keep\n"
+    target.write_bytes(original)
+    config_path = hermes_home / "config.yaml"
+    config_path.symlink_to(target)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(RequiredIntegrationError, match="symlinked MCP config"):
+        MCPIntegrator.remove_stale(
+            {"stale"},
+            runtime="hermes",
+            logger=MagicMock(),
+            fail_on_write_error=True,
+        )
+
+    assert config_path.is_symlink()
+    assert target.read_bytes() == original
 
 
 class TestCleanCodexToml:

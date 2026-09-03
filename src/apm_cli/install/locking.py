@@ -43,13 +43,22 @@ def acquire_lifecycle_lock(*, timeout: float = LIFECYCLE_LOCK_TIMEOUT) -> FileLo
     lock = lifecycle_lock()
     Path(lock.lock_file).parent.mkdir(parents=True, exist_ok=True)
     try:
-        lock.acquire(timeout=timeout)
-    except Timeout as exc:
-        raise LifecycleBusyError(
-            f"Another APM operation is still running; waited {timeout:g}s. "
-            "Wait for it to finish or stop it, then retry. "
-            f"Lifecycle lock: {lock.lock_file}"
-        ) from exc
+        lock.acquire(timeout=0)
+    except Timeout:
+        from apm_cli.utils.console import _rich_info
+
+        _rich_info(
+            f"Another APM operation is running; waiting up to {timeout:g}s.",
+            symbol="info",
+        )
+        try:
+            lock.acquire(timeout=timeout)
+        except Timeout as wait_exc:
+            raise LifecycleBusyError(
+                f"Another APM operation is still running; waited {timeout:g}s. "
+                "Wait for it to finish or stop it, then retry. "
+                f"Lifecycle lock: {lock.lock_file}"
+            ) from wait_exc
     return lock
 
 

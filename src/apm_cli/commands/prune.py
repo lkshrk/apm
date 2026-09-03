@@ -339,6 +339,7 @@ def prune(ctx, dry_run):
                     set(lockfile.mcp_servers),
                     modules_dir=apm_modules_dir,
                     project_root=project_root,
+                    scope=InstallScope.PROJECT,
                     persist=False,
                 )
             try:

@@ -208,12 +208,28 @@ def test_global_audit_scans_unrecorded_external_target_content(
         env=environment,
     )
     assert install.exit_code == 0, install.output
+    unmanaged = external_root / "notes" / "user-content.md"
+    unmanaged.parent.mkdir()
+    unmanaged.write_text(f"# Hidden {chr(0x202E)} marker\n", encoding="utf-8")
+    before_unmanaged_audit = _tree_snapshot(external_root)
+
+    monkeypatch.chdir(isolated.config_root)
+    unmanaged_audit = CliRunner().invoke(
+        cli,
+        ["audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"],
+        env=environment,
+    )
+    assert unmanaged_audit.exit_code == 0, unmanaged_audit.output
+    unmanaged_payload = json.loads(unmanaged_audit.output[unmanaged_audit.output.index("{") :])
+    unmanaged_checks = {check["name"]: check for check in unmanaged_payload["checks"]}
+    assert unmanaged_checks["content-integrity"]["passed"] is True
+    assert _tree_snapshot(external_root) == before_unmanaged_audit
+
     unrecorded = external_root / "skills" / "unrecorded" / "SKILL.md"
     unrecorded.parent.mkdir()
     unrecorded.write_text(f"# Hidden {chr(0x202E)} marker\n", encoding="utf-8")
     before_audit = _tree_snapshot(external_root)
 
-    monkeypatch.chdir(isolated.config_root)
     audit = CliRunner().invoke(
         cli,
         ["audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"],

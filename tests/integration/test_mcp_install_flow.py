@@ -9,6 +9,8 @@ Strategy: hermetic -- mocks registry, runtime, console.
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from urllib.parse import urlparse
 
@@ -18,8 +20,10 @@ import yaml
 from click.testing import CliRunner
 
 from apm_cli.cli import cli
+from apm_cli.commands.uninstall.engine import _cleanup_stale_mcp
 from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
 from apm_cli.core.null_logger import NullCommandLogger
+from apm_cli.core.scope import InstallScope
 from apm_cli.deps.lockfile import LockFile
 from apm_cli.integration.mcp_integrator_install import run_mcp_install
 from apm_cli.models.apm_package import clear_apm_yml_cache
@@ -27,6 +31,59 @@ from apm_cli.models.apm_package import clear_apm_yml_cache
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def test_uninstall_cleanup_preserves_same_named_server_in_other_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runtime ownership must prevent cross-runtime same-name deletion."""
+    home = tmp_path / "home"
+    hermes_config = home / ".hermes" / "config.yaml"
+    codex_config = home / ".codex" / "config.toml"
+    hermes_config.parent.mkdir(parents=True)
+    codex_config.parent.mkdir(parents=True)
+    hermes_config.write_text(
+        "mcp_servers:\n  shared-name:\n    command: managed\n",
+        encoding="utf-8",
+    )
+    codex_config.write_text(
+        '[mcp_servers."shared-name"]\ncommand = "user-command"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_config.parent))
+    lockfile = LockFile(
+        mcp_servers=["shared-name"],
+        mcp_target_servers={"hermes": ["shared-name"]},
+    )
+    view = SimpleNamespace(dependencies=[], configs={}, provenance={})
+
+    with patch(
+        "apm_cli.integration.mcp_config_view.CurrentMcpConfigView.derive",
+        return_value=view,
+    ):
+        _cleanup_stale_mcp(
+            MagicMock(),
+            lockfile,
+            tmp_path / "apm.lock.yaml",
+            {"shared-name"},
+            modules_dir=tmp_path / "apm_modules",
+            user_scope=True,
+            scope=InstallScope.USER,
+            persist=False,
+        )
+
+    assert (
+        "shared-name"
+        not in yaml.safe_load(hermes_config.read_text(encoding="utf-8"))["mcp_servers"]
+    )
+    assert (
+        tomlkit.parse(codex_config.read_text(encoding="utf-8"))["mcp_servers"]["shared-name"][
+            "command"
+        ]
+        == "user-command"
+    )
 
 
 def _make_registry_dep(

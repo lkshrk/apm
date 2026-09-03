@@ -47,10 +47,16 @@ def test_busy_error_names_lock_path_and_wait(tmp_path: Path, monkeypatch) -> Non
     lock = lifecycle_lock()
 
     with (
-        patch.object(lock, "acquire", side_effect=Timeout(lock.lock_file)),
+        patch.object(lock, "acquire", side_effect=Timeout(lock.lock_file)) as acquire,
+        patch("apm_cli.utils.console._rich_info") as info,
         pytest.raises(LifecycleBusyError, match=r"waited 0.25s.*\.apm-lifecycle\.lock"),
     ):
         acquire_lifecycle_lock(timeout=0.25)
+    assert acquire.call_count == 2
+    info.assert_called_once_with(
+        "Another APM operation is running; waiting up to 0.25s.",
+        symbol="info",
+    )
 
 
 def test_install_root_redirect_teardown_error_releases_lock(tmp_path: Path, monkeypatch) -> None:
