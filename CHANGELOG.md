@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Global audit now checks external deployment roots without mutating them, and
   uninstall/prune remove only runtime-scoped APM-owned MCP entries while
   preserving same-named user configuration. (by @lkshrk; closes #2608) (#2655)
+- `apm uninstall --global` now removes managed Copilot hook files from
+  `~/.copilot/hooks/` while preserving user-authored hooks. (by @aryansk; closes
+  #2558) (#2559)
 - `apm install` now preserves previously deployed skills when package
   integration is skipped instead of treating them as stale cleanup candidates.
   (#2758)

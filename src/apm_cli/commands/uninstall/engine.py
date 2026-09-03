@@ -1059,6 +1059,37 @@ def _preflight_uninstall_survivors(
     )
 
 
+@dataclass(frozen=True)
+class IntegrationCleanupOutcome:
+    """Complete result of the post-uninstall integration cleanup."""
+
+    counts: dict[str, int]
+    deployed_files: dict[str, list[str]]
+    failed_paths: list[str]
+    error_count: int
+
+    @property
+    def complete(self) -> bool:
+        """Return whether every integration cleanup operation succeeded."""
+        return self.error_count == 0
+
+
+def _native_hook_state_exists(project_root: Path, targets: list[object]) -> bool:
+    """Return whether cleanup may rewrite a merged native-hook config."""
+    from ...integration.hook_integrator import _APM_HOOKS_SIDECAR, _MERGE_HOOK_TARGETS
+
+    for target in targets:
+        config = _MERGE_HOOK_TARGETS.get(target.name)
+        if config is None:
+            continue
+        target_dir = project_root / target.root_dir
+        if (target_dir / config.config_filename).exists() or (
+            target_dir / _APM_HOOKS_SIDECAR
+        ).exists():
+            return True
+    return False
+
+
 def _sync_integrations_after_uninstall(
     apm_package: object,
     project_root: Path,
@@ -1068,7 +1099,8 @@ def _sync_integrations_after_uninstall(
     lockfile: LockFile | None = None,
     modules_dir: Path | None = None,
     survivor_plan: list[tuple[DependencyReference, object]] | None = None,
-) -> tuple[dict[str, int], dict[str, list[str]]]:
+    deployed_file_hashes: dict[str, str] | None = None,
+) -> "IntegrationCleanupOutcome":
     """Remove deployed files and re-integrate from remaining packages.
 
     When *user_scope* is ``True``, targets are resolved for user-level
@@ -1090,6 +1122,15 @@ def _sync_integrations_after_uninstall(
     from ...primitives.discovery import clear_discovery_cache
 
     installed_modules_dir = modules_dir or Path(APM_MODULES_DIR)
+    config_target = list(apm_package.canonical_targets)
+    _explicit = config_target or None
+    _resolved_targets = resolve_targets(
+        project_root, user_scope=user_scope, explicit_target=_explicit
+    )
+    require_valid_survivors = bool(all_deployed_files) or _native_hook_state_exists(
+        project_root,
+        _resolved_targets,
+    )
     validated_survivors = (
         survivor_plan
         if survivor_plan is not None
@@ -1097,7 +1138,7 @@ def _sync_integrations_after_uninstall(
             list(apm_package.get_all_apm_dependencies()),
             installed_modules_dir,
             lockfile=lockfile,
-            require_valid_installed=True,
+            require_valid_installed=require_valid_survivors,
             logger=logger,
         )
     )
@@ -1122,11 +1163,6 @@ def _sync_integrations_after_uninstall(
     )
 
     # Resolve targets once -- used for both Phase 1 removal and Phase 2 re-integration.
-    config_target = list(apm_package.canonical_targets)
-    _explicit = config_target or None
-    _resolved_targets = resolve_targets(
-        project_root, user_scope=user_scope, explicit_target=_explicit
-    )
     target_survivor_plan = []
     for dep_ref, pkg_info in validated_survivors:
         target_selection = resolve_effective_package_targets(
@@ -1283,9 +1319,31 @@ def _sync_integrations_after_uninstall(
         apm_package,
         project_root,
         managed_files=_buckets["hooks"] if _buckets else None,
+        managed_file_hashes=deployed_file_hashes,
         targets=_resolved_targets,
     )
     counts["hooks"] = result.get("files_removed", 0)
+    unsafe_hook_paths = result.get("unsafe_paths", [])
+    if unsafe_hook_paths:
+        noun = "path" if len(unsafe_hook_paths) == 1 else "paths"
+        logger.warning(
+            f"Skipped {len(unsafe_hook_paths)} managed hook {noun} that failed "
+            "containment validation. Inspect or repair symlinked parents before "
+            "removing anything."
+        )
+    failed_hook_paths = sorted(set(result.get("failed_paths", [])).union(unsafe_hook_paths))
+    for failed_path in failed_hook_paths:
+        path = Path(failed_path)
+        if not path.is_absolute():
+            path = project_root / path
+        if user_scope:
+            try:
+                display_path = f"~/{path.relative_to(project_root).as_posix()}"
+            except ValueError:
+                display_path = path.as_posix()
+        else:
+            display_path = path.as_posix()
+        logger.warning(f"Preserved managed hook path: {display_path}")
 
     # Phase 2: Re-integrate from remaining installed packages.
     #
@@ -1338,7 +1396,12 @@ def _sync_integrations_after_uninstall(
             )
 
     reintegration_diagnostics.render_summary()
-    return counts, package_deployed_files
+    return IntegrationCleanupOutcome(
+        counts=counts,
+        deployed_files=package_deployed_files,
+        failed_paths=failed_hook_paths,
+        error_count=result.get("errors", 0),
+    )
 
 
 def _remove_stale_mcp_from_recorded_targets(

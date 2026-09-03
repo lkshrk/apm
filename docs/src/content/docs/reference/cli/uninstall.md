@@ -115,6 +115,10 @@ matched package in the same invocation is removed. Fix the identifier and retry.
 If a target-scoped file owned only by a removed package was edited or cannot be
 deleted, uninstall lists the retained paths and exits before changing `apm.yml`,
 `apm.lock.yaml`, or package modules. Resolve the listed files and retry.
+If a managed hook changes after the initial check or is beneath a symlinked
+parent, uninstall preserves and lists the path. Package removal finishes, but the
+command exits nonzero because hook cleanup is incomplete. Inspect or repair the
+path before removing anything manually.
 
 If safe LSP cleanup fails after package removal, uninstall exits nonzero,
 preserves the conflicting configuration, and tells you to repair the path or

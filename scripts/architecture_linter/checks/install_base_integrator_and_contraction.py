@@ -278,6 +278,7 @@ _UNTRUSTED_NAME_PARTS = ("ghost", "invalid", "removed_record", "violation")
 _REQUIRED_OWNER_CALLS = {
     "src/apm_cli/commands/prune.py": ("legacy_value", "reconcile_owner_references"),
     "src/apm_cli/commands/audit.py": ("owner_reference_violations",),
+    "src/apm_cli/commands/uninstall/cli.py": ("cleanup_snapshot",),
     "src/apm_cli/policy/ci_checks.py": ("owner_reference_violations",),
 }
 

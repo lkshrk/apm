@@ -57,6 +57,14 @@ class DeploymentOwnerViolation:
     invalid_active_owner: str | None
 
 
+@dataclass(frozen=True)
+class DeploymentCleanupSnapshot:
+    """Canonical paths and hashes selected for one cleanup transition."""
+
+    paths: frozenset[str]
+    hashes: dict[str, str]
+
+
 def _require_local_bundle_hash(path: str, content_hash: str | None) -> None:
     """Reject imperative provenance without one canonical SHA-256 digest."""
     digest = (
@@ -94,6 +102,34 @@ class DeploymentLedgerCodec:
             if owner != ".":
                 paths.update(dependency.deployed_file_hashes)
         return frozenset(paths)
+
+    @staticmethod
+    def cleanup_snapshot(
+        lockfile: LockFile,
+        dependency_keys: Collection[str],
+    ) -> DeploymentCleanupSnapshot:
+        """Return selected cleanup claims with canonical ledger hash precedence."""
+        selected = frozenset(dependency_keys)
+        paths = {
+            path
+            for owner, dependency in lockfile.dependencies.items()
+            if owner in selected
+            for path in dependency.deployed_files
+        }
+        hashes: dict[str, str] = {}
+        for record in DeploymentLedgerCodec.from_lockfile(lockfile).records.values():
+            if (
+                record.locator.value in paths
+                and record.content_hash
+                and selected.intersection(record.owners)
+            ):
+                hashes.setdefault(record.locator.value, record.content_hash)
+        for owner, dependency in lockfile.dependencies.items():
+            if owner not in selected:
+                continue
+            for path, content_hash in dependency.deployed_file_hashes.items():
+                hashes.setdefault(path, content_hash)
+        return DeploymentCleanupSnapshot(paths=frozenset(paths), hashes=hashes)
 
     @staticmethod
     def valid_owner_keys(

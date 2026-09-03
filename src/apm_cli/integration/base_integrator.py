@@ -24,7 +24,12 @@ def discover_primitives(*args: Any, **kwargs: Any) -> Any:
     return _discover_primitives(*args, **kwargs)
 
 
-def _managed_absolute_target_root(candidate: Path, targets: Any) -> Path | None:
+def _managed_absolute_target_root(
+    candidate: Path,
+    targets: Any,
+    *,
+    allow_final_symlink: bool = False,
+) -> Path | None:
     """Return the managed root for *candidate*, or ``None`` if unmanaged."""
     from apm_cli.integration.targets import KNOWN_TARGETS
 
@@ -38,7 +43,7 @@ def _managed_absolute_target_root(candidate: Path, targets: Any) -> Path | None:
             if scoped is not None:
                 source.append(scoped)
     try:
-        resolved = candidate.resolve()
+        resolved = (candidate.parent if allow_final_symlink else candidate).resolve()
         for target_profile in source:
             if target_profile is None:
                 continue
@@ -46,15 +51,18 @@ def _managed_absolute_target_root(candidate: Path, targets: Any) -> Path | None:
             if deploy_root is None:
                 continue
             resolved_root = deploy_root.resolve()
+            if has_symlink_component(deploy_root, candidate.parent):
+                continue
             for mapping in target_profile.primitives.values():
                 if not mapping.subdir:
                     continue
-                primitive_root = (resolved_root / mapping.subdir).resolve()
+                primitive_path = deploy_root / mapping.subdir
+                primitive_root = primitive_path.resolve()
                 try:
                     contained = ensure_path_within(resolved, primitive_root)
                 except PathTraversalError:
                     continue
-                if contained != primitive_root:
+                if allow_final_symlink or contained != primitive_root:
                     return resolved_root
             if target_profile.hooks_config_display:
                 hooks_file = resolved_root / Path(target_profile.hooks_config_display).name
@@ -501,6 +509,9 @@ class BaseIntegrator:
         allowed_prefixes: tuple | None = None,
         targets=None,
         user_scope: bool = False,
+        *,
+        resolved_project_root: Path | None = None,
+        allow_final_symlink: bool = False,
     ) -> bool:
         """Return True if *rel_path* is safe for APM to deploy or remove.
 
@@ -510,6 +521,8 @@ class BaseIntegrator:
         When *targets* is provided, allowed prefixes are derived from
         those (scope-resolved) profiles.  Otherwise uses all known
         project prefixes, plus known user roots when *user_scope* is true.
+        Callers validating multiple paths may pass precomputed values.
+        Set *allow_final_symlink* only when unlinking the final path itself.
 
         Checks:
         1. No path-traversal components (``..``)
@@ -524,7 +537,14 @@ class BaseIntegrator:
 
         candidate = Path(rel_path)
         if candidate.is_absolute():
-            return _managed_absolute_target_root(candidate, targets) is not None
+            return (
+                _managed_absolute_target_root(
+                    candidate,
+                    targets,
+                    allow_final_symlink=allow_final_symlink,
+                )
+                is not None
+            )
 
         if allowed_prefixes is None:
             allowed_prefixes = BaseIntegrator._get_integration_prefixes(
@@ -556,7 +576,11 @@ class BaseIntegrator:
             return False
         target = project_root / rel_path
         try:
-            if not target.resolve().is_relative_to(project_root.resolve()):
+            if has_symlink_component(project_root, target.parent):
+                return False
+            root = resolved_project_root or project_root.resolve()
+            containment_target = target.parent if allow_final_symlink else target
+            if not containment_target.resolve().is_relative_to(root):
                 return False
         except (ValueError, OSError):
             return False
@@ -691,6 +715,12 @@ class BaseIntegrator:
         # "single pass, O(1) per path" property from the original
         # component_map approach while supporting multi-level roots like
         # .config/opencode/.
+        #
+        # Cross-target hooks/skills prefixes are registered in the trie too
+        # so a deeper prefix (e.g. ``.copilot/hooks/``) wins over a shallow
+        # catch-all prefix from another primitive (e.g. the user-scope
+        # Copilot instructions root ``.copilot/``). Without this, hook paths
+        # under a catch-all root would be misrouted and never cleaned up.
         trie: dict = {}
         for prefix, bucket_key in prefix_map.items():
             segments = [s for s in prefix.split("/") if s]
@@ -702,6 +732,17 @@ class BaseIntegrator:
                     node[segment] = child
                 node = child
             node["_bucket"] = bucket_key
+        for prefix, bucket_key in ((skill_tuple, "skills"), (hook_tuple, "hooks")):
+            for cross_prefix in prefix:
+                segments = [s for s in cross_prefix.split("/") if s]
+                node = trie
+                for segment in segments:
+                    child = node.get(segment)
+                    if child is None:
+                        child = {}
+                        node[segment] = child
+                    node = child
+                node["_bucket"] = bucket_key
 
         for p in managed_files:
             # Walk the trie; keep the deepest bucket match (longest prefix).
