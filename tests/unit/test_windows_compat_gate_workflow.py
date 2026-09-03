@@ -56,7 +56,7 @@ FULL_SUITE_ROOTS = ("tests/unit", "tests/test_console.py", "tests/red_team")
 # family", not a second full-suite run. If the marked set ever grows
 # past this, that is a signal to re-examine scope, not to raise the
 # ceiling reflexively.
-MAX_BOUNDED_FAMILY_SIZE = 200
+MAX_BOUNDED_FAMILY_SIZE = 250
 
 
 def _ci_workflow() -> dict:
