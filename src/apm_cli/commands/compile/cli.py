@@ -375,6 +375,7 @@ def _resolve_effective_target(
     )
     return detected_target, detection_reason, config_target
 
+
 def _global_compile_targets(source_root: Path) -> tuple[list[TargetProfile], list[str] | None]:
     """Return the target profiles ``apm compile -g`` should write.
 
