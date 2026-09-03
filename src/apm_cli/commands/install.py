@@ -945,7 +945,7 @@ def _handle_mcp_install(  # noqa: PLR0913
     help=f"Target harness(es) to deploy to. Use commas for multiple targets; repeating the flag "
     f"keeps only the last value (use commas instead). {target_help_fragment('install')} "
     "IntelliJ-specific integration is MCP-only; file primitives use the Copilot profile. "
-    f"{target_all_exclusion_help()} Combine explicit-only targets when needed. "
+    f"{target_all_exclusion_help()}. Combine explicit-only targets when needed. "
     "Experimental targets require their feature flags. "
     "Target resolution: --runtime/--target > apm.yml targets: > apm config set target ... > "
     "auto-detect (only when no higher-priority selection exists). With nothing to detect, install "

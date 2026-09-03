@@ -82,6 +82,16 @@ def _reject_symlink_config(
     return True
 
 
+def _cleanup_failure_message(label: str, exc: Exception) -> str:
+    """Return an ASCII-safe cleanup failure with the underlying cause."""
+    cause = str(exc) or exc.__class__.__name__
+    ascii_cause = cause.encode("ascii", "backslashreplace").decode("ascii")
+    return (
+        f"MCP cleanup failed for {label}: {ascii_cause}. "
+        "Check the config path and permissions, then retry."
+    )
+
+
 def _is_vscode_available(project_root: Path | str | None = None) -> bool:
     """Return True when VS Code can be targeted for MCP configuration.
 
@@ -161,9 +171,7 @@ def _clean_json_mcp_config(
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
 
-            raise RequiredIntegrationError(
-                f"MCP cleanup failed for {label}. Check the config path and permissions, then retry."
-            ) from exc
+            raise RequiredIntegrationError(_cleanup_failure_message(label, exc)) from exc
         return 0
 
 
@@ -208,9 +216,7 @@ def _clean_hermes_mcp_config(
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
 
-            raise RequiredIntegrationError(
-                f"MCP cleanup failed for {label}. Check the config path and permissions, then retry."
-            ) from exc
+            raise RequiredIntegrationError(_cleanup_failure_message(label, exc)) from exc
         return 0
 
 
@@ -268,9 +274,7 @@ def _clean_toml_mcp_config(
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
 
-            raise RequiredIntegrationError(
-                f"MCP cleanup failed for {label}. Check the config path and permissions, then retry."
-            ) from exc
+            raise RequiredIntegrationError(_cleanup_failure_message(label, exc)) from exc
         return 0
 
 
@@ -332,9 +336,7 @@ def _clean_claude_config(
         if fail_on_write_error:
             from apm_cli.install.errors import RequiredIntegrationError
 
-            raise RequiredIntegrationError(
-                f"MCP cleanup failed for {label}. Check the config path and permissions, then retry."
-            ) from exc
+            raise RequiredIntegrationError(_cleanup_failure_message(label, exc)) from exc
         return 0
 
 

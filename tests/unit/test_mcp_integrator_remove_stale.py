@@ -154,7 +154,7 @@ def test_clean_json_atomic_failure_preserves_original_and_mode(tmp_path):
             "apm_cli.utils.atomic_io._replace_atomic_file",
             side_effect=OSError("simulated crash"),
         ),
-        pytest.raises(RequiredIntegrationError, match="MCP cleanup failed"),
+        pytest.raises(RequiredIntegrationError, match="simulated crash"),
     ):
         _clean_json_mcp_config(
             config_path,
@@ -179,7 +179,7 @@ def test_clean_json_strict_malformed_shape_preserves_original(tmp_path):
     original = b'{"mcpServers":["not-a-mapping"]}'
     config_path.write_bytes(original)
 
-    with pytest.raises(RequiredIntegrationError, match="MCP cleanup failed"):
+    with pytest.raises(RequiredIntegrationError, match="mcpServers must be a mapping"):
         _clean_json_mcp_config(
             config_path,
             {"stale"},
