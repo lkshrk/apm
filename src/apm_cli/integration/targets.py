@@ -259,6 +259,9 @@ class TargetProfile:
     external_locator_encoder: Callable[[Path, Path], str] | None = None
     """Encode managed-root paths that require a native lockfile URI."""
 
+    external_locator_decoder: Callable[[str, Path], Path] | None = None
+    """Decode a native lockfile URI below the managed deployment root."""
+
     lockfile_uri_schemes: tuple[str, ...] = ()
     """URI prefixes governed by this target during reconciliation."""
 
@@ -351,6 +354,12 @@ class TargetProfile:
         if self.external_locator_encoder is None or deploy_root is None:
             return None
         return self.external_locator_encoder(path, deploy_root)
+
+    def decode_external_locator(self, locator: str, deploy_root: Path) -> Path | None:
+        """Decode a managed native locator through the target adapter."""
+        if self.external_locator_decoder is None:
+            return None
+        return self.external_locator_decoder(locator, deploy_root)
 
     def for_scope(self, user_scope: bool = False) -> TargetProfile | None:
         """Return a scope-resolved copy of this profile.
@@ -464,6 +473,13 @@ def _encode_cowork_locator(path: Path, deploy_root: Path) -> str:
     from apm_cli.integration.copilot_cowork_paths import to_lockfile_path
 
     return to_lockfile_path(path, deploy_root)
+
+
+def _decode_cowork_locator(locator: str, deploy_root: Path) -> Path:
+    """Translate a Cowork lockfile URI through its native target adapter."""
+    from apm_cli.integration.copilot_cowork_paths import from_lockfile_path
+
+    return from_lockfile_path(locator, deploy_root)
 
 
 def _encode_copilot_app_locator(path: Path) -> str:
@@ -914,6 +930,9 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         user_root_resolver=lambda: _resolve_copilot_cowork_root(),
         external_locator_encoder=lambda path, deploy_root: _encode_cowork_locator(
             path, deploy_root
+        ),
+        external_locator_decoder=lambda locator, deploy_root: _decode_cowork_locator(
+            locator, deploy_root
         ),
         lockfile_uri_schemes=("cowork://",),
         warn_unsupported_primitives=True,

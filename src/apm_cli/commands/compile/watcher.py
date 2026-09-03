@@ -314,16 +314,16 @@ def _watch_mode(
         clear_discovery_cache()
         perf_stats.reset()
 
-        config = CompilationConfig.from_apm_yml(
-            output_path=output if output != AGENTS_MD_FILENAME else None,
-            chatmode=chatmode,
-            resolve_links=not no_links if no_links else None,
-            dry_run=dry_run,
-            target=effective_target,
-        )
-
-        compiler = AgentsCompiler(".")
-        result = compiler.compile(config)
+        operation = nullcontext() if dry_run else lifecycle_operation()
+        with operation:
+            config = CompilationConfig.from_apm_yml(
+                output_path=output if output != AGENTS_MD_FILENAME else None,
+                chatmode=chatmode,
+                resolve_links=not no_links if no_links else None,
+                dry_run=dry_run,
+                target=effective_target,
+            )
+            result = AgentsCompiler(".").compile(config)
         retained_outputs = _report_retained_watch_outputs(logger, result, dry_run=dry_run)
 
         # NOTE: render_summary moved to the Ctrl+C teardown below so the

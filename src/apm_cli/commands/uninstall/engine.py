@@ -1435,6 +1435,7 @@ def _cleanup_stale_mcp(
         project_root=project_root,
         user_scope=user_scope,
     )
+    retained_unowned: set[str] = set()
     if stale_servers:
         _remove_stale_mcp_from_recorded_targets(
             stale_servers,
@@ -1444,14 +1445,17 @@ def _cleanup_stale_mcp(
             scope=scope,
             target_servers=target_servers,
         )
+        owned_servers = {server for servers in target_servers.values() for server in servers}
+        retained_unowned = stale_servers - owned_servers
     contracted_target_servers = {
         runtime: sorted(servers.intersection(new_mcp_servers))
         for runtime, servers in target_servers.items()
         if servers.intersection(new_mcp_servers)
     }
+    surviving_mcp_servers = new_mcp_servers | retained_unowned
     if persist:
         MCPIntegrator.update_lockfile(
-            new_mcp_servers,
+            surviving_mcp_servers,
             lockfile_path,
             mcp_configs=dict(view.configs),
             mcp_config_provenance=dict(view.provenance),
@@ -1459,7 +1463,7 @@ def _cleanup_stale_mcp(
         )
         return
 
-    lockfile.mcp_servers = sorted(new_mcp_servers)
+    lockfile.mcp_servers = sorted(surviving_mcp_servers)
     lockfile.mcp_configs = dict(view.configs)
     lockfile.mcp_config_provenance = dict(view.provenance)
     from apm_cli.core.deployment_ledger import DeploymentLedgerCodec

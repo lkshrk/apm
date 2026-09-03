@@ -832,7 +832,7 @@ def _resolve_target_runtimes(
             logger.warning(msg)
         if not target_runtimes:
             logger.warning(
-                "No runtimes support user-scope MCP installation (supported: Copilot CLI, Claude Code, Codex CLI, Gemini CLI, Kiro, Windsurf, JetBrains Copilot)"
+                "No runtimes support user-scope MCP installation (supported: Copilot CLI, Claude Code, Codex CLI, Gemini CLI, Antigravity CLI, Hermes, Kiro, Windsurf, JetBrains Copilot)"
             )
             return None
 

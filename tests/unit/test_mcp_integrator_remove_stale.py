@@ -302,6 +302,33 @@ def test_remove_stale_rejects_symlinked_hermes_config(tmp_path, monkeypatch):
     assert target.read_bytes() == original
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires elevated Windows rights")
+def test_remove_stale_rejects_symlinked_hermes_ancestor(tmp_path, monkeypatch):
+    """Strict cleanup must not traverse a symlinked config directory."""
+    from apm_cli.install.errors import RequiredIntegrationError
+    from apm_cli.integration.mcp_integrator import MCPIntegrator
+
+    target_home = tmp_path / "real-hermes"
+    target_home.mkdir()
+    config_path = target_home / "config.yaml"
+    original = b"mcp_servers:\n  stale:\n    command: keep\n"
+    config_path.write_bytes(original)
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.symlink_to(target_home, target_is_directory=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(RequiredIntegrationError, match="symlinked MCP config"):
+        MCPIntegrator.remove_stale(
+            {"stale"},
+            runtime="hermes",
+            logger=MagicMock(),
+            fail_on_write_error=True,
+        )
+
+    assert hermes_home.is_symlink()
+    assert config_path.read_bytes() == original
+
+
 class TestCleanCodexToml:
     def test_preserves_windows_literal_keys_while_removing_stale_server(self, tmp_path):
         import tomlkit

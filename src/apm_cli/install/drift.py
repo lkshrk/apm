@@ -887,6 +887,7 @@ def diff_scratch_against_project(
         _collect_tracked_files(lockfile),
         project_root,
         absolute_only=absolute_claims_only,
+        targets=tuple(targets),
     )
     claimed_prefixes = _claimed_prefixes(
         tracked,
@@ -895,6 +896,7 @@ def diff_scratch_against_project(
                 {path: "" for path in _collect_hashed_files(lockfile)},
                 project_root,
                 absolute_only=absolute_claims_only,
+                targets=tuple(targets),
             )
         ),
         project_files,

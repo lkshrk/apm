@@ -302,6 +302,10 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
     """Every declared lifecycle mutator must route through install/locking.py."""
     rule_id = _GUARD_LIFECYCLE_SERIALIZATION
     required = {
+        "src/apm_cli/commands/approve.py": {
+            "approve_cmd": "serialized_lifecycle",
+            "deny_cmd": "serialized_lifecycle",
+        },
         "src/apm_cli/commands/compile/cli.py": {
             "_handle_global_flag": "serialized_lifecycle_unless",
             "_run_compilation": "serialized_lifecycle_unless",
@@ -310,11 +314,31 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
             "set": "serialized_lifecycle",
             "unset": "serialized_lifecycle",
         },
+        "src/apm_cli/commands/deps/cli.py": {
+            "clean": "serialized_lifecycle",
+            "update": "serialized_lifecycle",
+        },
         "src/apm_cli/commands/experimental.py": {
             "enable_flag": "serialized_lifecycle",
             "disable_flag": "serialized_lifecycle",
             "reset_flags": "serialized_lifecycle",
         },
+        "src/apm_cli/commands/init.py": {"init": "serialized_lifecycle"},
+        "src/apm_cli/commands/install.py": {"install": "serialized_lifecycle"},
+        "src/apm_cli/commands/lock.py": {"_run_lock": "serialized_lifecycle"},
+        "src/apm_cli/commands/marketplace/__init__.py": {
+            "add": "serialized_lifecycle",
+            "update": "serialized_lifecycle",
+            "remove": "serialized_lifecycle",
+        },
+        "src/apm_cli/commands/marketplace/init.py": {"init": "serialized_lifecycle"},
+        "src/apm_cli/commands/marketplace/plugin/add.py": {"add": "serialized_lifecycle"},
+        "src/apm_cli/commands/marketplace/plugin/remove.py": {"remove": "serialized_lifecycle"},
+        "src/apm_cli/commands/marketplace/plugin/set.py": {"set_cmd": "serialized_lifecycle"},
+        "src/apm_cli/commands/plugin/init.py": {"init": "serialized_lifecycle"},
+        "src/apm_cli/commands/prune.py": {"prune": "serialized_lifecycle"},
+        "src/apm_cli/commands/uninstall/cli.py": {"uninstall": "serialized_lifecycle"},
+        "src/apm_cli/commands/update.py": {"update": "serialized_lifecycle"},
     }
     findings: list[Violation] = []
     for path, functions in required.items():
@@ -341,12 +365,14 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
     watcher, failures = _facts_for(provider, watcher_path, rule_id)
     if failures:
         findings.extend(failures)
-    elif "lifecycle_operation" not in _name_calls_in(watcher, "_recompile"):
-        findings.append(
-            _summary(
-                rule_id,
-                watcher_path,
-                "_recompile must route through lifecycle_operation",
-            )
-        )
+    else:
+        for name in ("_recompile", "_watch_mode"):
+            if "lifecycle_operation" not in _name_calls_in(watcher, name):
+                findings.append(
+                    _summary(
+                        rule_id,
+                        watcher_path,
+                        f"{name} must route through lifecycle_operation",
+                    )
+                )
     return tuple(findings)

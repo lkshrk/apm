@@ -15,6 +15,7 @@ import builtins
 import copy
 import json
 import logging
+import os
 import re
 import shutil
 import warnings
@@ -60,7 +61,11 @@ def _reject_symlink_config(
     fail_on_write_error: bool,
 ) -> bool:
     """Reject MCP cleanup through a symlink without reading its target."""
-    if not config_path.is_symlink():
+    try:
+        has_symlink = any(path.is_symlink() for path in (config_path, *config_path.parents))
+    except OSError:
+        has_symlink = True
+    if not has_symlink:
         return False
     message = f"Refusing to clean symlinked MCP config: {label} ({config_path})"
     if fail_on_write_error:
@@ -880,6 +885,17 @@ class MCPIntegrator:
         if "hermes" in target_runtimes:
             from apm_cli.factory import ClientFactory
 
+            hermes_home = os.environ.get("HERMES_HOME", "").strip()
+            unresolved_cfg = (
+                Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
+            ) / "config.yaml"
+            if _reject_symlink_config(
+                unresolved_cfg,
+                "Hermes config.yaml",
+                logger,
+                fail_on_write_error=fail_on_write_error,
+            ):
+                return
             hermes_cfg = Path(
                 ClientFactory.create_client(
                     "hermes",

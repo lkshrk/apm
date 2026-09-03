@@ -49,6 +49,7 @@ def claims_for_root(
     root: Path,
     *,
     absolute_only: bool,
+    targets: tuple[TargetProfile, ...] = (),
 ) -> dict[str, str]:
     """Rebase lock claims governed by *root* into comparison-relative paths."""
     root = root.resolve()
@@ -62,6 +63,17 @@ def claims_for_root(
             except (PathTraversalError, ValueError):
                 continue
             rebased[relative.as_posix()] = owner
+        elif absolute_only:
+            for target in targets:
+                try:
+                    decoded = target.decode_external_locator(path, root)
+                except (PathTraversalError, ValueError):
+                    continue
+                if decoded is None:
+                    continue
+                validated = ensure_path_within(decoded, root)
+                rebased[validated.relative_to(root).as_posix()] = owner
+                break
         elif not absolute_only:
             rebased[path] = owner
     return rebased

@@ -498,6 +498,35 @@ class TestCleanupStaleMcp:
             fail_on_write_error=True,
         )
 
+    def test_partial_target_ownership_retains_unmapped_aggregate_server(self, tmp_path):
+        """A partial runtime map must not discard legacy aggregate ownership."""
+        lockfile = LockFile(
+            mcp_servers=["mapped", "legacy-unmapped"],
+            mcp_target_servers={"hermes": ["mapped"]},
+        )
+
+        with patch("apm_cli.commands.uninstall.engine.MCPIntegrator") as mock_mcp:
+            mock_mcp.get_server_names.return_value = set()
+            _cleanup_stale_mcp(
+                MagicMock(),
+                lockfile,
+                tmp_path / "apm.lock.yaml",
+                {"mapped", "legacy-unmapped"},
+                modules_dir=tmp_path / "apm_modules",
+                persist=False,
+            )
+
+        mock_mcp.remove_stale.assert_called_once_with(
+            {"mapped"},
+            runtime="hermes",
+            project_root=None,
+            user_scope=False,
+            scope=None,
+            fail_on_write_error=True,
+        )
+        assert lockfile.mcp_servers == ["legacy-unmapped"]
+        assert lockfile.mcp_target_servers == {}
+
     @pytest.mark.windows_compat
     def test_cleanup_failure_retains_lock_ownership(self, tmp_path):
         """Native cleanup must succeed before in-memory ownership is dropped."""

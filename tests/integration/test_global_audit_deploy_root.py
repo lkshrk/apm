@@ -10,9 +10,23 @@ import pytest
 from click.testing import CliRunner
 
 from apm_cli.cli import cli
+from apm_cli.install.audit_target_roots import claims_for_root
+from apm_cli.integration.targets import KNOWN_TARGETS
 from tests.utils.isolated_apm_environment import IsolatedApmEnvironment
 
 pytestmark = [pytest.mark.integration, pytest.mark.component]
+
+
+def test_cowork_uri_claim_is_rebased_through_target_adapter(tmp_path: Path) -> None:
+    root = tmp_path / "cowork"
+    claims = claims_for_root(
+        {"cowork://skills/demo/SKILL.md": "demo"},
+        root,
+        absolute_only=True,
+        targets=(KNOWN_TARGETS["copilot-cowork"],),
+    )
+
+    assert claims == {"demo/SKILL.md": "demo"}
 
 
 def _tree_snapshot(
