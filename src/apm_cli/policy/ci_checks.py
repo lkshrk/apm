@@ -233,9 +233,7 @@ def _check_deployed_files_present(
     for _dep_key, dep in lock.dependencies.items():
         for rel_path in dep.deployed_files:
             abs_path = _resolve_deployed_file_path(rel_path, project_root, targets)
-            if abs_path is None:
-                continue
-            if not abs_path.exists():
+            if abs_path is None or abs_path.is_symlink() or not abs_path.exists():
                 missing.append(rel_path)
 
     gitignored_skipped = False
@@ -454,9 +452,9 @@ def _check_content_integrity(
 
     Missing files are deliberately skipped here -- ``_check_deployed_files_present``
     already reports those, and double-reporting muddies the audit output.
-    Symlinks are skipped because they may legitimately point elsewhere,
-    and lockfile entries without a recorded hash (e.g. directories) are
-    skipped silently.
+    Symlinked or unresolved claimed files fail closed because deployment
+    ownership is rooted in resolved, managed paths. Lockfile entries without a
+    recorded hash (e.g. directories) are skipped silently.
     """
     from ..security.file_scanner import scan_project_files
     from ..utils.content_hash import compute_file_hash
@@ -494,6 +492,7 @@ def _check_content_integrity(
 
     # Per-file hash verification across canonical deployment records.
     hash_mismatches: list[tuple] = []  # (dep_key, rel_path, expected, actual)
+    unresolved_hash_paths: list[str] = []
     for record in ledger.records.values():
         expected_hash = record.content_hash
         if expected_hash is None:
@@ -504,6 +503,7 @@ def _check_content_integrity(
         if locator.kind == LocatorKind.PROJECT_RELATIVE:
             file_path = _resolve_deployed_file_path(locator.value, project_root, targets)
             if file_path is None:
+                unresolved_hash_paths.append(locator.value)
                 continue
         else:
             target = next(
@@ -519,19 +519,27 @@ def _check_content_integrity(
                     target=target,
                 )
             except (OSError, RuntimeError, ValueError):
+                unresolved_hash_paths.append(locator.value)
                 continue
             if isinstance(resolved, str):
+                unresolved_hash_paths.append(locator.value)
                 continue
             file_path = resolved
         if not file_path.exists():
             continue  # _check_deployed_files_present owns this signal
         if file_path.is_symlink() or not file_path.is_file():
+            unresolved_hash_paths.append(locator.value)
             continue
         actual_hash = compute_file_hash(file_path)
         if actual_hash != expected_hash:
             hash_mismatches.append((record.active_owner, locator.value, expected_hash, actual_hash))
 
-    if not critical_files and not hash_mismatches and not missing_ownership:
+    if (
+        not critical_files
+        and not hash_mismatches
+        and not missing_ownership
+        and not unresolved_hash_paths
+    ):
         return CheckResult(
             name="content-integrity",
             passed=True,
@@ -543,6 +551,8 @@ def _check_content_integrity(
         details.append(f"unicode: {rel_path}")
     for rel_path in missing_ownership:
         details.append(f"missing-ownership: {rel_path}")
+    for rel_path in unresolved_hash_paths:
+        details.append(f"unresolved: {rel_path}")
     for dep_key, rel_path, expected, actual in hash_mismatches:
         # Truncate hashes for terminal width; full hashes available via JSON output.
         exp_short = expected.split(":", 1)[-1][:12] if ":" in expected else expected[:12]
@@ -565,6 +575,9 @@ def _check_content_integrity(
     if missing_ownership:
         parts.append(f"{len(missing_ownership)} file(s) without deployment ownership")
         remedies.append("'apm install' to repair ownership metadata")
+    if unresolved_hash_paths:
+        parts.append(f"{len(unresolved_hash_paths)} unsafe or unresolved deployed path(s)")
+        remedies.append("'apm install' to restore managed paths")
     summary = "; ".join(parts)
     remedy = " and ".join(remedies)
     return CheckResult(

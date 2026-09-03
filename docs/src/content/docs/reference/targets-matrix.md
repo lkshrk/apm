@@ -34,8 +34,9 @@ see [Primitive types](../primitive-types/).
 | hermes          | `.agents/` (`~/.hermes/` user scope) | [ ] | [ ] | [ ] | [x] | [ ] | [ ] | [x] |
 
 Skills deploy to `.agents/skills/` for Copilot, Cursor, OpenCode,
-Gemini, Antigravity, Codex, and Windsurf by default (see [Skills convergence](#skills-convergence)
-below). Claude, Grok Build, and Kiro keep target-native skill directories.
+Gemini, Antigravity, Codex, Hermes project scope, and Windsurf by default (see
+[Skills convergence](#skills-convergence) below). Claude, Grok Build, Kiro, and
+Hermes user scope keep target-native skill directories.
 
 (*) For `intellij`, file primitives route through the Copilot profile:
 instructions, prompts, agents, and hooks use `.github/`, while skills use
@@ -291,6 +292,22 @@ Cross-client shared skills directory.
 - **Supported primitives.** skills only.
 - **File conventions.** `.agents/skills/<name>/SKILL.md`.
 - **Use case.** Author-time target for shipping a SKILL bundle that any Skills-aware client (Codex, Copilot CLI, Claude Code, etc.) can read without per-tool deployment.
+
+## hermes
+
+Hermes Agent.
+
+- **Detection.** Never auto-detected. Select with `--target hermes` or list it
+  in `apm.yml`.
+- **Deploy directory.** Project-scope skills use `.agents/skills/`. User-scope
+  skills and MCP servers use `$HERMES_HOME` (default `~/.hermes`).
+- **Supported primitives.** skills, mcp, and compiled instructions.
+- **File conventions.**
+  - skills: `.agents/skills/<name>/SKILL.md` (project) or
+    `$HERMES_HOME/skills/<name>/SKILL.md` (user)
+  - mcp: `$HERMES_HOME/config.yaml` under the `mcp_servers:` block
+  - compiled instructions: `AGENTS.md`
+- **Compile behavior.** `apm compile --target hermes` emits `AGENTS.md`.
 
 ## grok-build
 

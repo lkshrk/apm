@@ -14,7 +14,7 @@ from ..core.scope import InstallScope
 
 # APM Dependencies
 from ..deps.lockfile import LockFile, get_lockfile_path
-from ..install.locking import serialized_lifecycle
+from ..install.locking import serialized_lifecycle_unless
 from ..integration.base_integrator import BaseIntegrator
 from ..integration.cleanup import remove_stale_deployed_files
 from ..models.apm_package import APMPackage
@@ -87,7 +87,7 @@ def _preflight_prune_survivors(
     help="Preview package removal and ownership repair without mutating anything",
 )
 @click.pass_context
-@serialized_lifecycle
+@serialized_lifecycle_unless("dry_run")
 def prune(ctx, dry_run):
     """Remove orphaned packages and repair stale deployment ownership.
 

@@ -78,7 +78,7 @@ GitHub Copilot CLI canvas extensions: a directory bundle whose entry file is `ex
 
 ## Target catalogue
 
-Each target is identified by a slug used in `apm.yml`'s `targets:` field or on the `--target` flag. `apm.yml` accepts the canonical targets (`copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `agent-skills`, `hermes`); `antigravity` and `hermes` remain explicit-only. The output directory is where APM writes deployed primitives.
+Each target is identified by a slug used in `apm.yml`'s `targets:` field or on the `--target` flag. `apm.yml` accepts the canonical targets (`copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `agent-skills`, `hermes`). `agent-skills`, `antigravity`, and `hermes` can be selected explicitly or listed in `apm.yml`, but they are not auto-detected or included in `all`. The output directory is where APM writes deployed primitives.
 
 | Slug | Output directory | Compile family |
 |---|---|---|
@@ -117,17 +117,17 @@ Rows are primitives, columns are harnesses. Cell legend:
 - **unsupported** -- APM does not deliver this primitive to this harness.
 - **gated** -- delivered behind an explicit declaration or trust flag.
 
-| Primitive | Copilot | Claude | Grok Build | Cursor | Codex | Gemini | Antigravity | OpenCode | Windsurf | Kiro |
-|---|---|---|---|---|---|---|---|---|---|---|
-| instructions | native | native | native | native | compiled | compiled | native | compiled | native | native |
-| prompts | native | compiled | compiled | compiled | unsupported | compiled | compiled | compiled | compiled | unsupported |
-| agents | native | native | native | compiled | compiled | unsupported | unsupported | native | unsupported | compiled |
-| skills | native | native | native | native | native | native | native | native | native | native |
-| hooks | native | native | unsupported | native | native | native | native | unsupported | native | native |
-| commands | unsupported | native | compiled | compiled | unsupported | compiled | unsupported | compiled | compiled | unsupported |
-| plugins | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled |
-| MCP servers | native | native | unsupported | native | native | native | native | native | native | native |
-| canvas (experimental) | gated | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported |
+| Primitive | Copilot | Claude | Grok Build | Cursor | Codex | Gemini | Antigravity | OpenCode | Windsurf | Kiro | Hermes |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| instructions | native | native | native | native | compiled | compiled | native | compiled | native | native | compiled |
+| prompts | native | compiled | compiled | compiled | unsupported | compiled | compiled | compiled | compiled | unsupported | unsupported |
+| agents | native | native | native | compiled | compiled | unsupported | unsupported | native | unsupported | compiled | unsupported |
+| skills | native | native | native | native | native | native | native | native | native | native | native |
+| hooks | native | native | unsupported | native | native | native | native | unsupported | native | native | unsupported |
+| commands | unsupported | native | compiled | compiled | unsupported | compiled | unsupported | compiled | compiled | unsupported | unsupported |
+| plugins | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled | compiled |
+| MCP servers | native | native | unsupported | native | native | native | native | native | native | native | native |
+| canvas (experimental) | gated | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported | unsupported |
 
 How to read a cell:
 

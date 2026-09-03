@@ -52,8 +52,8 @@ When `HERMES_HOME` lives under `$HOME`, APM keeps the deploy root home-relative;
 ## MCP servers
 
 When `hermes` is selected explicitly, APM writes MCP servers into the
-home-scoped `mcp_servers:` block of `~/.hermes/config.yaml`, even when package
-skills use project scope:
+home-scoped `mcp_servers:` block of `$HERMES_HOME/config.yaml` (default
+`~/.hermes/config.yaml`), even when package skills use project scope:
 
 Explicit selection does not require an existing Hermes home or a `hermes`
 binary on `PATH`; APM creates the configured home as needed. Runtime-presence

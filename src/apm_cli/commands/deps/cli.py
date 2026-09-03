@@ -8,7 +8,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import click
 
-from apm_cli.install.locking import serialized_lifecycle
+from apm_cli.install.locking import serialized_lifecycle, serialized_lifecycle_unless
 
 # Import existing APM components
 from ...constants import APM_MODULES_DIR, APM_YML_FILENAME, SKILL_MD_FILENAME
@@ -906,7 +906,7 @@ def tree(global_):
     "--dry-run", is_flag=True, default=False, help="Show what would be removed without removing"
 )
 @click.option("--yes", "-y", is_flag=True, default=False, help="Skip confirmation prompt")
-@serialized_lifecycle
+@serialized_lifecycle_unless("dry_run")
 def clean(dry_run: bool, yes: bool):
     """Remove entire apm_modules/ directory."""
     logger = CommandLogger("deps-clean")

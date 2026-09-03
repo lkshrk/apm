@@ -765,16 +765,16 @@ def _walk_managed(root: Path, governed_roots: set[str]) -> dict[str, Path]:
         base = root / top
         if not base.exists():
             continue
-        if base.is_file():
+        if base.is_file() and not base.is_symlink():
             out[top] = base
             continue
         for p in base.rglob("*"):
-            if p.is_file():
+            if p.is_file() and not p.is_symlink():
                 rel = p.relative_to(root).as_posix()
                 out[rel] = p
     # AGENTS.md is a flat top-level file in some target layouts.
     agents_md = root / "AGENTS.md"
-    if agents_md.is_file():
+    if agents_md.is_file() and not agents_md.is_symlink():
         out["AGENTS.md"] = agents_md
     return out
 

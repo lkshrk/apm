@@ -185,6 +185,77 @@ def test_global_audit_external_target_is_read_only_and_detects_drift(
     assert _tree_snapshot(external_root) == before_audit
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires elevated Windows rights")
+@pytest.mark.parametrize(
+    ("target", "root_env"),
+    (("hermes", "HERMES_HOME"), ("claude", "CLAUDE_CONFIG_DIR")),
+)
+def test_global_audit_external_target_fails_closed_on_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    root_env: str,
+) -> None:
+    """A managed target file replaced by an escaping symlink fails audit."""
+    isolated = IsolatedApmEnvironment.create(
+        tmp_path / f"global-audit-{target}-symlink",
+        base_env=os.environ,
+    )
+    external_root = isolated.root / f"external-{target}"
+    external_root.mkdir()
+    environment = isolated.subprocess_env()
+    environment.update({"APM_NO_CACHE": "1", root_env: str(external_root)})
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    package = isolated.package_root / "demo-package"
+    source_skill = package / ".apm" / "skills" / "demo" / "SKILL.md"
+    source_skill.parent.mkdir(parents=True)
+    (package / "apm.yml").write_text("name: demo-package\nversion: 1.0.0\n", encoding="utf-8")
+    source_skill.write_text(
+        "---\nname: demo\ndescription: Demo skill\n---\n# Original\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(isolated.work_root)
+    install = CliRunner().invoke(
+        cli,
+        [
+            "install",
+            "--global",
+            str(package),
+            "--target",
+            target,
+            "--no-policy",
+            "--parallel-downloads",
+            "0",
+        ],
+        env=environment,
+    )
+    assert install.exit_code == 0, install.output
+    deployed_skill = external_root / "skills" / "demo" / "SKILL.md"
+    assert deployed_skill.is_file()
+    escaped_target = isolated.root / "outside.md"
+    escaped_target.write_text("outside\n", encoding="utf-8")
+    deployed_skill.unlink()
+    deployed_skill.symlink_to(escaped_target)
+    before_audit = _tree_snapshot(external_root)
+
+    monkeypatch.chdir(isolated.config_root)
+    audit = CliRunner().invoke(
+        cli,
+        ["audit", "--ci", "--no-policy", "--no-fail-fast", "--format", "json"],
+        env=environment,
+    )
+    assert audit.exit_code == 1, audit.output
+    payload = json.loads(audit.output[audit.output.index("{") :])
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert checks["deployed-files-present"]["passed"] is False
+    assert checks["content-integrity"]["passed"] is False
+    assert _tree_snapshot(external_root) == before_audit
+    assert escaped_target.read_text(encoding="utf-8") == "outside\n"
+
+
 def test_global_audit_scans_unrecorded_external_target_content(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -318,7 +318,7 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
             "unset": "serialized_lifecycle",
         },
         "src/apm_cli/commands/deps/cli.py": {
-            "clean": "serialized_lifecycle",
+            "clean": "serialized_lifecycle_unless",
             "update": "serialized_lifecycle",
         },
         "src/apm_cli/commands/experimental.py": {
@@ -342,7 +342,7 @@ def check_lifecycle_serialization(provider: FactsProvider) -> tuple[Violation, .
         "src/apm_cli/commands/marketplace/plugin/remove.py": {"remove": "serialized_lifecycle"},
         "src/apm_cli/commands/marketplace/plugin/set.py": {"set_cmd": "serialized_lifecycle"},
         "src/apm_cli/commands/plugin/init.py": {"init": "serialized_lifecycle"},
-        "src/apm_cli/commands/prune.py": {"prune": "serialized_lifecycle"},
+        "src/apm_cli/commands/prune.py": {"prune": "serialized_lifecycle_unless"},
         "src/apm_cli/commands/uninstall/cli.py": {"uninstall": "serialized_lifecycle"},
         "src/apm_cli/commands/update.py": {"update": "serialized_lifecycle"},
     }

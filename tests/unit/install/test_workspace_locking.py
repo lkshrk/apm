@@ -107,3 +107,23 @@ def test_uninstall_cleanup_error_releases_lock(tmp_path: Path, monkeypatch) -> N
 
     assert result.exit_code != 0
     assert not lifecycle_lock().is_locked
+
+
+@pytest.mark.parametrize("args", (("prune", "--dry-run"), ("deps", "clean", "--dry-run")))
+def test_read_only_dry_run_commands_skip_lifecycle_lock(
+    tmp_path: Path,
+    monkeypatch,
+    args: tuple[str, ...],
+) -> None:
+    """Read-only previews should not contend with lifecycle mutations."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "apm.yml").write_text("name: fixture\nversion: 1.0.0\n", encoding="ascii")
+    (tmp_path / "apm_modules").mkdir()
+
+    with patch(
+        "apm_cli.install.locking.lifecycle_operation",
+        side_effect=AssertionError("dry run acquired lifecycle lock"),
+    ):
+        result = CliRunner().invoke(cli, args)
+
+    assert result.exit_code == 0, result.output
