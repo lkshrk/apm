@@ -235,14 +235,24 @@ class MCPServerOperations:
                 return (server_ref, server_info is not None, server_info)
             except requests.RequestException:
                 if fail_closed or getattr(self.registry_client, "_is_custom_url", False):
+                    from apm_cli.registry.client import (
+                        mcp_registry_recovery_hint,
+                        redact_mcp_registry_url,
+                    )
+
+                    registry_url = redact_mcp_registry_url(self.registry_client.registry_url)
+                    source = getattr(
+                        self.registry_client,
+                        "registry_url_source",
+                        getattr(self.registry_client, "registry_source", "explicit"),
+                    )
                     if getattr(self.registry_client, "_is_custom_url", False):
-                        recovery = _registry_recovery_hint(self.registry_client)
+                        recovery = mcp_registry_recovery_hint(source)
                     else:
-                        recovery = "verify network connectivity and registry reachability"
+                        recovery = "Check network connectivity and registry reachability."
                     raise RuntimeError(  # noqa: B904
-                        f"Could not reach MCP registry at "
-                        f"{self.registry_client.registry_url} while validating "
-                        f"server '{server_ref}'; {recovery}."
+                        f"Could not reach MCP registry at {registry_url} while validating "
+                        f"server '{server_ref}'. {recovery}"
                     )
                 logger.debug(
                     "Registry lookup failed for %s, assuming valid (transient error)",

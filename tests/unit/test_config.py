@@ -217,6 +217,7 @@ class TestMcpRegistryUrlConfig:
 
     def test_get_returns_none_when_absent(self, isolated_config):
         assert config_mod.get_mcp_registry_url() is None
+        assert not isolated_config.exists()
 
     def test_set_and_get_round_trip(self, isolated_config):
         config_mod.set_mcp_registry_url("https://corp.mcp.example.com")
@@ -257,6 +258,17 @@ class TestMcpRegistryUrlConfig:
     def test_set_rejects_missing_netloc(self, isolated_config):
         with pytest.raises(ValueError, match="Invalid URL"):
             config_mod.set_mcp_registry_url("https://")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://mcp.example.com/path?token=query-value",
+            "https://mcp.example.com/path#fragment-value",
+        ],
+    )
+    def test_set_rejects_query_and_fragment_without_leaking_values(self, isolated_config, url):
+        with pytest.raises(ValueError, match="query strings and fragments"):
+            config_mod.set_mcp_registry_url(url)
 
     def test_set_rejects_embedded_credentials(self, isolated_config):
         with pytest.raises(ValueError, match="embedded credentials are not supported"):

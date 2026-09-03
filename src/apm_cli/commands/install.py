@@ -31,6 +31,9 @@ from apm_cli.install.errors import (
     PolicyViolationError,
     RequiredIntegrationError,
 )
+from apm_cli.install.errors import (
+    frozen_install_tip as _frozen_install_tip,
+)
 from apm_cli.install.gitlab_resolver import _try_resolve_gitlab_direct_shorthand
 from apm_cli.install.helpers.ref_reuse import is_git_semver_resolution_eligible
 
@@ -774,9 +777,12 @@ def _handle_mcp_install(  # noqa: PLR0913
     """Resolve and execute the direct ``--mcp`` install path."""
     from ..core.scope import get_apm_dir, get_deploy_root, get_manifest_path, is_user_scope
 
+    # Apply CLI > env > apm config > default precedence. Only dry runs announce
+    # here; real installs announce the endpoint they query in the integrator.
     resolved_registry_url, registry_source = _resolve_registry_url(
         validated_registry_url,
         logger=logger,
+        announce=logger.dry_run,
     )
     integration_registry_url = resolved_registry_url
     mcp_manifest_path = get_manifest_path(scope)
@@ -1047,8 +1053,8 @@ def _handle_mcp_install(  # noqa: PLR0913
     metavar="URL",
     help=(
         "MCP registry URL (http:// or https://) for resolving --mcp NAME. "
-        "Overrides the MCP_REGISTRY_URL env var. Default: "
-        "https://api.mcp.github.com. Captured in apm.yml on the entry's "
+        "Precedence: this flag, MCP_REGISTRY_URL, apm config, then the public "
+        "default. Captured in apm.yml on the entry's "
         "'registry:' field for auditability. Not valid with --url "
         "or a stdio command (self-defined entries)."
     ),
@@ -1697,20 +1703,6 @@ def install(  # noqa: PLR0913
 
     if command_result is not None:
         ctx.exit(command_result.exit_code)
-
-
-def _frozen_install_tip(error: FrozenInstallError) -> str:
-    """Return recovery guidance tailored to package or MCP lock drift."""
-    has_mcp_drift = any("MCP server" in reason for reason in error.reasons)
-    has_package_drift = any("MCP server" not in reason for reason in error.reasons)
-    if has_mcp_drift and has_package_drift:
-        return (
-            "Tip: run 'apm outdated' to inspect package drift, then run "
-            "'apm install' without --frozen to repair package and MCP lock state."
-        )
-    if has_mcp_drift:
-        return "Tip: run 'apm install' without --frozen to create or repair MCP lock state."
-    return "Tip: run 'apm outdated' to see what changed, then 'apm update'."
 
 
 def _install_apm_packages(ctx, outcome):

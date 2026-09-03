@@ -2886,6 +2886,22 @@ class TestInstallMcpFlag:
             assert result.exit_code == 2
             assert "scheme://host" in result.output
 
+    def test_registry_query_rejected_without_leaking_value(self):
+        with self._chdir_with_apm_yml():
+            result = self.runner.invoke(
+                cli,
+                [
+                    "install",
+                    "--mcp",
+                    "srv",
+                    "--registry",
+                    "https://mcp.example.com/path?token=query-value",
+                ],
+            )
+            assert result.exit_code == 2
+            assert "query strings and fragments" in result.output
+            assert "query-value" not in result.output
+
     def test_registry_with_self_defined_url_rejected(self):
         # E15: --registry only applies to registry-resolved entries.
         with (
@@ -2990,7 +3006,7 @@ class TestInstallMcpFlag:
         run_mcp_install.assert_called_once()
         assert run_mcp_install.call_args.kwargs["registry_url"] == configured_url
         assert run_mcp_install.call_args.kwargs["registry_allow_http"] is False
-        assert "(from apm config)" in result.output
+        assert run_mcp_install.call_args.kwargs["registry_source"] == "config"
 
     def test_registry_env_url_pins_source_without_http_opt_in(self, monkeypatch):
         """A valid ambient endpoint is persisted without relaxing HTTP policy."""

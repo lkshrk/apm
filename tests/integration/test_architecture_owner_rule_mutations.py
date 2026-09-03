@@ -326,6 +326,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         intent="Legacy MCP target ownership adoption loses its canonical resolver.",
     ),
     MutationCase(
+        guard_id="install-deployment-mcp-registry-resolution",
+        rule_id="install-deployment-mcp-registry-resolution",
+        path="src/apm_cli/registry/client.py",
+        old="def resolve_mcp_registry_url(",
+        new="def resolve_mcp_registry_url_disabled(",
+        intent="The registry client loses the canonical MCP registry precedence resolver.",
+    ),
+    MutationCase(
         guard_id="install-deployment-outcome",
         rule_id="install-deployment-outcome",
         path="src/apm_cli/install/outcome.py",
@@ -468,6 +476,14 @@ MUTATIONS: tuple[MutationCase, ...] = (
         old="result = cls.from_mapping(",
         new="result = cls.from_other(",
         intent="from_apm_yml stops routing interpreted construction through from_mapping.",
+    ),
+    MutationCase(
+        guard_id="marketplace-integrations-package-format-precedence",
+        rule_id="marketplace-integrations-package-format-precedence",
+        path="src/apm_cli/bundle/local_bundle.py",
+        old="package_type, _ = detect_package_type(",
+        new="package_type, _ = bypass_package_type_precedence(",
+        intent="Agent Plugin ingress bypasses the package-format precedence owner.",
     ),
     MutationCase(
         guard_id="marketplace-integrations-package-projection",

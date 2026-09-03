@@ -112,7 +112,7 @@ in `apm.yml`, then run `apm install` again.
 | `--env KEY=VALUE` | unset | Environment variable for stdio MCP servers. Repeatable. |
 | `--header KEY=VALUE` | unset | HTTP header for remote MCP servers. Repeatable. Requires `--url`. |
 | `--mcp-version VER` | unset | Pin a registry MCP entry to a specific version. |
-| `--registry URL` | `https://api.mcp.github.com` | Custom MCP registry URL for resolving `--mcp NAME`. Persisted to `apm.yml`. Overrides `MCP_REGISTRY_URL`. Not valid with `--url` or a stdio command. |
+| `--registry URL` | resolved | Custom MCP registry URL for resolving `--mcp NAME`. Persisted to `apm.yml`. Resolution order: this flag, `MCP_REGISTRY_URL`, `apm config set mcp-registry-url`, then the public default. Not valid with `--url` or a stdio command. |
 
 ## Behavior
 

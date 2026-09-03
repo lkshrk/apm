@@ -79,6 +79,13 @@
       "guards": ["install-deployment-install-scope-selection"]
     },
     {
+      "id": "mcp-registry-url-resolution",
+      "decision": "MCP registry URL resolution precedence",
+      "owner": "registry/client.py (resolve_mcp_registry_url)",
+      "selectors": ["src/apm_cli/registry/client.py"],
+      "guards": ["install-deployment-mcp-registry-resolution"]
+    },
+    {
       "id": "file-level-deploy-sync-cleanup",
       "decision": "File-level deploy / sync / cleanup",
       "owner": "BaseIntegrator (see integrators.instructions.md)",

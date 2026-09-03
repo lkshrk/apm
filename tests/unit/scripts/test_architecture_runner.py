@@ -635,6 +635,7 @@ install-deployment-manifest-inheritance-includes
 install-deployment-marketplace-mutation-lock
 install-deployment-lifecycle-serialization
 install-deployment-mcp-ownership-migration
+install-deployment-mcp-registry-resolution
 install-deployment-outcome
 install-deployment-package-target-authorization
 install-deployment-plugin-bin-eligibility
@@ -664,6 +665,7 @@ marketplace-integrations-metadata-enrichment
 marketplace-integrations-native-registration
 marketplace-integrations-output-path
 marketplace-integrations-package-construction
+marketplace-integrations-package-format-precedence
 marketplace-integrations-package-projection
 marketplace-integrations-producer-admission
 marketplace-integrations-projection-boundary

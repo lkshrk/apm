@@ -62,8 +62,20 @@ def _validate_registry_servers(
             server_info_cache=server_info_cache,
         )
     if invalid_servers:
-        logger.error(f"Server(s) not found in registry: {', '.join(invalid_servers)}")
-        logger.progress("Run 'apm mcp search <query>' to find available servers")
+        from apm_cli.registry.client import redact_mcp_registry_url
+
+        registry_client = operations.registry_client
+        registry_url = redact_mcp_registry_url(registry_client.registry_url)
+        logger.error(
+            f"Server(s) not found in registry {registry_url}: {', '.join(invalid_servers)}"
+        )
+        if getattr(registry_client, "registry_url_source", None) == "explicit":
+            logger.progress(
+                "Set MCP_REGISTRY_URL to this endpoint, then run "
+                "'apm mcp search <query>' to find available servers"
+            )
+        else:
+            logger.progress("Run 'apm mcp search <query>' to find available servers")
         raise RuntimeError(f"Cannot install {len(invalid_servers)} missing server(s)")
     return valid_servers
 
@@ -105,6 +117,26 @@ class _TargetSelectionSource(StrEnum):
     INVALID_MANIFEST = "invalid-manifest"
 
 
+def _announce_registry_endpoint(registry_client: Any, logger: Any) -> None:
+    """Name the registry endpoint a dependency group resolves against.
+
+    Defaults are quiet, overrides are visible: a redirect away from the public
+    registry -- an apm.yml ``registry:`` URL, ``MCP_REGISTRY_URL``, or a
+    persisted ``apm config set mcp-registry-url`` -- changes which bytes an
+    install trusts, so it is stated rather than inferred. Mirrors the
+    diagnostic ``apm install --mcp NAME`` already emits (#2740).
+    """
+    from apm_cli.registry.client import REGISTRY_SOURCE_LABELS, redact_mcp_registry_url
+
+    source = registry_client.registry_url_source
+    if source == "default":
+        return
+    # The only non-ambient source on this path is a per-dependency registry: URL.
+    label = REGISTRY_SOURCE_LABELS.get(source, "from --registry or the apm.yml registry field")
+    safe_url = redact_mcp_registry_url(registry_client.registry_url)
+    logger.progress(f"Using MCP registry: {safe_url} ({label})", symbol="info")
+
+
 def _install_registry_group(  # noqa: PLR0913
     operations: Any,
     group_dep_names: list,
@@ -137,6 +169,8 @@ def _install_registry_group(  # noqa: PLR0913
     failed_installations: list[str] = []
     registry_server_cache: dict[str, dict] = prevalidated_servers or {}
 
+    _announce_registry_endpoint(operations.registry_client, logger)
+
     if prevalidated_servers is not None and set(group_dep_names) <= prevalidated_servers.keys():
         valid_servers = group_dep_names
     else:
@@ -155,7 +189,6 @@ def _install_registry_group(  # noqa: PLR0913
             valid_servers,
             project_root=project_root,
             user_scope=user_scope,
-            server_info_cache=registry_server_cache,
         )
         already_configured_candidates = [
             dep for dep in valid_servers if dep not in servers_to_install
@@ -746,7 +779,18 @@ def _resolve_target_runtimes(
     # Exclusion narrows every selected source, including explicit CLI choices.
     # Apply it before progress output so the message names the narrowed set.
     if exclude:
-        target_runtimes = filter_excluded_mcp_runtimes(target_runtimes, exclude)
+        exclusions = {exclude}
+        try:
+            from apm_cli.core.target_detection import EffectiveTargetDecision
+
+            exclusions.update(
+                EffectiveTargetDecision(exclude, "--exclude").runtime_equivalents or ()
+            )
+        except KeyError:
+            pass
+        target_runtimes = [
+            candidate for candidate in target_runtimes if candidate not in exclusions
+        ]
         # Invalid manifests continue to the shared gate for canonical rendering.
         if not target_runtimes and selection_source is not _TargetSelectionSource.INVALID_MANIFEST:
             logger.warning(
@@ -822,7 +866,19 @@ def _resolve_target_runtimes(
     from apm_cli.core.scope import InstallScope as _IS
 
     if scope is _IS.USER:
-        target_runtimes, skipped = partition_user_scope_runtimes(target_runtimes)
+        from apm_cli.factory import ClientFactory as _CF
+
+        pre_filter = list(target_runtimes)
+        filtered_runtimes = []
+        for rt in target_runtimes:
+            try:
+                client = _CF.create_client(rt)
+            except ValueError:
+                continue
+            if client.supports_user_scope:
+                filtered_runtimes.append(rt)
+        target_runtimes = filtered_runtimes
+        skipped = set(pre_filter) - set(target_runtimes)
         if skipped:
             msg = (
                 f"Skipped workspace-only runtimes at user scope: "
@@ -1170,7 +1226,12 @@ def run_mcp_install(  # noqa: PLR0913
             registry_groups: builtins.dict[str | None, list] = {}
             for dep in registry_deps:
                 dep_registry = getattr(dep, "registry", None)
-                key = dep_registry if isinstance(dep_registry, str) else None
+                if isinstance(dep_registry, str):
+                    from apm_cli.registry.client import normalize_mcp_registry_url
+
+                    key = normalize_mcp_registry_url(dep_registry)
+                else:
+                    key = None
                 if key not in registry_groups:
                     registry_groups[key] = []
                 registry_groups[key].append(dep)

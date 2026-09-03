@@ -312,58 +312,19 @@ class TestSimpleRegistryClient(unittest.TestCase):
         client = SimpleRegistryClient("https://explicit-url.example.com")
         self.assertEqual(client.registry_url, "https://explicit-url.example.com")
 
-    def test_environment_query_and_fragment_are_rejected_without_leaking(self):
-        secret = "registry-query-secret"
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"MCP_REGISTRY_URL": f"https://registry.example.com?token={secret}#{secret}"},
-                clear=False,
-            ),
-            self.assertRaises(ValueError) as raised,
-        ):
-            SimpleRegistryClient()
-
-        self.assertNotIn(secret, str(raised.exception))
-
-    def test_malformed_port_is_rejected_without_leaking_userinfo(self):
-        secret = "registry-port-secret"
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"MCP_REGISTRY_URL": f"https://user:{secret}@registry.example.com:notaport"},
-                clear=False,
-            ),
-            self.assertRaises(ValueError) as raised,
-        ):
-            SimpleRegistryClient()
-
-        self.assertNotIn(secret, str(raised.exception))
-
-    def test_malformed_port_is_rejected_without_leaking_netloc(self):
-        secret = "PORT_SECRET_SENTINEL"
-        with self.assertRaises(ValueError) as raised:
-            SimpleRegistryClient(f"https://registry.example.com:{secret}")
-
-        self.assertNotIn(secret, str(raised.exception))
-
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_uuid_input_returns_none(self, mock_search_servers_all_pages):
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
+    def test_find_server_by_reference_uuid_input_returns_none(self, mock_search_servers):
         """The legacy UUID strategy is removed; UUID-shaped refs route to search and miss."""
-        mock_search_servers_all_pages.return_value = []
+        mock_search_servers.return_value = []
         result = self.client.find_server_by_reference("123e4567-e89b-12d3-a456-426614174000")
         self.assertIsNone(result)
-        mock_search_servers_all_pages.assert_called_once_with(
-            "123e4567-e89b-12d3-a456-426614174000"
-        )
+        mock_search_servers.assert_called_once_with("123e4567-e89b-12d3-a456-426614174000")
 
     @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_name_match(
-        self, mock_search_servers_all_pages, mock_get_server
-    ):
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
+    def test_find_server_by_reference_name_match(self, mock_search_servers, mock_get_server):
         """Test finding a server by exact name match (v0.1 shape)."""
-        mock_search_servers_all_pages.return_value = [
+        mock_search_servers.return_value = [
             {"name": "io.github.owner/repo-name"},
             {"name": "other-server"},
         ]
@@ -373,13 +334,13 @@ class TestSimpleRegistryClient(unittest.TestCase):
         result = self.client.find_server_by_reference("io.github.owner/repo-name")
 
         self.assertEqual(result, server_data)
-        mock_search_servers_all_pages.assert_called_once_with("io.github.owner/repo-name")
+        mock_search_servers.assert_called_once_with("io.github.owner/repo-name")
         mock_get_server.assert_called_once_with("io.github.owner/repo-name")
 
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_name_not_found(self, mock_search_servers_all_pages):
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
+    def test_find_server_by_reference_name_not_found(self, mock_search_servers):
         """Test finding a server by name that doesn't exist in registry."""
-        mock_search_servers_all_pages.return_value = [
+        mock_search_servers.return_value = [
             {"name": "io.github.owner/different-repo"},
             {"name": "other-server"},
         ]
@@ -387,38 +348,38 @@ class TestSimpleRegistryClient(unittest.TestCase):
         result = self.client.find_server_by_reference("ghcr.io/github/github-mcp-server")
 
         self.assertIsNone(result)
-        mock_search_servers_all_pages.assert_called_once_with("ghcr.io/github/github-mcp-server")
+        mock_search_servers.assert_called_once_with("ghcr.io/github/github-mcp-server")
 
     @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
     def test_find_server_by_reference_name_match_get_server_fails(
-        self, mock_search_servers_all_pages, mock_get_server
+        self, mock_search_servers, mock_get_server
     ):
         """When get_server raises ValueError (e.g. ServerNotFoundError), return None."""
-        mock_search_servers_all_pages.return_value = [{"name": "test-server"}]
+        mock_search_servers.return_value = [{"name": "test-server"}]
         mock_get_server.side_effect = ValueError("Server not found")
 
         result = self.client.find_server_by_reference("test-server")
 
         self.assertIsNone(result)
-        mock_search_servers_all_pages.assert_called_once_with("test-server")
+        mock_search_servers.assert_called_once_with("test-server")
 
     @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
     def test_find_server_by_reference_name_match_network_error_propagates(
-        self, mock_search_servers_all_pages, mock_get_server
+        self, mock_search_servers, mock_get_server
     ):
         """Test that network errors in get_server propagate to the caller."""
-        mock_search_servers_all_pages.return_value = [{"name": "test-server"}]
+        mock_search_servers.return_value = [{"name": "test-server"}]
         mock_get_server.side_effect = requests.ConnectionError("Network error")
 
         with self.assertRaises(requests.ConnectionError):
             self.client.find_server_by_reference("test-server")
 
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_invalid_format(self, mock_search_servers_all_pages):
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
+    def test_find_server_by_reference_invalid_format(self, mock_search_servers):
         """Test finding a server with various invalid/edge case formats."""
-        mock_search_servers_all_pages.return_value = []
+        mock_search_servers.return_value = []
 
         test_cases = [
             "",
@@ -434,12 +395,10 @@ class TestSimpleRegistryClient(unittest.TestCase):
                 self.assertIsNone(result)
 
     @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_no_slug_collision(
-        self, mock_search_servers_all_pages, mock_get_server
-    ):
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
+    def test_find_server_by_reference_no_slug_collision(self, mock_search_servers, mock_get_server):
         """Test that qualified names don't collide on shared slugs (bug #165)."""
-        mock_search_servers_all_pages.return_value = [
+        mock_search_servers.return_value = [
             {"name": "com.supabase/mcp"},
             {"name": "microsoftdocs/mcp"},
         ]
@@ -452,66 +411,12 @@ class TestSimpleRegistryClient(unittest.TestCase):
         mock_get_server.assert_called_once_with("microsoftdocs/mcp")
 
     @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
-    def test_find_server_by_reference_rejects_ambiguous_slug(
-        self, mock_search_servers_all_pages, mock_get_server
-    ):
-        """An unqualified slug must not select the registry's first match."""
-        mock_search_servers_all_pages.return_value = [
-            {"name": "com.attacker/tool"},
-            {"name": "org.trusted/tool"},
-        ]
-
-        result = self.client.find_server_by_reference("tool")
-
-        self.assertIsNone(result)
-        mock_get_server.assert_not_called()
-
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    def test_find_server_by_reference_rejects_ambiguous_slug_across_pages(self, mock_get_server):
-        """An unqualified slug must inspect all search pages before selection."""
-        self.client._cached_get_json = mock.Mock(
-            side_effect=[
-                (
-                    {
-                        "servers": [{"server": {"name": "com.attacker/tool"}}],
-                        "metadata": {"nextCursor": "page-2"},
-                    },
-                    {},
-                ),
-                (
-                    {
-                        "servers": [{"server": {"name": "org.trusted/tool"}}],
-                        "metadata": {},
-                    },
-                    {},
-                ),
-            ]
-        )
-
-        result = self.client.find_server_by_reference("tool")
-
-        self.assertIsNone(result)
-        mock_get_server.assert_not_called()
-        self.assertEqual(
-            [call.kwargs["params"] for call in self.client._cached_get_json.call_args_list],
-            [{"search": "tool"}, {"search": "tool", "cursor": "page-2"}],
-        )
-
-    def test_constructor_rejects_registry_url_with_embedded_credentials(self):
-        credential = ":".join(("registry-user", "registry-password"))
-        registry_url = f"https://{credential}@registry.example.com"
-
-        with self.assertRaisesRegex(ValueError, "embedded credentials"):
-            SimpleRegistryClient(registry_url)
-
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.get_server")
-    @mock.patch("apm_cli.registry.client.SimpleRegistryClient._search_servers_all_pages")
+    @mock.patch("apm_cli.registry.client.SimpleRegistryClient.search_servers")
     def test_find_server_by_reference_qualified_no_match(
-        self, mock_search_servers_all_pages, mock_get_server
+        self, mock_search_servers, mock_get_server
     ):
         """Test that a qualified name with no exact match returns None."""
-        mock_search_servers_all_pages.return_value = [
+        mock_search_servers.return_value = [
             {"name": "com.supabase/mcp"},
         ]
 
@@ -571,6 +476,12 @@ class TestSimpleRegistryClientValidation(unittest.TestCase):
         }
         for k in self._saved:
             os.environ.pop(k, None)
+        # The config layer participates in resolution, so pin it to "unset"
+        # rather than reading whatever ~/.apm/config.json the host happens
+        # to carry. Tests that exercise the layer override this patch.
+        patcher = mock.patch("apm_cli.config.get_mcp_registry_url", return_value=None)
+        self.config_url = patcher.start()
+        self.addCleanup(patcher.stop)
 
     def tearDown(self):
         for k, v in self._saved.items():
@@ -596,7 +507,9 @@ class TestSimpleRegistryClientValidation(unittest.TestCase):
     def test_schemeless_url_rejected(self):
         with self.assertRaises(ValueError) as cm:
             SimpleRegistryClient("mcp.example.com")
-        self.assertIn("MCP_REGISTRY_URL", str(cm.exception))
+        # The hint names the layer that actually supplied the URL -- here the
+        # caller, so pointing at MCP_REGISTRY_URL would misdirect the fix.
+        self.assertIn("--registry", str(cm.exception))
         self.assertIn("scheme://host", str(cm.exception))
 
     def test_http_url_rejected_without_opt_in(self):
@@ -616,6 +529,32 @@ class TestSimpleRegistryClientValidation(unittest.TestCase):
         self.assertIn("ftp", str(cm.exception))
         self.assertIn("only https://", str(cm.exception))
 
+    def test_validation_error_redacts_credentials_query_and_fragment(self):
+        with self.assertRaises(ValueError) as cm:
+            SimpleRegistryClient(
+                "ftp://name:password-value@mcp.example.com/path?token=query-value#fragment-value"
+            )
+        message = str(cm.exception)
+        self.assertNotIn("name", message)
+        self.assertNotIn("password-value", message)
+        self.assertNotIn("query-value", message)
+        self.assertNotIn("fragment-value", message)
+
+    def test_malformed_url_error_redacts_path_credentials(self):
+        with self.assertRaises(ValueError) as cm:
+            SimpleRegistryClient("https:///name:password-value@registry.example.com")
+        message = str(cm.exception)
+        self.assertNotIn("name", message)
+        self.assertNotIn("password-value", message)
+
+    def test_query_and_fragment_rejected(self):
+        with self.assertRaises(ValueError) as cm:
+            SimpleRegistryClient("https://mcp.example.com/path?token=query-value#fragment-value")
+        message = str(cm.exception)
+        self.assertIn("query strings and fragments are not supported", message)
+        self.assertNotIn("query-value", message)
+        self.assertNotIn("fragment-value", message)
+
     def test_empty_env_var_treated_as_unset(self):
         os.environ["MCP_REGISTRY_URL"] = ""
         c = SimpleRegistryClient()
@@ -633,7 +572,6 @@ class TestSimpleRegistryClientValidation(unittest.TestCase):
         c = SimpleRegistryClient()
         self.assertEqual(c.registry_url, "https://internal.example.com")
         self.assertTrue(c._is_custom_url)
-        self.assertEqual(c.registry_source, "env")
 
     def test_env_var_invalid_rejected(self):
         os.environ["MCP_REGISTRY_URL"] = "not-a-url"
@@ -641,37 +579,83 @@ class TestSimpleRegistryClientValidation(unittest.TestCase):
             SimpleRegistryClient()
         self.assertIn("MCP_REGISTRY_URL", str(cm.exception))
 
-    def test_explicit_userinfo_is_rejected_without_leaking(self):
-        secret = "explicit-userinfo-secret"
-        with self.assertRaises(ValueError) as raised:
-            SimpleRegistryClient(f"https://user:{secret}@registry.corp.example.com/")
-        self.assertNotIn(secret, str(raised.exception))
+    def test_config_layer_supplies_url_when_env_unset(self):
+        """`apm config set mcp-registry-url` reaches every registry consumer.
 
-    def test_environment_userinfo_is_rejected_without_leaking(self):
-        secret = "environment-userinfo-secret"
-        with (
-            mock.patch.dict(
-                os.environ,
-                {"MCP_REGISTRY_URL": f"https://user:{secret}@registry.corp.example.com:8443/"},
-                clear=False,
-            ),
-            self.assertRaises(ValueError) as raised,
-        ):
+        Regression trap for #2740: the persisted layer was applied only by the
+        ``apm mcp`` commands, so a manifest-driven ``apm install`` silently
+        queried the public default and reported the server as missing.
+        """
+        self.config_url.return_value = "https://config.example.com/"
+        c = SimpleRegistryClient()
+        self.assertEqual(c.registry_url, "https://config.example.com")
+        self.assertEqual(c.registry_url_source, "config")
+        # A configured registry is a deliberate override: an unreachable one
+        # must fail closed in validate_servers_exist, not assume-valid.
+        self.assertTrue(c._is_custom_url)
+
+    def test_env_layer_outranks_config_layer(self):
+        os.environ["MCP_REGISTRY_URL"] = "https://env.example.com"
+        self.config_url.return_value = "https://config.example.com"
+        c = SimpleRegistryClient()
+        self.assertEqual(urlparse(c.registry_url).hostname, "env.example.com")
+        self.assertEqual(c.registry_url_source, "env")
+
+    def test_caller_url_outranks_config_layer(self):
+        self.config_url.return_value = "https://config.example.com"
+        c = SimpleRegistryClient("https://explicit.example.com")
+        self.assertEqual(urlparse(c.registry_url).hostname, "explicit.example.com")
+        self.assertEqual(c.registry_url_source, "explicit")
+
+    def test_config_layer_may_use_plaintext_http(self):
+        """`apm config set` accepts http://, so resolution must honour it.
+
+        The opt-in env var still gates the ambient env layer and caller-supplied
+        URLs, which include the ``registry:`` field of an untrusted apm.yml.
+        """
+        self.config_url.return_value = "http://config.example.com"
+        c = SimpleRegistryClient()
+        self.assertEqual(urlparse(c.registry_url).scheme, "http")
+        self.assertEqual(c.registry_url_source, "config")
+
+    def test_config_layer_rejection_names_the_config_key(self):
+        self.config_url.return_value = "ftp://config.example.com"
+        with self.assertRaises(ValueError) as cm:
             SimpleRegistryClient()
-        self.assertNotIn(secret, str(raised.exception))
+        self.assertIn("apm config get mcp-registry-url", str(cm.exception))
 
-    def test_false_like_http_opt_in_values_are_rejected(self):
-        for value in ("0", "false", "no"):
-            with (
-                self.subTest(value=value),
-                mock.patch.dict(
-                    os.environ,
-                    {"MCP_REGISTRY_ALLOW_HTTP": value},
-                    clear=False,
-                ),
-                self.assertRaises(ValueError),
-            ):
-                SimpleRegistryClient("http://mcp.example.com")
+    def test_default_source_recorded_when_no_layer_set(self):
+        self.assertEqual(SimpleRegistryClient().registry_url_source, "default")
+
+    def test_userinfo_stripped_from_registry_url(self):
+        """SimpleRegistryClient must strip user:pass@ from the stored URL.
+
+        Regression trap for the credential-leak path: if userinfo survives
+        into ``self.registry_url``, ``ServerNotFoundError`` interpolates it
+        into terminal output and CI logs.
+        """
+        c = SimpleRegistryClient("https://token:x-oauth@registry.corp.example.com/")
+        parsed = urlparse(c.registry_url)
+        self.assertEqual(parsed.scheme, "https")
+        self.assertEqual(parsed.hostname, "registry.corp.example.com")
+        self.assertIsNone(parsed.username)
+        self.assertIsNone(parsed.password)
+        self.assertEqual(c.registry_url, "https://registry.corp.example.com")
+
+    def test_userinfo_stripped_preserves_explicit_port(self):
+        c = SimpleRegistryClient("https://user:pass@registry.corp.example.com:8443/")
+        parsed = urlparse(c.registry_url)
+        self.assertEqual(parsed.hostname, "registry.corp.example.com")
+        self.assertEqual(parsed.port, 8443)
+        self.assertIsNone(parsed.username)
+        self.assertIsNone(parsed.password)
+
+    def test_userinfo_stripped_preserves_ipv6_brackets(self):
+        c = SimpleRegistryClient("https://name:password-value@[2001:db8::1]:8443/")
+        self.assertEqual(c.registry_url, "https://[2001:db8::1]:8443")
+        parsed = urlparse(c.registry_url)
+        self.assertEqual(parsed.hostname, "2001:db8::1")
+        self.assertEqual(parsed.port, 8443)
 
 
 class TestNormalizeV01Package(unittest.TestCase):

@@ -281,7 +281,7 @@ class TestValidateServersExist:
         ops.registry_client.find_server_by_reference = MagicMock(
             side_effect=requests.RequestException("timeout")
         )
-        with pytest.raises(RuntimeError, match="--registry URL"):
+        with pytest.raises(RuntimeError, match="--registry"):
             ops.validate_servers_exist(["server-a"])
 
     def test_empty_list_returns_empty(self) -> None:

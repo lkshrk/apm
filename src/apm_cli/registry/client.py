@@ -7,7 +7,7 @@ import os
 import re
 import warnings
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urlparse, urlunparse
 
 import requests
 
@@ -85,6 +85,120 @@ def _decode_registry_json(raw: bytes) -> Any:
 
 _DEFAULT_REGISTRY_URL = "https://api.mcp.github.com"
 
+# Human-readable name of each ambient precedence layer, for the one-line
+# "Using MCP registry: <url> (<label>)" diagnostic. Callers label their own
+# "explicit" source, which means the --registry flag in one place and an
+# apm.yml registry: field in another.
+REGISTRY_SOURCE_LABELS = {
+    "env": "from MCP_REGISTRY_URL",
+    "config": "from apm config",
+}
+
+# Where the user should look when a resolved registry URL is rejected, keyed by
+# the layer that supplied it. Naming the wrong knob is worse than naming none.
+_REGISTRY_URL_HINTS = {
+    "explicit": "Check the --registry value or the dependency's registry: URL.",
+    "env": "Check MCP_REGISTRY_URL if set.",
+    "config": "Check 'apm config get mcp-registry-url'.",
+    "default": "",
+}
+
+
+def redact_mcp_registry_url(url: str) -> str:
+    """Return a registry URL safe for terminal and log output."""
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc or not parsed.hostname:
+            return "<invalid registry URL>"
+        host = parsed.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunparse(parsed._replace(netloc=host, query="", fragment=""))
+    except (TypeError, ValueError):
+        return "<invalid registry URL>"
+
+
+def normalize_mcp_registry_url(url: str) -> str:
+    """Normalize a registry URL for validation, storage, and grouping."""
+    normalized = url.strip()
+    try:
+        parsed = urlparse(normalized)
+        if not parsed.scheme or not parsed.hostname:
+            return normalized.rstrip("/")
+        host = parsed.hostname.lower()
+        if ":" in host:
+            host = f"[{host}]"
+        port = parsed.port
+        if port is not None and (parsed.scheme.lower(), port) not in {
+            ("http", 80),
+            ("https", 443),
+        }:
+            host = f"{host}:{port}"
+        userinfo, separator, _authority = parsed.netloc.rpartition("@")
+        if separator:
+            host = f"{userinfo}@{host}"
+        return urlunparse(
+            parsed._replace(
+                scheme=parsed.scheme.lower(),
+                netloc=host,
+                path=parsed.path.rstrip("/"),
+            )
+        )
+    except (TypeError, ValueError):
+        return normalized.rstrip("/")
+
+
+def mcp_registry_recovery_hint(source: str) -> str:
+    """Name the setting that supplied a registry URL."""
+    return {
+        "explicit": "Check the --registry value or the dependency's registry: URL.",
+        "env": "Check MCP_REGISTRY_URL.",
+        "config": "Check 'apm config get mcp-registry-url'.",
+    }.get(source, "Check the MCP registry configuration.")
+
+
+def resolve_mcp_registry_url(explicit: str | None = None) -> tuple[str, str]:
+    """Resolve the MCP registry endpoint and the layer that supplied it.
+
+    This is the one place the precedence chain lives, so the endpoint that
+    answers ``apm mcp show`` is the endpoint ``apm install`` fetches from.
+    Before #2740 the persisted ``apm config set mcp-registry-url`` layer was
+    applied only by the ``apm mcp`` commands and by ``apm install --mcp NAME``;
+    the manifest-driven ``dependencies.mcp`` path built its client straight off
+    the env var and silently queried the public default instead.
+
+    Precedence: *explicit* caller argument (``--registry`` flag, or a
+    per-dependency ``registry:`` URL from ``apm.yml``) > ``MCP_REGISTRY_URL``
+    environment variable > ``mcp-registry-url`` in ``~/.apm/config.json`` >
+    the built-in public registry.
+
+    Args:
+        explicit: Caller-supplied URL, or ``None`` when the caller has none.
+            Blank strings are treated as absent so a degenerate value cannot
+            shadow the remaining layers.
+
+    Returns:
+        ``(url, source)`` where *source* is one of ``"explicit"``, ``"env"``,
+        ``"config"``, or ``"default"``.
+    """
+    if explicit is not None and explicit.strip():
+        return explicit, "explicit"
+    env_value = os.environ.get("MCP_REGISTRY_URL")
+    # Treat empty-string env var as unset (common shell idiom: ``export FOO=``).
+    if env_value is not None and env_value.strip():
+        return env_value, "env"
+    # Imported lazily so the config module (and its user-config I/O) is not
+    # pulled in by every import of the registry package.
+    from ..config import get_mcp_registry_url
+
+    config_value = get_mcp_registry_url()
+    if config_value:
+        return config_value, "config"
+    return _DEFAULT_REGISTRY_URL, "default"
+
+
 # MCP Registry API version path prefix. Bumping this here is the
 # single grep target the day v0.2 ships. See
 # https://github.com/modelcontextprotocol/registry for the spec.
@@ -97,25 +211,6 @@ _V0_1_PREFIX = "/v0.1"
 # explicit at the call site so a future caller cannot bypass search
 # and feed attacker-controlled strings into the path.
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)?$")
-
-
-def _safe_registry_url_for_display(value: str) -> str:
-    """Return a credential-free registry URL for diagnostics."""
-    try:
-        parsed = urlparse(value)
-        _ = parsed.port
-        netloc = parsed.netloc
-        if "@" in netloc:
-            netloc = parsed.hostname or ""
-            if parsed.port is not None:
-                netloc = f"{netloc}:{parsed.port}"
-        return parsed._replace(
-            netloc=netloc,
-            query="<redacted>" if parsed.query else "",
-            fragment="<redacted>" if parsed.fragment else "",
-        ).geturl()
-    except (TypeError, ValueError):
-        return "<redacted-invalid-registry-url>"
 
 
 class ServerNotFoundError(ValueError):
@@ -176,74 +271,87 @@ class SimpleRegistryClient:
 
         Args:
             registry_url (str, optional): URL of the MCP registry.
-                If not provided, uses the MCP_REGISTRY_URL environment variable
-                or falls back to the default public registry.
+                If not provided, resolves through
+                :func:`resolve_mcp_registry_url` (``MCP_REGISTRY_URL`` env var,
+                then ``apm config set mcp-registry-url``, then the public
+                default).
 
         Raises:
             ValueError: If the resolved URL is missing a scheme/netloc, uses an
                 unsupported scheme, or uses ``http://`` without
                 ``MCP_REGISTRY_ALLOW_HTTP=1`` opt-in.
         """
-        env_override = os.environ.get("MCP_REGISTRY_URL")
-        # Treat empty-string env var as unset (common shell idiom: ``export FOO=``).
-        if env_override is not None and env_override.strip() == "":
-            env_override = None
-
-        resolved = registry_url or env_override or _DEFAULT_REGISTRY_URL
+        resolved, source = resolve_mcp_registry_url(registry_url)
+        source_override = os.environ.get("APM_MCP_REGISTRY_SOURCE")
+        if registry_source in {"flag", "env", "config"}:
+            source = registry_source
+        elif (
+            registry_url is None
+            and source == "env"
+            and source_override in {"flag", "env", "config"}
+        ):
+            source = source_override
         # Normalise: strip whitespace and trailing slashes so path joins
         # never produce double-slash URLs (e.g. ``https://host//v0/servers``).
-        resolved = resolved.strip().rstrip("/")
+        resolved = normalize_mcp_registry_url(resolved)
 
+        hint = _REGISTRY_URL_HINTS[source]
         parsed = urlparse(resolved)
-        safe_resolved = _safe_registry_url_for_display(resolved)
+        safe_url = redact_mcp_registry_url(resolved)
         if not parsed.scheme or not parsed.netloc:
             raise ValueError(
-                f"Invalid MCP registry URL {safe_resolved!r}: expected scheme://host "
-                f"(e.g. https://mcp.example.com). Check MCP_REGISTRY_URL if set."
-            )
-        try:
-            _ = parsed.port
-        except ValueError as exc:
-            raise ValueError(
-                f"Invalid MCP registry URL {safe_resolved!r}: invalid port. "
-                "Check MCP_REGISTRY_URL if set."
-            ) from exc
-        if parsed.username or parsed.password:
-            raise ValueError("MCP registry base URLs do not support embedded credentials.")
-        if parsed.query or parsed.fragment:
-            raise ValueError(
-                f"Invalid MCP registry base URL {safe_resolved!r}: "
-                "query strings and fragments are not supported."
+                f"Invalid MCP registry URL {safe_url!r}: expected scheme://host "
+                f"(e.g. https://mcp.example.com). {hint}".strip()
             )
         if parsed.scheme not in ("http", "https"):
             raise ValueError(
                 f"Unsupported scheme {parsed.scheme!r} in MCP registry URL "
-                f"{safe_resolved!r}: only https:// is supported (http:// requires "
-                f"MCP_REGISTRY_ALLOW_HTTP=1). Check MCP_REGISTRY_URL if set."
+                f"{safe_url!r}: only https:// is supported (http:// requires "
+                f"MCP_REGISTRY_ALLOW_HTTP=1). {hint}".strip()
             )
-        if parsed.scheme == "http" and os.environ.get("MCP_REGISTRY_ALLOW_HTTP") != "1":
+        if parsed.query or parsed.fragment:
             raise ValueError(
-                f"Insecure MCP registry URL {safe_resolved!r}: http:// is not allowed "
+                f"Invalid MCP registry URL {safe_url!r}: query strings and fragments "
+                f"are not supported. {hint}".strip()
+            )
+        # ``apm config set mcp-registry-url`` already accepts http:// as a
+        # deliberate, persisted local choice -- the same "explicit user intent"
+        # signal that lets the --registry flag opt in to plaintext (see
+        # install/mcp/registry.py::validate_registry_url). Refusing it here
+        # would make that command a lie. The gate still applies to the ambient
+        # env var and to caller-supplied URLs, which include the registry: field
+        # of an untrusted cloned apm.yml.
+        if (
+            parsed.scheme == "http"
+            and source != "config"
+            and not os.environ.get("MCP_REGISTRY_ALLOW_HTTP")
+        ):
+            raise ValueError(
+                f"Insecure MCP registry URL {safe_url!r}: http:// is not allowed "
                 f"by default. Set MCP_REGISTRY_ALLOW_HTTP=1 to opt in to plaintext "
-                f"HTTP (not recommended for production). "
-                f"Check MCP_REGISTRY_URL if set."
+                f"HTTP (not recommended for production). {hint}".strip()
             )
 
+        # Strip any embedded userinfo (``user:pass@``) before storing the URL so
+        # ``ServerNotFoundError`` and other diagnostics cannot leak credentials
+        # into terminal output or CI logs. Enterprise users sometimes set
+        # ``MCP_REGISTRY_URL=https://token:x-oauth@registry.corp/`` -- we still
+        # accept the URL (the credentials are passed via Authorization headers
+        # elsewhere), but we never echo them back.
+        if parsed.username or parsed.password:
+            resolved = safe_url
+
         self.registry_url = resolved
-        # True when the URL came from an explicit caller arg or MCP_REGISTRY_URL env var.
-        # Consumed by validate_servers_exist() to fail-closed on overrides.
-        self._is_custom_url = registry_url is not None or env_override is not None
-        source_override = os.environ.get("APM_MCP_REGISTRY_SOURCE")
-        if registry_source in {"flag", "env", "config"}:
-            self.registry_source = registry_source
-        elif registry_url is not None:
-            self.registry_source = "argument"
-        elif env_override is not None and source_override in {"flag", "env", "config"}:
-            self.registry_source = source_override
-        elif env_override is not None:
-            self.registry_source = "env"
-        else:
-            self.registry_source = "default"
+        # Which precedence layer supplied the URL; consumed by the CLI boundary
+        # to name the source in diagnostics ("from apm config", "from
+        # MCP_REGISTRY_URL") so an override is never silently in effect.
+        self.registry_url_source = source
+        self.registry_source = source
+        # True for any deliberate override. Consumed by validate_servers_exist()
+        # to fail-closed rather than assume-valid when the configured registry
+        # is unreachable: a network blip against a private registry must not
+        # look like a successful install.
+        self._is_custom_url = source != "default"
         self.session = requests.Session()
         self._timeout = _resolve_timeout()
         self._http_cache = self._init_http_cache()
@@ -407,41 +515,13 @@ class SimpleRegistryClient:
         Raises:
             requests.RequestException: If the request fails.
         """
-        servers, _next_cursor = self._search_servers_page(query)
-        return servers
-
-    def _search_servers_page(
-        self, query: str, cursor: str | None = None
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        """Return one page from the spec search endpoint."""
         url = f"{self.registry_url}{_V0_1_PREFIX}/servers"
         params = {"search": query}
-        if cursor is not None:
-            params["cursor"] = cursor
 
         data, _hdrs = self._cached_get_json(url, params=params)
         data = data or {}
-        metadata = data.get("metadata", {})
 
-        return self._unwrap_server_list(data), metadata.get("nextCursor")
-
-    def _search_servers_all_pages(self, query: str) -> list[dict[str, Any]]:
-        """Search all pages so bare-name uniqueness is checked globally."""
-        all_servers: list[dict[str, Any]] = []
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        while True:
-            servers, next_cursor = self._search_servers_page(query, cursor)
-            all_servers.extend(servers)
-            if not next_cursor:
-                return all_servers
-            if next_cursor in seen_cursors:
-                raise requests.RequestException(
-                    "MCP registry returned a repeated search cursor; "
-                    "cannot prove bare server-name uniqueness"
-                )
-            seen_cursors.add(next_cursor)
-            cursor = next_cursor
+        return self._unwrap_server_list(data)
 
     @staticmethod
     def _unwrap_server_list(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -632,10 +712,8 @@ class SimpleRegistryClient:
         Raises:
             requests.RequestException: If the registry API request fails.
         """
-        # Use search API to find by name. Fetch every page before applying
-        # the bare-slug uniqueness guard; selecting from only page one would
-        # make dependency-confusion possible when another match sits later.
-        search_results = self._search_servers_all_pages(reference)
+        # Use search API to find by name
+        search_results = self.search_servers(reference)
 
         # Pass 1: exact full-name match (prevents slug collisions)
         for server in search_results:
@@ -646,17 +724,14 @@ class SimpleRegistryClient:
                 except ValueError:
                     continue
 
-        # Pass 2: an unqualified slug is safe only when it has one match.
-        slug_matches = [
-            server.get("name", "")
-            for server in search_results
-            if self._is_server_match(reference, server.get("name", ""))
-        ]
-        if len(slug_matches) == 1:
-            try:
-                return self.get_server(slug_matches[0])
-            except ValueError:
-                pass
+        # Pass 2: fuzzy slug match (only when reference has no namespace)
+        for server in search_results:
+            server_name = server.get("name", "")
+            if self._is_server_match(reference, server_name):
+                try:
+                    return self.get_server(server_name)
+                except ValueError:
+                    continue
 
         # If not found by name, server is not in registry
         return None

@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import Iterator, Mapping, Sequence
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 
 import click
 
@@ -35,33 +35,13 @@ _MAX_REGISTRY_URL_LENGTH = 2048
 
 
 def _redact_url_credentials(url: str) -> str:
-    """Redact URL userinfo, query, and fragment data before logging.
+    """Strip credentials and query data from a URL before logging it."""
+    from ...registry.client import redact_mcp_registry_url
 
-    Potentially credential-bearing input is redacted before diagnostics.
-    Embedded credentials are rejected during validation and never echoed to the
-    terminal where they could leak via shell history, CI logs, or screenshots.
-
-    Falls back to the original string on any parse error so a misformed
-    URL still surfaces in the error message rather than being swallowed.
-    """
-    try:
-        parsed = urlparse(url)
-        if not parsed.scheme or not parsed.netloc:
-            return "<redacted-invalid-registry-url>"
-        parsed_port = parsed.port
-        netloc = parsed.netloc
-        if "@" in netloc:
-            netloc = parsed.hostname or ""
-            if parsed_port is not None:
-                netloc = f"{netloc}:{parsed_port}"
-        sanitized = parsed._replace(
-            netloc=netloc,
-            query="<redacted>" if parsed.query else "",
-            fragment="<redacted>" if parsed.fragment else "",
-        )
-        return urlunparse(sanitized)
-    except (ValueError, TypeError):
+    redacted = redact_mcp_registry_url(url)
+    if redacted == "<invalid registry URL>":
         return "<redacted-invalid-registry-url>"
+    return redacted
 
 
 def _is_local_or_metadata_host(host: str | None) -> bool:
@@ -81,15 +61,6 @@ def _is_local_or_metadata_host(host: str | None) -> bool:
     if addr is None:
         return False
     return addr.is_link_local or addr.is_private or addr.is_multicast or addr.is_unspecified
-
-
-def _require_ambient_http_opt_in(url: str, source: str) -> None:
-    """Require the existing explicit opt-in for ambient plaintext endpoints."""
-    if urlparse(url).scheme.lower() == "http" and os.environ.get("MCP_REGISTRY_ALLOW_HTTP") != "1":
-        raise click.UsageError(
-            f"{source} uses plaintext HTTP; set MCP_REGISTRY_ALLOW_HTTP=1 "
-            "only if this endpoint is trusted"
-        )
 
 
 def validate_registry_url(value: str | None) -> str | None:
@@ -144,7 +115,10 @@ def validate_registry_url(value: str | None) -> str | None:
     if parsed.username is not None:
         raise click.UsageError("--registry: embedded credentials are not supported")
     if parsed.query or parsed.fragment:
-        raise click.UsageError("--registry: base URL must not contain a query or fragment")
+        raise click.UsageError(
+            "--registry: base URL must not contain a query or fragment; "
+            "query strings and fragments are not supported"
+        )
     return normalized
 
 
@@ -152,73 +126,75 @@ def resolve_registry_url(
     cli_value: str | None,
     *,
     logger=None,
+    announce: bool = True,
 ) -> tuple[str | None, str]:
     """Apply precedence chain: flag > env > apm config > default.
 
-    Returns ``(resolved_url_or_None, source)`` where source is one of
-    ``"flag"``, ``"env"``, ``"config"``, or ``"default"``. ``None`` is
-    returned for the default case so callers can treat default as "no
-    override".
+    The chain itself lives in
+    :func:`~apm_cli.registry.client.resolve_mcp_registry_url`, which every
+    registry consumer shares; this wrapper adds the ``apm install --mcp``
+    diagnostics on top of it. Returns ``(resolved_url_or_None, source)`` where
+    source is one of ``"flag"``, ``"env"``, ``"config"``, or ``"default"``.
+    ``None`` is returned for the default case so callers can treat default as
+    "no override".
 
     When the flag is provided AND an env var is also set with a different
     value, emits a one-line diagnostic naming both so users can confirm the
-    flag won. Stays silent otherwise (defaults are quiet, overrides are
+    flag won. Stays silent for the default (defaults are quiet, overrides are
     visible).
+
+    Pass ``announce=False`` when a later phase will name the endpoint it
+    actually queries -- the real ``--mcp`` install reaches
+    ``_install_registry_group``, which announces there, so emitting here too
+    would print the same line twice. The local-host warning and the
+    flag-versus-env notice are unaffected: both say something no later phase
+    can.
     """
-    env_value = os.environ.get("MCP_REGISTRY_URL")
-    if env_value is not None and env_value.strip() == "":
-        env_value = None
+    from ...registry.client import REGISTRY_SOURCE_LABELS, resolve_mcp_registry_url
 
-    if cli_value is not None:
-        if env_value and env_value.rstrip("/") != cli_value:
-            if logger is not None:
-                logger.progress(
-                    f"--registry overrides MCP_REGISTRY_URL ({_redact_url_credentials(env_value)})",
-                    symbol="info",
-                )
-        _maybe_warn_local_host(cli_value, logger)
-        return cli_value, "flag"
-    if env_value is not None:
-        # Defaults are quiet, overrides are visible: surface the env-driven
-        # registry redirect so a poisoned MCP_REGISTRY_URL cannot silently
-        # change package resolution. Always emitted (not verbose-gated).
-        try:
-            env_value = validate_registry_url(env_value)
-        except click.UsageError as exc:
-            detail = exc.message.removeprefix("--registry: ")
+    url, source = resolve_mcp_registry_url(cli_value)
+    if source == "default":
+        return None, "default"
+
+    try:
+        validated_url = validate_registry_url(url)
+    except click.UsageError as exc:
+        detail = exc.message.removeprefix("--registry: ")
+        if source == "env":
             raise click.UsageError(f"MCP_REGISTRY_URL is invalid: {detail}") from exc
-        _require_ambient_http_opt_in(env_value, "MCP_REGISTRY_URL")
-        if logger is not None:
-            logger.progress(
-                f"Using MCP registry: {_redact_url_credentials(env_value)} (from MCP_REGISTRY_URL)",
-                symbol="info",
-            )
-        _maybe_warn_local_host(env_value, logger)
-        return env_value, "env"
-
-    # Layer 3: user-persisted config (apm config set mcp-registry-url <url>)
-    from ...config import get_mcp_registry_url as _get_mcp_registry_url
-
-    config_value = _get_mcp_registry_url()
-    if config_value:
-        try:
-            config_value = validate_registry_url(config_value)
-        except click.UsageError as exc:
-            detail = exc.message.removeprefix("--registry: ")
+        if source == "config":
             raise click.UsageError(
                 "Configured mcp-registry-url is invalid; run "
                 f"'apm config unset mcp-registry-url' and retry: {detail}"
             ) from exc
-        _require_ambient_http_opt_in(config_value, "Configured mcp-registry-url")
-        if logger is not None:
+        raise
+    if validated_url is not None:
+        url = validated_url
+
+    if source == "explicit":
+        source = "flag"
+        env_value = os.environ.get("MCP_REGISTRY_URL")
+        if logger is not None and announce:
             logger.progress(
-                f"Using MCP registry: {_redact_url_credentials(config_value)} (from apm config)",
+                f"Using MCP registry: {_redact_url_credentials(url)} (from --registry)",
                 symbol="info",
             )
-        _maybe_warn_local_host(config_value, logger)
-        return config_value, "config"
-
-    return None, "default"
+        if logger is not None and env_value and env_value.rstrip("/") != url:
+            logger.progress(
+                f"--registry overrides MCP_REGISTRY_URL ({_redact_url_credentials(env_value)})",
+                symbol="info",
+            )
+    elif logger is not None and announce:
+        # Defaults are quiet, overrides are visible: surface the redirect so a
+        # poisoned MCP_REGISTRY_URL or config entry cannot silently change
+        # package resolution. Always emitted (not verbose-gated).
+        logger.progress(
+            f"Using MCP registry: {_redact_url_credentials(url)} "
+            f"({REGISTRY_SOURCE_LABELS[source]})",
+            symbol="info",
+        )
+    _maybe_warn_local_host(url, logger)
+    return url, source
 
 
 def _maybe_warn_local_host(url: str, logger) -> None:
