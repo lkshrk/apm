@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 # this module and ``tests/unit/test_install_scanning.py``'s direct import
 # (``from apm_cli.commands.install import _pre_deploy_security_scan``) keep
 # working without modification.
+from apm_cli.install.finalization import close_install_contexts
 from apm_cli.install.helpers.security_scan import _pre_deploy_security_scan  # noqa: F401
 from apm_cli.install.insecure_policy import (
     InsecureDependencyPolicyError,
@@ -1140,7 +1141,7 @@ def _handle_mcp_install(  # noqa: PLR0913
 )
 @click.pass_context
 @serialized_lifecycle
-def install(  # noqa: C901, PLR0913
+def install(  # noqa: PLR0913
     ctx,
     packages,
     runtime,
@@ -1672,15 +1673,9 @@ def install(  # noqa: C901, PLR0913
             else InstallResult(disposition=InstallDisposition.FAILED, exit_code=1, error=e)
         )
     finally:
-        # --root: restore cwd + clear the source-root override regardless
-        # of how the handler exits (return, sys.exit -> SystemExit,
-        # exception). Done first so cwd is back to $PWD before any
-        # best-effort summary rendering below.
-        try:
-            _root_redirect.__exit__(None, None, None)
-        finally:
-            if transaction is not None:
-                transaction.__exit__(*sys.exc_info())
+        # Restore cwd before summary rendering, regardless of the exit path.
+        # Always close the transaction even if root restoration fails.
+        close_install_contexts(_root_redirect, transaction)
         # F5 (#1116): render minimal elapsed-time line on exit paths that
         # did not already render the full install summary. Best-effort:
         # never let a render failure mask the original exception/exit.
