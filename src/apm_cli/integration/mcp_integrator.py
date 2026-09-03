@@ -61,8 +61,19 @@ def _reject_symlink_config(
     fail_on_write_error: bool,
 ) -> bool:
     """Reject MCP cleanup through a symlink without reading its target."""
+    protected_markers = {".claude", ".config", ".cursor", ".vscode"}
+    symlink_candidates = {config_path, config_path.parent}
+    parts = config_path.parts
+    for index, part in enumerate(parts):
+        if part in protected_markers:
+            current = Path(*parts[: index + 1])
+            symlink_candidates.add(current)
+            for child in parts[index + 1 :]:
+                current = current / child
+                symlink_candidates.add(current)
+            break
     try:
-        has_symlink = any(path.is_symlink() for path in (config_path, *config_path.parents))
+        has_symlink = any(path.is_symlink() for path in symlink_candidates)
     except OSError:
         has_symlink = True
     if not has_symlink:

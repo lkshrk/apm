@@ -201,9 +201,13 @@ def _resolve_deployed_file_path(
     from ..integration.base_integrator import BaseIntegrator
     from ..utils.path_security import PathTraversalError, ensure_path_within
 
+    if "://" in value:
+        return None
     candidate = Path(value.rstrip("/"))
     if not candidate.is_absolute():
-        if not BaseIntegrator.validate_deploy_path(candidate.as_posix(), project_root):
+        rel_path = candidate.as_posix()
+        allowed_prefixes = BaseIntegrator._get_integration_prefixes(targets=targets or None)
+        if ".." in rel_path or not rel_path.startswith(allowed_prefixes):
             return None
         return project_root / candidate
     for target in targets:
@@ -232,8 +236,14 @@ def _check_deployed_files_present(
     missing: list[str] = []
     for _dep_key, dep in lock.dependencies.items():
         for rel_path in dep.deployed_files:
+            if "://" in rel_path:
+                continue
             abs_path = _resolve_deployed_file_path(rel_path, project_root, targets)
-            if abs_path is None or abs_path.is_symlink() or not abs_path.exists():
+            if (
+                abs_path is None
+                or not abs_path.exists()
+                or (Path(rel_path).is_absolute() and abs_path.is_symlink())
+            ):
                 missing.append(rel_path)
 
     gitignored_skipped = False
@@ -490,6 +500,18 @@ def _check_content_integrity(
         legacy_hash_paths.update(dependency.deployed_file_hashes)
     missing_ownership = sorted(legacy_hash_paths.difference(ledger_values))
 
+    def _has_symlink_component(path: Path) -> bool:
+        try:
+            relative = path.relative_to(project_root)
+        except ValueError:
+            return path.is_symlink()
+        current = project_root
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                return True
+        return False
+
     # Per-file hash verification across canonical deployment records.
     hash_mismatches: list[tuple] = []  # (dep_key, rel_path, expected, actual)
     unresolved_hash_paths: list[str] = []
@@ -527,6 +549,8 @@ def _check_content_integrity(
             file_path = resolved
         if not file_path.exists():
             continue  # _check_deployed_files_present owns this signal
+        if locator.kind == LocatorKind.PROJECT_RELATIVE and _has_symlink_component(file_path):
+            continue
         if file_path.is_symlink() or not file_path.is_file():
             unresolved_hash_paths.append(locator.value)
             continue
