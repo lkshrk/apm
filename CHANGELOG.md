@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [0.29.1] - 2026-09-06
+### Fixed
+
+- Hook deployment now copies the package's `.claude-plugin/plugin.json` to the
+  deployed plugin root, so hook scripts that read their own manifest through a
+  path relative to the script no longer fail with `ENOENT`. (by @lkshrk, #2826)
+
+## [0.29.1] - 2026-09-05
 
 ### Security
 
