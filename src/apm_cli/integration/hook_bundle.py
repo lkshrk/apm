@@ -80,20 +80,17 @@ def _target_root_for_hook_source(
 
 
 def _deployed_package_root(
-    package_path: Path,
-    source_root: Path,
+    package_name: str,
     target_root: Path,
     project_root: Path,
 ) -> Path | None:
-    """Return the deployed directory that mirrors the package root."""
-    try:
-        depth = len(source_root.relative_to(package_path).parts)
-    except ValueError:
-        return None
-    deployed_root = target_root
-    for _part in range(depth):
-        deployed_root = deployed_root.parent
-    return deployed_root if deployed_root.is_relative_to(project_root) else None
+    """Return the explicit package namespace containing a deployed hook root."""
+    for candidate in (target_root, *target_root.parents):
+        if not candidate.is_relative_to(project_root):
+            break
+        if candidate.name == package_name and candidate.parent.name == "hooks":
+            return candidate
+    return None
 
 
 def _hook_module_type(package_path: Path, hook_source_root: Path) -> str:
@@ -162,6 +159,7 @@ def copy_deployed_hook_bundle(
     integrator: BaseIntegrator,
     *,
     package_path: Path,
+    package_name: str,
     hook_file_dir: Path | None,
     project_root: Path,
     scripts: list[tuple[Path, str]],
@@ -218,7 +216,7 @@ def copy_deployed_hook_bundle(
             if current == package_path:
                 break
             current = current.parent
-    for source_root, target_root in source_target_roots:
+    for _source_root, target_root in source_target_roots:
         for source_file in files_by_ancestor.get(source_root, ()):
             if source_file in descriptor_files:
                 continue
@@ -234,14 +232,16 @@ def copy_deployed_hook_bundle(
 
     manifest_source = None if exclude_json_files else package_plugin_manifest(package_path)
     if manifest_source is not None and (
-        source_plan is None
-        or source_plan.includes(portable_relpath(manifest_source, source_plan.source_root))
+        manifest_source in selected_bundle_files
+        and (
+            source_plan is None
+            or source_plan.includes(portable_relpath(manifest_source, source_plan.source_root))
+        )
     ):
         # Plugin-root tokens resolve here, so a script's relative manifest read lands here too.
-        for source_root, target_root in source_target_roots:
+        for _source_root, target_root in source_target_roots:
             deployed_root = _deployed_package_root(
-                package_path,
-                source_root,
+                package_name,
                 target_root,
                 project_root,
             )
