@@ -1044,6 +1044,30 @@ class TestCopySkillToTarget:
             package_type=package_type,
         )
 
+    @pytest.mark.parametrize("user_scope", [False, True])
+    def test_hermes_skill_deployment(self, monkeypatch, user_scope):
+        from apm_cli.integration.targets import KNOWN_TARGETS
+
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        source = self.apm_modules / "owner" / "hermes-skill"
+        source.mkdir(parents=True)
+        content = "---\nname: hermes-skill\ndescription: Test skill\n---\n\n# Skill\n"
+        (source / "SKILL.md").write_text(content)
+        (source / "references").mkdir()
+        (source / "references" / "guide.md").write_text("Reference material\n")
+        package = self._create_package_info(name="hermes-skill", install_path=source)
+        profile = KNOWN_TARGETS["hermes"].for_scope(user_scope=user_scope)
+
+        paths = copy_skill_to_target(package, source, self.project_root, targets=[profile])
+
+        root = ".hermes" if user_scope else ".agents"
+        destination = self.project_root / root / "skills" / "hermes-skill"
+        assert paths == [destination]
+        assert (destination / "SKILL.md").read_text() == content
+        assert (destination / "references" / "guide.md").read_text() == "Reference material\n"
+        assert set(profile.primitives) == {"skills"}
+        assert not (self.project_root / ".claude").exists()
+
     # ========== Test T6: Direct copy preserves SKILL.md content exactly ==========
 
     def test_copy_skill_preserves_skill_md_content_exactly(self):

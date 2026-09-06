@@ -37,6 +37,30 @@ def runner() -> CliRunner:
 
 
 class TestTargetsTableOutput:
+    def test_hermes_listed_with_explicit_selection_hint(self, runner, tmp_path):
+        with patch("pathlib.Path.cwd", return_value=tmp_path):
+            result = runner.invoke(targets, [])
+        assert result.exit_code == 0, result.output
+        row = next(line for line in result.output.splitlines() if "hermes" in line)
+        assert "inactive" in row
+        assert "needs apm.yml targets: [hermes]" in row
+        assert ".agents/" in row
+
+    def test_explicit_hermes_visible_in_json(self, runner, tmp_path):
+        with (
+            patch("pathlib.Path.cwd", return_value=tmp_path),
+            patch(
+                "apm_cli.core.target_detection.resolve_targets",
+                return_value=_resolved(["hermes"]),
+            ),
+        ):
+            result = runner.invoke(targets, ["--json"])
+        assert result.exit_code == 0, result.output
+        row = next(row for row in json.loads(result.output) if row["target"] == "hermes")
+        assert row["status"] == "active"
+        assert row["deploy_dir"] == ".agents/"
+        assert row["needs"] is None
+
     def test_table_headers_present(self, runner: CliRunner, tmp_path: Path) -> None:
         with (
             patch(
