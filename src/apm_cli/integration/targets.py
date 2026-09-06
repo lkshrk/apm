@@ -891,28 +891,26 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         user_supported=True,
         user_root_dir=".openclaw",
     ),
-    # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
-    # the agentskills.io SKILL.md format and the AGENTS.md context-file
-    # standard, both already emitted by APM, so skills + instructions reuse
-    # the existing skill_standard / compile_family="agents" paths.  Skills
-    # land in .agents/skills/ at project scope (read by Hermes via
-    # skills.external_dirs) and ~/.hermes/skills/ at user scope.  MCP servers
-    # are written separately by HermesClientAdapter to ~/.hermes/config.yaml.
-    # $HERMES_HOME overrides the user-scope root (handled in for_scope).
+    # Project skills require Hermes' skills.external_dirs to include .agents/skills/.
     "hermes": TargetProfile(
         capability=TARGET_CAPABILITIES["hermes"],
-        root_dir=".agents",
+        root_dir=".hermes",
         primitives={
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
                 "skill_standard",
+                deploy_root=".agents",
             ),
         },
         auto_create=True,
-        detect_by_dir=False,
+        detect_by_dir=True,
         user_supported=True,
         user_root_dir=".hermes",
+        user_primitive_overrides={
+            "skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard"),
+        },
+        pack_prefixes=(".agents/",),
     ),
     # Microsoft 365 Copilot (Cowork) -- experimental, user-scope only.
     # Skills are deployed to <OneDrive>/Documents/Cowork/skills/.
@@ -1030,7 +1028,7 @@ def target_name_for_locator(locator: str) -> str | None:
 
 
 def apply_legacy_skill_paths(profiles: list[TargetProfile]) -> list[TargetProfile]:
-    """Reset ``deploy_root`` on every ``skills`` primitive to ``None``.
+    """Reset ``deploy_root`` for targets with legacy native skill directories.
 
     When ``--legacy-skill-paths`` (or ``APM_LEGACY_SKILL_PATHS=1``) is
     active, this restores pre-convergence per-client routing so skills
@@ -1039,13 +1037,15 @@ def apply_legacy_skill_paths(profiles: list[TargetProfile]) -> list[TargetProfil
 
     Returns a NEW list of (possibly replaced) profiles — the global
     ``KNOWN_TARGETS`` dict is never mutated.
+
+    Hermes retains its shared directory; it has no legacy project skill path.
     """
     from dataclasses import replace
 
     result: list[TargetProfile] = []
     for profile in profiles:
         skills_pm = profile.primitives.get("skills")
-        if skills_pm and skills_pm.deploy_root is not None:
+        if skills_pm and skills_pm.deploy_root is not None and profile.name != "hermes":
             new_pm = PrimitiveMapping(
                 subdir=skills_pm.subdir,
                 extension=skills_pm.extension,

@@ -209,6 +209,7 @@ def detect_target(  # noqa: PLR0911
     codex_exists = (project_root / ".codex").is_dir()
     gemini_exists = (project_root / ".gemini").is_dir()
     windsurf_exists = (project_root / ".windsurf").is_dir()
+    hermes_exists = (project_root / ".hermes").is_dir()
     kiro_exists = (project_root / ".kiro").is_dir()
     grok_exists = (project_root / ".grok").is_dir()
     detected = []
@@ -226,6 +227,8 @@ def detect_target(  # noqa: PLR0911
         detected.append(".gemini/")
     if windsurf_exists:
         detected.append(".windsurf/")
+    if hermes_exists:
+        detected.append(".hermes/")
     if kiro_exists:
         detected.append(".kiro/")
     if grok_exists:
@@ -247,6 +250,8 @@ def detect_target(  # noqa: PLR0911
         return "gemini", "detected .gemini/ folder"
     elif windsurf_exists:
         return "windsurf", "detected .windsurf/ folder"
+    elif hermes_exists:
+        return "hermes", "detected .hermes/ folder"
     elif kiro_exists:
         return "kiro", "detected .kiro/ folder"
     elif grok_exists:
@@ -421,7 +426,7 @@ def get_target_description(target: UserTargetType) -> str:
         "kiro": "AGENTS.md + .kiro/steering/ + .kiro/skills/ + .kiro/hooks/ + .kiro/settings/mcp.json",
         "agent-skills": ".agents/skills/ only (cross-client shared skills -- no agents, hooks, or commands)",
         "openclaw": ".agents/skills/ (project) or ~/.openclaw/skills/ (--global) -- experimental",
-        "hermes": "AGENTS.md + .agents/skills/ (project) or $HERMES_HOME/skills/ + $HERMES_HOME/config.yaml MCP (explicit --target only)",
+        "hermes": "AGENTS.md + .agents/skills/ (project) or $HERMES_HOME/skills/ + $HERMES_HOME/config.yaml MCP",
         "all": "AGENTS.md + CLAUDE.md + GEMINI.md + .github/copilot-instructions.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .windsurf/ + .kiro/ + .agents/",
         "minimal": "AGENTS.md only (create .github/, .claude/, or .gemini/ for full integration)",
     }
@@ -1023,6 +1028,7 @@ SIGNAL_WHITELIST: list[tuple[str, str, str]] = [
     ("grok-build", "dir", ".grok"),
     ("opencode", "dir", ".opencode"),
     ("windsurf", "dir", ".windsurf"),
+    ("hermes", "dir", ".hermes"),
     ("kiro", "dir", ".kiro"),
 ]
 
@@ -1037,10 +1043,12 @@ CANONICAL_TARGETS_ORDERED: list[str] = [
     "opencode",
     "windsurf",
     "kiro",
+    "hermes",
 ]
 
 # Canonical deploy directories for each target.
 CANONICAL_DEPLOY_DIRS: dict[str, str] = {
+    "hermes": ".agents/",
     "claude": ".claude/",
     "copilot": ".github/",
     "cursor": ".cursor/",
@@ -1055,6 +1063,7 @@ CANONICAL_DEPLOY_DIRS: dict[str, str] = {
 # The primary (lowest-friction) signal for each target, used in
 # "needs <path>" display for inactive targets.
 CANONICAL_SIGNAL: dict[str, str] = {
+    "hermes": ".hermes/",
     "claude": "CLAUDE.md",
     "copilot": ".github/copilot-instructions.md",
     "cursor": ".cursor/",

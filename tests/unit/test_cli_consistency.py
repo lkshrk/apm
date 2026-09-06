@@ -194,10 +194,7 @@ def test_compile_target_all_exclusion_lists_explicit_only_targets():
     help_text = result.output
     # Assert the full exclusion sentence (normalize whitespace from help-text wrapping)
     normalized = " ".join(help_text.split())
-    assert (
-        "excludes agent-skills, antigravity, hermes, experimental targets, and intellij"
-        in normalized
-    )
+    assert "excludes agent-skills, antigravity, experimental targets, and intellij" in normalized
 
 
 def test_mcp_install_help_lists_target_global_and_trust_transitive():

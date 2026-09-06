@@ -55,6 +55,18 @@ def _target_names(ctx: MagicMock) -> list[str]:
     return [target.name for target in ctx.targets]
 
 
+def test_hermes_directory_selects_install_profile(tmp_path: Path) -> None:
+    from apm_cli.install.phases.targets import run_targets_phase
+
+    (tmp_path / ".hermes").mkdir()
+    ctx = _make_ctx(tmp_path)
+    run_targets_phase(ctx)
+
+    assert _target_names(ctx) == ["hermes"]
+    assert ctx.targets[0].primitives["skills"].deploy_root == ".agents"
+    assert ctx.targets[0].compile_family == "agents"
+
+
 def _target_root_dirs(ctx, project_root: Path) -> list[Path]:
     """Collect on-disk deploy directories for every TargetProfile in ctx.targets.
 

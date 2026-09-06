@@ -5,9 +5,11 @@ sidebar:
   order: 8
 ---
 
-Hermes is a stable explicit-only target. Select it with `--target hermes`; it is
-not included in `--target all` because its project skills use the shared
-`.agents/` root and cannot be safely auto-detected.
+Hermes is a stable target, listed by `apm targets` and included in `--target all`.
+APM detects it when a project `.hermes/` directory exists. This directory is an
+APM activation marker; shared `AGENTS.md` and `.agents/` files do not identify
+Hermes. Select it explicitly with `--target hermes` or `targets: [hermes]` in
+`apm.yml`. Global skill installs detect the existing `~/.hermes/` directory.
 
 ## What it does
 
@@ -24,7 +26,11 @@ So the `hermes` target reuses APM's existing skill and `AGENTS.md` output paths 
 | instructions | Context file (`AGENTS.md`) | `AGENTS.md` at the project root |
 | MCP servers | `mcp_servers:` block | `~/.hermes/config.yaml` (home-scoped for every explicit selection) |
 
-At project scope, skills land in `.agents/skills/`, which Hermes reads through its `skills.external_dirs` setting. At user scope (`--global`), skills land directly in the Hermes home.
+At project scope, skills land in `.agents/skills/`. Add the absolute path to this
+directory to `skills.external_dirs` in your Hermes configuration before using
+them. APM does not edit that setting. Hermes documents external skill directories
+in its [configuration example](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
+At user scope (`--global`), skills land directly in the native Hermes home.
 
 ## Install
 
@@ -51,14 +57,14 @@ When `HERMES_HOME` lives under `$HOME`, APM keeps the deploy root home-relative;
 
 ## MCP servers
 
-When `hermes` is selected explicitly, APM writes MCP servers into the
+When `hermes` is selected for a project install, APM writes MCP servers into the
 home-scoped `mcp_servers:` block of `$HERMES_HOME/config.yaml` (default
 `~/.hermes/config.yaml`), even when package skills use project scope:
 
 Explicit selection does not require an existing Hermes home or a `hermes`
 binary on `PATH`; APM creates the configured home as needed. Runtime-presence
-signals are only relevant to automatic discovery, and Hermes is never
-auto-discovered.
+signals are only relevant to automatic discovery. Project `.hermes/` detection
+also selects this home-scoped MCP destination; it is not a project-local config.
 
 ```yaml
 mcp_servers:
@@ -75,13 +81,14 @@ HTTP servers are written with `url` and optional `headers` instead of `command`/
 ## Skills and instructions
 
 - Skills deploy as `SKILL.md` content, unchanged from the agentskills.io format APM already produces.
-- Instructions compile to `AGENTS.md`, which Hermes reads as a first-class context file.
+- Instructions compile to `AGENTS.md`; Hermes reads the top-level file. Nested
+  `AGENTS.md` output is not supported by Hermes. APM does not generate `SOUL.md`.
 - Agents, prompts, hooks, and commands are not part of the Hermes surface and are skipped for this target.
 
 ## Troubleshooting
 
-- MCP servers not written: pass `--target hermes`; Hermes is never selected by automatic runtime discovery.
-- Skills not picked up at project scope: ensure Hermes' `skills.external_dirs` includes `.agents/skills/`.
+- MCP servers not written: pass `--target hermes` to select its home-scoped config.
+- Skills not picked up at project scope: ensure Hermes' `skills.external_dirs` includes the absolute path to the project's `.agents/skills/`.
 - Wrong home directory: set `HERMES_HOME` to the Hermes home you want to target.
 
 See also [IDE and Tool Integration](../ide-tool-integration/).

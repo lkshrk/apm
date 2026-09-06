@@ -497,7 +497,7 @@ class TestGrokBuildTarget:
 
 
 class TestHermesTarget:
-    """Registry + scope invariants for the stable explicit-only Hermes target."""
+    """Registry + scope invariants for the Hermes target."""
 
     def setup_method(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -512,10 +512,10 @@ class TestHermesTarget:
     def test_hermes_profile_shape(self):
         profile = KNOWN_TARGETS["hermes"]
         assert profile.name == "hermes"
-        assert profile.root_dir == ".agents"
+        assert profile.root_dir == ".hermes"
         assert profile.user_supported is True
         assert profile.user_root_dir == ".hermes"
-        assert profile.detect_by_dir is False
+        assert profile.detect_by_dir is True
         assert profile.requires_flag is None
         assert profile.compile_family == "agents"
         assert "skills" in profile.primitives
@@ -526,12 +526,12 @@ class TestHermesTarget:
         targets = active_targets(self.root, explicit_target="hermes")
         assert any(p.name == "hermes" for p in targets)
 
-    def test_hermes_excluded_from_all(self, monkeypatch):
+    def test_hermes_included_in_all(self, monkeypatch):
         import apm_cli.integration.targets as tg
 
         monkeypatch.setattr(tg, "_is_flag_enabled", lambda name, **kwargs: True)
         names = {p.name for p in active_targets(self.root, explicit_target="all")}
-        assert "hermes" not in names
+        assert "hermes" in names
 
     def test_hermes_user_scope_root(self, monkeypatch):
         import apm_cli.integration.targets as tg

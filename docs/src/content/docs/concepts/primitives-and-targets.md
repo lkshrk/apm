@@ -78,7 +78,7 @@ GitHub Copilot CLI canvas extensions: a directory bundle whose entry file is `ex
 
 ## Target catalogue
 
-Each target is identified by a slug used in `apm.yml`'s `targets:` field or on the `--target` flag. `apm.yml` accepts the canonical targets (`copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `agent-skills`, `hermes`). `agent-skills`, `antigravity`, and `hermes` can be selected explicitly or listed in `apm.yml`, but they are not auto-detected or included in `all`. The output directory is where APM writes deployed primitives.
+Each target is identified by a slug used in `apm.yml`'s `targets:` field or on the `--target` flag. `apm.yml` accepts the canonical targets (`copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `agent-skills`, `hermes`). `agent-skills` and `antigravity` can be selected explicitly or listed in `apm.yml`, but they are not auto-detected or included in `all`. Hermes is detected by a project `.hermes/` directory and is included in `all`. The output directory is where APM writes deployed primitives.
 
 | Slug | Output directory | Compile family |
 |---|---|---|
@@ -106,7 +106,7 @@ Notes per target:
 - **opencode** -- OpenCode. No hooks support.
 - **windsurf** -- Windsurf / Cascade. No native agents primitive -- Cascade auto-invokes any `SKILL.md` by its `description:` frontmatter, so personas ship as skills. Workflows are the harness's name for commands.
 - **kiro** -- Kiro IDE/CLI v3. Instructions become steering files, skills stay as `SKILL.md` folders, hooks are individual JSON files, MCP lands in `.kiro/settings/mcp.json`, and agents deploy to `.kiro/agents/<stem>.md` with frontmatter filtered to `description`, `model`, and `tools` only.
-- **hermes** -- Hermes Agent. Stable explicit-only target; skills use `.agents/skills/` at project scope and `~/.hermes/skills/` at user scope. Compiled instructions use `AGENTS.md`; MCP servers use `~/.hermes/config.yaml`.
+- **hermes** -- Hermes Agent. Detected by `.hermes/`; skills use `.agents/skills/` at project scope and `~/.hermes/skills/` at user scope. Compiled instructions use `AGENTS.md`; MCP servers use `~/.hermes/config.yaml`.
 
 ## The compatibility matrix
 

@@ -97,8 +97,8 @@ user-scope `mcp.json`. That global signal does not auto-select file-primitive
 deployment. When `intellij` is selected explicitly, package file primitives use
 the Copilot profile. `intellij` does not participate in plain `all` expansion.
 
-`agent-skills` and `hermes` are canonical target keys; `antigravity` and
-`hermes` are explicit-only for auto-detection. All are available with `--target` and can be listed in a
+`agent-skills` and `hermes` are canonical target keys; `antigravity` is
+explicit-only for auto-detection. All are available with `--target` and can be listed in a
 project's `apm.yml` `targets:` field so contributors running plain `apm
 install` pick them up automatically.
 
@@ -297,10 +297,11 @@ Cross-client shared skills directory.
 
 Hermes Agent.
 
-- **Detection.** Never auto-detected. Select with `--target hermes` or list it
-  in `apm.yml`.
+- **Detection.** Project `.hermes/` directory; user-scope skills detect `~/.hermes/`.
+  Included in `all`; also selectable with `--target hermes` or in `apm.yml`.
 - **Deploy directory.** Project-scope skills use `.agents/skills/`. User-scope
   skills and MCP servers use `$HERMES_HOME` (default `~/.hermes`).
+  Project skills require their absolute path in Hermes' `skills.external_dirs`.
 - **Supported primitives.** skills, mcp, and compiled instructions.
 - **File conventions.**
   - skills: `.agents/skills/<name>/SKILL.md` (project) or
