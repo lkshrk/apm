@@ -7,7 +7,6 @@ from typing import Any
 
 STAGING_DIR_NAME = ".apm-resolution-staging"
 
-_EXCERPT_MARGIN = 120
 _ROOT_LOCATION = "its serialized content"
 
 
@@ -20,12 +19,13 @@ def assert_no_staging_paths(payload: Any, artifact: str) -> None:
     offender = _find_staging_reference(payload, "")
     if offender is None:
         return
-    location, text = offender
+    location, _ = offender
     raise StagingPathLeakError(
         f"Refusing to write {artifact}: {location or _ROOT_LOCATION} references the "
         f"resolution staging directory, which is removed once the install finishes, "
-        f"so the recorded path would never resolve again ({_excerpt(text)}). "
-        f"Re-run the install."
+        "so the recorded path would never resolve again. Upgrade APM and re-run the "
+        "same install once. If the error repeats, stop and report the artifact and "
+        "field named above; do not edit integrity-protected package files."
     )
 
 
@@ -61,11 +61,3 @@ def _key_location(location: str, key: Any) -> str:
     """Return the dotted location of *key* below *location*."""
     name = key if isinstance(key, str) else repr(key)
     return f"{location}.{name}" if location else name
-
-
-def _excerpt(text: str) -> str:
-    """Return a bounded window around the staging marker for error messages."""
-    index = text.find(STAGING_DIR_NAME)
-    start = max(0, index - _EXCERPT_MARGIN)
-    end = min(len(text), index + len(STAGING_DIR_NAME) + _EXCERPT_MARGIN)
-    return text[start:end].strip()

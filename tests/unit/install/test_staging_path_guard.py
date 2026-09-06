@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -16,8 +15,8 @@ from apm_cli.utils.staging_guard import (
     assert_no_staging_paths,
 )
 
-_STAGED_NAME = re.escape(STAGING_DIR_NAME)
 _STAGED_SCRIPT = f"/home/dev/.apm/apm_modules/{STAGING_DIR_NAME}/abc123/replacements/de/start.mjs"
+_REFUSAL = "references the resolution staging directory"
 
 
 def test_lockfile_write_rejects_staging_paths(tmp_path: Path) -> None:
@@ -26,7 +25,7 @@ def test_lockfile_write_rejects_staging_paths(tmp_path: Path) -> None:
     lock.mcp_configs = {"toolsrv": {"command": "node", "args": [_STAGED_SCRIPT]}}
     lockfile_path = tmp_path / "apm.lock.yaml"
 
-    with pytest.raises(StagingPathLeakError, match=_STAGED_NAME):
+    with pytest.raises(StagingPathLeakError, match=_REFUSAL):
         lock.write(lockfile_path)
 
     assert not lockfile_path.exists()
@@ -41,7 +40,7 @@ def test_self_defined_server_info_rejects_staging_paths() -> None:
         args=[_STAGED_SCRIPT],
     )
 
-    with pytest.raises(StagingPathLeakError, match=_STAGED_NAME):
+    with pytest.raises(StagingPathLeakError, match=_REFUSAL):
         MCPIntegrator._build_self_defined_info(dependency)
 
 
@@ -70,7 +69,7 @@ def test_self_defined_server_info_accepts_published_paths() -> None:
     ],
 )
 def test_guard_walks_nested_payloads(payload: object) -> None:
-    with pytest.raises(StagingPathLeakError, match=_STAGED_NAME):
+    with pytest.raises(StagingPathLeakError, match=_REFUSAL):
         assert_no_staging_paths(payload, "apm.lock.yaml")
 
 
@@ -79,6 +78,19 @@ def test_guard_error_names_the_offending_field() -> None:
 
     with pytest.raises(StagingPathLeakError, match=r"_raw_stdio\.args\[1\] references"):
         assert_no_staging_paths(payload, "MCP client configuration for 'toolsrv'")
+
+
+def test_guard_error_does_not_echo_serialized_credentials() -> None:
+    secret = "SYNTHETIC_SECRET_123"
+    payload = f"env:\n  API_TOKEN: {secret}\nargs:\n  - {_STAGED_SCRIPT}\n"
+
+    with pytest.raises(StagingPathLeakError) as exc_info:
+        assert_no_staging_paths(payload, "apm.lock.yaml")
+
+    message = str(exc_info.value)
+    assert secret not in message
+    assert _STAGED_SCRIPT not in message
+    assert "its serialized content references" in message
 
 
 def test_guard_allows_clean_payloads() -> None:

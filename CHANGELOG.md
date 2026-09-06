@@ -9,12 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `apm install` now records the published `apm_modules/<owner>/<repo>` path for
-  a dependency fetched through the resolution-staging replacement path, so MCP
-  server arguments in `apm.lock.yaml` and client configs no longer point at the
-  `.apm-resolution-staging` directory that is removed when the install
-  finishes. Writing a lockfile or client MCP configuration that still names a
-  staging path is now refused outright. (by @lkshrk, #2827)
+- `apm install` now keeps transitive plugin MCP launchers usable after
+  publication and cached replay by resolving plugin-root placeholders from the
+  published package directory. Lockfile writes and self-defined MCP
+  configuration construction reject remaining resolution-staging references
+  without echoing configuration values. (by @lkshrk, #2827)
 
 ## [0.29.1] - 2026-09-05
 

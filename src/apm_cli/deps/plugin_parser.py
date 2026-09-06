@@ -504,7 +504,13 @@ def normalize_plugin_directory(plugin_path: Path, plugin_json_path: Path | None 
             raise ValueError("Present root plugin.json must declare a non-empty name")
         manifest["name"] = plugin_path.name
 
-    return synthesize_apm_yml_from_plugin(plugin_path, manifest)
+    # Keep the generated manifest portable. APMPackage expands the placeholder
+    # when it loads the manifest, using the package's current published root.
+    return synthesize_apm_yml_from_plugin(
+        plugin_path,
+        manifest,
+        substitute_plugin_root=False,
+    )
 
 
 def _validate_declared_component_paths(plugin_path: Path, manifest: dict[str, Any]) -> None:
