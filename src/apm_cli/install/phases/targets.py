@@ -551,6 +551,14 @@ def run(ctx: InstallContext) -> None:
     _check_openclaw_flag_gate(_explicit, _targets, ctx)
     _check_grok_cloud_flag_gate(_explicit, _targets, ctx)
 
+    if not _is_user and any(t.name == "hermes" for t in _targets):
+        if ctx.logger:
+            ctx.logger.error(
+                "Hermes reads skills from its user directory. "
+                "Run: apm install --target hermes --global"
+            )
+        raise SystemExit(1)
+
     # Resolve v2 targets for project scope, or set up user-scope dirs.
     _targets = _resolve_targets_by_scope(ctx, _targets, _explicit, _is_user)
 

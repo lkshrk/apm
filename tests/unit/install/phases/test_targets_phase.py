@@ -81,6 +81,24 @@ def _make_ctx(
     return ctx
 
 
+@pytest.mark.parametrize("explicit", [None, "hermes"])
+def test_hermes_project_install_requires_global(tmp_path, explicit):
+    from apm_cli.install.phases.targets import run
+
+    ctx = _make_ctx(tmp_path, target_override=explicit)
+    if explicit is None:
+        (ctx.project_root / ".hermes").mkdir()
+    with pytest.raises(SystemExit) as exc:
+        run(ctx)
+    assert exc.value.code == 1
+    ctx.logger.error.assert_called_with(
+        "Hermes reads skills from its user directory. Run: apm install --target hermes --global"
+    )
+    assert not (ctx.project_root / ".hermes" / "skills").exists()
+    if explicit:
+        assert not (ctx.project_root / ".hermes").exists()
+
+
 def test_grok_cloud_disabled_flag_emits_enable_hint(
     tmp_path: Path,
     inject_config: Any,

@@ -263,6 +263,9 @@ def _resolve_compile_target(
             # copilot also emits AGENTS.md; mirror legacy behavior.
             families.add("agents")
 
+    if "hermes" in target_set and len(target_set) > 1:
+        return frozenset(families | {"hermes"})
+
     if len(families) >= 2:
         # Collapse {"vscode","agents"} to bare "vscode" ONLY when the
         # original target list contains no non-Copilot agents-family
@@ -373,6 +376,13 @@ def _resolve_effective_target(
         explicit_target=compile_target,
         config_target=compile_config_target if isinstance(compile_config_target, str) else None,
     )
+    if (
+        compile_target is None
+        and compile_config_target is None
+        and detected_target == "all"
+        and (_root / ".hermes").is_dir()
+    ):
+        detected_target = _resolve_compile_target(["all", "hermes"])
     return detected_target, detection_reason, config_target
 
 

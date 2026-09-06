@@ -512,10 +512,10 @@ class TestHermesTarget:
     def test_hermes_profile_shape(self):
         profile = KNOWN_TARGETS["hermes"]
         assert profile.name == "hermes"
-        assert profile.root_dir == ".agents"
+        assert profile.root_dir == ".hermes"
         assert profile.user_supported is True
         assert profile.user_root_dir == ".hermes"
-        assert profile.detect_by_dir is False
+        assert profile.detect_by_dir is True
         assert profile.requires_flag is None
         assert profile.compile_family == "agents"
         assert "skills" in profile.primitives

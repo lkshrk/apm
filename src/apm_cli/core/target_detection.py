@@ -211,6 +211,7 @@ def detect_target(  # noqa: PLR0911
     windsurf_exists = (project_root / ".windsurf").is_dir()
     kiro_exists = (project_root / ".kiro").is_dir()
     grok_exists = (project_root / ".grok").is_dir()
+    hermes_exists = (project_root / ".hermes").is_dir()
     detected = []
     if github_exists:
         detected.append(".github/")
@@ -230,7 +231,11 @@ def detect_target(  # noqa: PLR0911
         detected.append(".kiro/")
     if grok_exists:
         detected.append(".grok/")
+    if hermes_exists:
+        detected.append(".hermes/")
 
+    if hermes_exists and len(detected) == 1:
+        return "hermes", "detected .hermes/ folder"
     if len(detected) >= 2:
         return "all", f"detected {' and '.join(detected)} folders"
     elif github_exists:
@@ -421,7 +426,7 @@ def get_target_description(target: UserTargetType) -> str:
         "kiro": "AGENTS.md + .kiro/steering/ + .kiro/skills/ + .kiro/hooks/ + .kiro/settings/mcp.json",
         "agent-skills": ".agents/skills/ only (cross-client shared skills -- no agents, hooks, or commands)",
         "openclaw": ".agents/skills/ (project) or ~/.openclaw/skills/ (--global) -- experimental",
-        "hermes": "AGENTS.md + .agents/skills/ (project) or $HERMES_HOME/skills/ + $HERMES_HOME/config.yaml MCP (explicit --target only)",
+        "hermes": "Top-level AGENTS.md; skills and MCP require --global (~/.hermes/ or $HERMES_HOME)",
         "all": "AGENTS.md + CLAUDE.md + GEMINI.md + .github/copilot-instructions.md + .github/ + .claude/ + .cursor/ + .opencode/ + .codex/ + .gemini/ + .windsurf/ + .kiro/ + .agents/",
         "minimal": "AGENTS.md only (create .github/, .claude/, or .gemini/ for full integration)",
     }
@@ -1024,6 +1029,7 @@ SIGNAL_WHITELIST: list[tuple[str, str, str]] = [
     ("opencode", "dir", ".opencode"),
     ("windsurf", "dir", ".windsurf"),
     ("kiro", "dir", ".kiro"),
+    ("hermes", "dir", ".hermes"),
 ]
 
 # Ordered list of targets for display (excludes agent-skills meta-target).
@@ -1037,6 +1043,7 @@ CANONICAL_TARGETS_ORDERED: list[str] = [
     "opencode",
     "windsurf",
     "kiro",
+    "hermes",
 ]
 
 # Canonical deploy directories for each target.
@@ -1050,6 +1057,7 @@ CANONICAL_DEPLOY_DIRS: dict[str, str] = {
     "opencode": ".opencode/",
     "windsurf": ".windsurf/",
     "kiro": ".kiro/",
+    "hermes": "~/.hermes/ (--global)",
 }
 
 # The primary (lowest-friction) signal for each target, used in
@@ -1064,6 +1072,7 @@ CANONICAL_SIGNAL: dict[str, str] = {
     "opencode": ".opencode/",
     "windsurf": ".windsurf/",
     "kiro": ".kiro/",
+    "hermes": ".hermes/",
 }
 
 

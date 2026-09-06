@@ -255,7 +255,7 @@ def test_current_native_profiles_are_characterized() -> None:
             "openclaw",
         ),
         "hermes": (
-            ".agents",
+            ".hermes",
             {"skills": ("skills", "/SKILL.md", "skill_standard", None, False)},
             "agents",
             None,

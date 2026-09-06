@@ -891,17 +891,9 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         user_supported=True,
         user_root_dir=".openclaw",
     ),
-    # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
-    # the agentskills.io SKILL.md format and the AGENTS.md context-file
-    # standard, both already emitted by APM, so skills + instructions reuse
-    # the existing skill_standard / compile_family="agents" paths.  Skills
-    # land in .agents/skills/ at project scope (read by Hermes via
-    # skills.external_dirs) and ~/.hermes/skills/ at user scope.  MCP servers
-    # are written separately by HermesClientAdapter to ~/.hermes/config.yaml.
-    # $HERMES_HOME overrides the user-scope root (handled in for_scope).
     "hermes": TargetProfile(
         capability=TARGET_CAPABILITIES["hermes"],
-        root_dir=".agents",
+        root_dir=".hermes",
         primitives={
             "skills": PrimitiveMapping(
                 "skills",
@@ -910,7 +902,6 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
             ),
         },
         auto_create=True,
-        detect_by_dir=False,
         user_supported=True,
         user_root_dir=".hermes",
     ),

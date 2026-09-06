@@ -138,7 +138,7 @@ def _build_expected_rule_filenames(
 # Compiler families allowed inside a multi-target frozenset (built by
 # _resolve_compile_target() from CLI-validated target names). Kept narrow
 # because the frozenset path bypasses _KNOWN_TARGETS validation.
-_KNOWN_COMPILE_FAMILIES = frozenset({"agents", "vscode", "claude", "gemini"})
+_KNOWN_COMPILE_FAMILIES = frozenset({"agents", "vscode", "claude", "gemini", "hermes"})
 
 
 @dataclass
@@ -187,7 +187,11 @@ class CompilationConfig:
 
     def __post_init__(self):
         """Handle CLI flag precedence after initialization."""
-        if self.single_agents:
+        if (
+            self.single_agents
+            or self.target == "hermes"
+            or (isinstance(self.target, frozenset) and "hermes" in self.target)
+        ):
             self.strategy = "single-file"
         # Initialize exclude list if None
         if self.exclude is None:
@@ -277,8 +281,7 @@ class CompilationConfig:
                 setattr(config, key, value)
 
         # Handle CLI flag precedence
-        if config.single_agents:
-            config.strategy = "single-file"
+        config.__post_init__()
 
         return config
 
