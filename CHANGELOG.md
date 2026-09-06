@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published package directory. Lockfile writes and self-defined MCP
   configuration construction reject remaining resolution-staging references
   without echoing configuration values. (by @lkshrk, #2827)
+- Git dependency downloads retry one narrowly classified HTTPS connection failure without changing credentials or transport; lifecycle timeout tests now wait for descendant readiness before exercising process-tree termination.
 
 ## [0.29.1] - 2026-09-05
 
@@ -37,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `apm install` now preserves SSH transport for semver discovery, keeps
+  inactive hooks when targets are not declared in the manifest, and honors
+  explicitly configured HTTP registries during MCP integration. (#2814)
+- Abandoned install transactions now release their state-update lock without
+  releasing locks still owned by other operations. (#2817)
 - `apm install` now fails before state writes when a host-qualified package
   path uses an unknown platform host, and routes all host/reference coordinate
   parsing through one canonical parser. (#2800)
