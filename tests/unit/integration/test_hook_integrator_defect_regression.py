@@ -976,6 +976,41 @@ def test_unselected_plugin_manifest_is_not_deployed(tmp_path: Path) -> None:
     assert all(".claude-plugin" not in path.parts for path in target_paths)
 
 
+def test_hook_bundle_preserves_distinct_source_roots(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    package_path = tmp_path / "multi-root"
+    first = package_path / "first" / "run.py"
+    second = package_path / "second" / "run.py"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir()
+    first.write_text("print('first')\n", encoding="utf-8")
+    second.write_text("print('second')\n", encoding="utf-8")
+    target_paths: list[Path] = []
+
+    copy_deployed_hook_bundle(
+        HookIntegrator(),
+        package_path=package_path,
+        package_name="multi-root",
+        hook_file_dir=None,
+        project_root=project,
+        scripts=[
+            (first, ".claude/hooks/multi-root/first/run.py"),
+            (second, ".claude/hooks/multi-root/second/run.py"),
+        ],
+        managed_files=None,
+        force=False,
+        target_paths=target_paths,
+        selected_bundle_files=frozenset({first, second}),
+    )
+
+    deployed_first = project / ".claude" / "hooks" / "multi-root" / "first" / "run.py"
+    deployed_second = project / ".claude" / "hooks" / "multi-root" / "second" / "run.py"
+    assert deployed_first.read_bytes() == first.read_bytes()
+    assert deployed_second.read_bytes() == second.read_bytes()
+    assert {deployed_first, deployed_second}.issubset(target_paths)
+
+
 def test_source_plan_authorizes_plugin_manifest_for_claude_hooks_only(tmp_path: Path) -> None:
     package_path = _setup_plugin_manifest_hook_package(tmp_path).install_path
 

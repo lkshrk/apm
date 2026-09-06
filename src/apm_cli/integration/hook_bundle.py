@@ -216,7 +216,7 @@ def copy_deployed_hook_bundle(
             if current == package_path:
                 break
             current = current.parent
-    for _source_root, target_root in source_target_roots:
+    for source_root, target_root in source_target_roots:
         for source_file in files_by_ancestor.get(source_root, ()):
             if source_file in descriptor_files:
                 continue
