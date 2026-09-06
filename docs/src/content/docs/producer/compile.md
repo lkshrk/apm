@@ -97,7 +97,7 @@ apm compile --all                            # default stable target set
 Canonical targets are `copilot`, `claude`, `grok-build`, `cursor`, `opencode`,
 `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `agent-skills`, and `hermes`.
 The `all` selector is not a target; it expands to every canonical target except
-the explicit-only `antigravity`, `agent-skills`, and `hermes` targets. Compiling for
+the explicit-only `antigravity` and `agent-skills` targets. Compiling for
 `agent-skills` is a successful no-op because `apm install` deploys skills.
 
 The accepted `intellij` entry is MCP-only, not a canonical target, and excluded
@@ -109,8 +109,8 @@ Experimental targets (`openclaw`, `copilot-cowork`,
 `copilot-app`, `grok-cloud`) are deployment targets for `apm install --target <flag>`
 once enabled via `apm experimental enable <flag>`, and are excluded
 from `--all`. `apm compile` does not emit harness-specific output for
-them. Stable explicit-only Hermes and the other agents-family harnesses read the standard
-`AGENTS.md` your normal `apm compile` flow already produces. See
+them. Hermes reads only top-level `AGENTS.md`; use
+`apm compile --target hermes --single-agents`. See
 [Hermes Agent](../../integrations/hermes/).
 
 ## Detection cascade

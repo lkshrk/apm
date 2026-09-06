@@ -37,6 +37,39 @@ def runner() -> CliRunner:
 
 
 class TestTargetsTableOutput:
+    def test_hermes_is_listed_with_directory_hint(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(targets, [])
+        assert result.exit_code == 0, result.output
+        row = next(line for line in result.output.splitlines() if "hermes" in line)
+        assert "inactive" in row
+        assert "needs .hermes/" in row
+        assert ".agents/" in row
+
+    @pytest.mark.parametrize("directory,active", [(".agents/skills", False), (".hermes", True)])
+    def test_hermes_directory_activation(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        directory: str,
+        active: bool,
+    ) -> None:
+        (tmp_path / directory).mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)
+        result = runner.invoke(targets, ["--json"])
+        assert result.exit_code == 0, result.output
+        row = next(row for row in json.loads(result.output) if row["target"] == "hermes")
+        assert row == {
+            "target": "hermes",
+            "status": "active" if active else "inactive",
+            "source": ".hermes/" if active else None,
+            "deploy_dir": ".agents/",
+            "needs": None if active else ".hermes/",
+        }
+
     def test_table_headers_present(self, runner: CliRunner, tmp_path: Path) -> None:
         with (
             patch(

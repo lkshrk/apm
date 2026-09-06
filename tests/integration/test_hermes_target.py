@@ -1,12 +1,12 @@
-"""Integration tests for the stable explicit-only 'hermes' target.
+"""Integration tests for the stable 'hermes' target.
 
 Covers:
   1. Parser accepts Hermes without an experimental flag.
   2. --global -> skill deployed to ~/.hermes/skills/<name>/SKILL.md,
      NOT to ~/.agents/skills/<name>/SKILL.md.
   3. Flag ON + project scope -> skill deployed to <ws>/.agents/skills/<name>/SKILL.md.
-  4. Parser-layer constants: hermes in VALID_TARGET_VALUES / EXPLICIT_ONLY_TARGETS,
-     not in ALL_CANONICAL_TARGETS; TargetParamType accepts single + multi.
+  4. Parser-layer constants: hermes in VALID_TARGET_VALUES / ALL_CANONICAL_TARGETS;
+     TargetParamType accepts single + multi.
   5. compile -t hermes routes to the agents family (AGENTS.md emission).
 
 Uses an isolated home by patching Path.home and
@@ -207,8 +207,13 @@ class TestHermesDeployE2E:
         expected = custom / "skills" / _SKILL_NAME / "SKILL.md"
         assert expected.is_file(), f"Expected skill at {expected}, output={result.output!r}"
 
+    @pytest.mark.parametrize("target_args", [[], ["--target", "hermes"]])
     def test_project_scope_deploys_to_agents_skills(
-        self, fake_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        target_args: list[str],
     ) -> None:
         bundle = _make_plugin_bundle(tmp_path / "src")
 
@@ -225,13 +230,13 @@ class TestHermesDeployE2E:
             ),
             encoding="utf-8",
         )
-        (project / ".github").mkdir()
+        (project / ".hermes").mkdir()
         monkeypatch.chdir(project)
 
         runner = CliRunner()
         result = runner.invoke(
             cli,
-            ["install", str(bundle), "--target", "hermes"],
+            ["install", str(bundle), *target_args],
             env={**_BASE_ENV},
             catch_exceptions=False,
         )
@@ -254,16 +259,16 @@ class TestHermesConstants:
 
         assert "hermes" in VALID_TARGET_VALUES
 
-    def test_hermes_not_in_all_canonical_targets(self) -> None:
+    def test_hermes_in_all_canonical_targets(self) -> None:
         from apm_cli.core.target_detection import ALL_CANONICAL_TARGETS
 
-        assert "hermes" not in ALL_CANONICAL_TARGETS
+        assert "hermes" in ALL_CANONICAL_TARGETS
 
-    def test_hermes_is_stable_explicit_only(self) -> None:
+    def test_hermes_is_stable(self) -> None:
         from apm_cli.core.target_detection import EXPERIMENTAL_TARGETS, EXPLICIT_ONLY_TARGETS
 
         assert "hermes" not in EXPERIMENTAL_TARGETS
-        assert "hermes" in EXPLICIT_ONLY_TARGETS
+        assert "hermes" not in EXPLICIT_ONLY_TARGETS
 
     def test_hermes_parser_accepts_single(self) -> None:
         from apm_cli.core.target_detection import TargetParamType

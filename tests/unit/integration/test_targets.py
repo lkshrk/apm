@@ -497,7 +497,7 @@ class TestGrokBuildTarget:
 
 
 class TestHermesTarget:
-    """Registry + scope invariants for the stable explicit-only Hermes target."""
+    """Registry and scope invariants for Hermes."""
 
     def setup_method(self):
         self.temp_dir = tempfile.mkdtemp()
@@ -512,26 +512,52 @@ class TestHermesTarget:
     def test_hermes_profile_shape(self):
         profile = KNOWN_TARGETS["hermes"]
         assert profile.name == "hermes"
-        assert profile.root_dir == ".agents"
+        assert profile.root_dir == ".hermes"
         assert profile.user_supported is True
         assert profile.user_root_dir == ".hermes"
-        assert profile.detect_by_dir is False
+        assert profile.detect_by_dir is True
         assert profile.requires_flag is None
         assert profile.compile_family == "agents"
-        assert "skills" in profile.primitives
+        assert set(profile.primitives) == {"skills"}
         assert profile.primitives["skills"].format_id == "skill_standard"
+        assert profile.primitives["skills"].deploy_root == ".agents"
+
+    def test_hermes_directory_detection(self):
+        (self.root / ".hermes").mkdir()
+        assert [profile.name for profile in active_targets(self.root)] == ["hermes"]
+
+    def test_shared_skills_do_not_detect_hermes(self):
+        (self.root / ".agents").mkdir()
+        assert "hermes" not in {profile.name for profile in active_targets(self.root)}
+
+    def test_hermes_file_does_not_activate_target(self):
+        (self.root / ".hermes").touch()
+        assert "hermes" not in {profile.name for profile in active_targets(self.root)}
+
+    def test_hermes_legacy_detection(self):
+        from apm_cli.core.target_detection import detect_target
+
+        (self.root / ".hermes").mkdir()
+        assert detect_target(self.root) == ("hermes", "detected .hermes/ folder")
+
+    def test_hermes_user_directory_detection(self, monkeypatch):
+        from apm_cli.integration.targets import active_targets_user_scope
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: self.root))
+        (self.root / ".hermes").mkdir()
+        assert [profile.name for profile in active_targets_user_scope()] == ["hermes"]
 
     @pytest.mark.windows_compat
     def test_hermes_explicit_target_resolves_without_flag(self):
         targets = active_targets(self.root, explicit_target="hermes")
         assert any(p.name == "hermes" for p in targets)
 
-    def test_hermes_excluded_from_all(self, monkeypatch):
+    def test_hermes_included_in_all(self, monkeypatch):
         import apm_cli.integration.targets as tg
 
         monkeypatch.setattr(tg, "_is_flag_enabled", lambda name, **kwargs: True)
         names = {p.name for p in active_targets(self.root, explicit_target="all")}
-        assert "hermes" not in names
+        assert "hermes" in names
 
     def test_hermes_user_scope_root(self, monkeypatch):
         import apm_cli.integration.targets as tg
@@ -540,6 +566,7 @@ class TestHermesTarget:
         profile = KNOWN_TARGETS["hermes"].for_scope(user_scope=True)
         assert profile is not None
         assert profile.root_dir == ".hermes"
+        assert profile.primitives["skills"].deploy_root is None
 
     def test_hermes_user_scope_honors_hermes_home(self, monkeypatch, tmp_path):
         import apm_cli.integration.targets as tg
