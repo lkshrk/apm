@@ -65,10 +65,11 @@ parent's remote host/repo/ref and fetches the sibling from the same origin.
 Absolute paths, paths that escape the repo root, and cross-repo local paths
 are rejected.
 
-**GitLab `path:` fetch transport:** GitLab `path:` files are fetched over git
-transport, not the REST API, so self-hosted instances with the API disabled
-still install. Path containment is enforced on the materialized file to reject
-symlink or traversal escapes. For fallback token setup, see `authentication.md`.
+**GitLab `path:` fetch transport:** GitLab `path:` files use Git first, so
+self-hosted instances with the API disabled still install. Restricted REST
+fallback requires an exhausted plan with an executed same-origin effective
+HTTPS attempt. Path containment rejects symlink or traversal escapes.
+See [GitLab authentication and fetch policy](authentication.md#gitlab-saas-or-self-managed).
 
 ### Custom git ports
 
@@ -176,8 +177,11 @@ instead so `@` remains reserved for git usernames and version syntax.
 | `alias` | OPTIONAL | Install under a custom directory name (`^[a-zA-Z0-9._-]+$`). |
 | `type` | OPTIONAL | Set to `gitlab` for self-managed GitLab on a bespoke hostname. Generic hosts do not receive APM-managed PATs on HTTP file reads. See the [lockfile spec](https://microsoft.github.io/apm/reference/lockfile-spec/#lockfile-identity-keys) for keying rules. |
 | `allow_insecure` | OPTIONAL | Manifest-side approval for an `http://` dependency; the install command still requires its separate insecure-host opt-in. |
-| `skills` | OPTIONAL | Install only named skills from a skill bundle. |
+| `skills` | OPTIONAL | Select deployed skills, not a repo slice; use `path` for a subdirectory. |
 | `targets` | OPTIONAL | Consumer-side harness subset for that dependency's target-scoped primitives. Non-empty list of target names. |
+
+Git [skill collections](../../../../../docs/src/content/docs/reference/package-types.md)
+with `skills/<name>/SKILL.md` support `skills: [name]` without root `apm.yml` or `SKILL.md`.
 
 Unknown fields are rejected. A Git `version` field reports an actionable error
 to use `ref` for a branch, tag, or commit; `version` belongs to registry and
