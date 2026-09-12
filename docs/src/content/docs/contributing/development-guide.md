@@ -45,10 +45,84 @@ exclusions, and review-needs brief. Maintainers still decide acceptance,
 priority, contributor invitations, and milestones. The
 [triage label contract](https://github.com/microsoft/apm/blob/main/packages/apm-triage-panel/assets/label-contract.json)
 separates those decisions from advisory processing. During compatibility
-rollout, `status/triaged` records completed automated advice; the future
-`triage/recommended` marker means the same thing, not human review.
+rollout, both `status/triaged` and `triage/recommended` mean completed
+automated advice, not human review. The new writer uses `triage/recommended`
+after the canonical label is provisioned and this code is deployed.
 `status/needs-triage` can remain after advice while awaiting a human decision.
 No label or milestone migration is performed by the advisory workflow.
+
+### Eligibility evidence and automation
+
+The [scope record format](https://github.com/microsoft/apm/blob/main/CONTRIBUTING.md#scope-record-format)
+provides explicit human evidence on an issue. The deterministic
+`PR eligibility (advisory only)` check is always neutral: `record-present`,
+`withdrawn`, `needs-evidence`, or `error` are not implementation permission.
+Private security/dependency tracking and claimed trivial corrections receive
+manual-review states. Real issue references are checked through GitHub, not
+inferred from arbitrary numbers, PR links, upstream references, or labels.
+Humans still decide whether the change matches the linked scope.
+
+After the workflow reaches the default branch, PR updates and relevant
+issue/comment changes refresh evidence without invoking an LLM panel.
+Forks and stacked PRs use default-branch governance and code, never the head
+or a feature-branch approval roster. A permissionless queue signal wakes the
+default-branch reporter through `workflow_run`; the reporter verifies GitHub's
+run, repository, event, and workflow metadata without consuming artifacts or
+contributor code. Commit associations do not prove complete queue membership;
+missing association/read access is reported as unknown/error. The check is
+not part of the required merge gate, and this PR does not deploy itself.
+Native event delivery and queue limits still apply. Maintainers can request a
+default-branch recheck without selecting a branch-controlled workflow definition:
+
+```bash
+gh api --method POST repos/microsoft/apm/dispatches \
+  -f event_type=pr-eligibility-recheck -F 'client_payload[pr_number]=123'
+```
+
+There is no `workflow_dispatch` entrypoint. These workflow-definition
+guarantees target GitHub.com, not older GitHub Enterprise Server versions.
+
+For a read-only local assessment, run the tool from a trusted default-branch
+checkout with Node.js and an authenticated `gh` installed outside the project.
+The tool excludes project PATH entries and symlinks back into the project:
+
+```bash
+node scripts/governance/eligibility.cjs --repo microsoft/apm --pr 123
+node scripts/governance/eligibility.cjs --help
+```
+
+The tool reads current policy from the default branch. Until the new roster
+format is deployed there, it deliberately reports a policy error rather than
+using a feature branch as authority. A snapshot cannot recover deleted
+withdrawals, so manual automation still requires fresh responsible-human
+confirmation of the bounded issue scope. No historical acceptance is restored.
+
+Each assessment is bounded: 25 visible unique issue references per PR, 10
+metadata pages per collection, 100 matched PR targets, 500 total metadata reads,
+and 32 MiB of metadata per operation. Issue events may inspect more than 100
+open PRs; only matched targets count toward that cap. A full final page is incomplete evidence.
+Exceeding a bound reports `error`, never a truncated `record-present` result.
+Reads are cached only within one operation; the final PR head/body refresh
+bypasses that cache. This accommodates the current 62-PR policy refresh while
+bounding genuinely oversized operations. Hidden HTML comments are not issue
+traceability or approval nominations.
+
+Once deployed, Daily Docs Updater runs discovery only, without issue/PR creation
+or auto-merge capabilities. Scheduled and manual runs stop at a human handoff.
+A docs-sync confirmation label likewise requests consideration; it cannot
+authorize a companion PR. Bug sweeps read canonical and legacy bug labels once
+per issue, then require the same human checkpoint before implementation.
+During rollout, keep Daily Docs disabled until the replacement source and
+compiled capabilities are deployed and verified. Opening or merging the PR
+does not authorize resuming the disabled workflow; a maintainer does that
+separately.
+
+The eligibility workflow verifies that `main` is still the repository default
+branch before checking out that literal ref, then uses the checked-out commit
+for both implementation and policy. A default-branch rename stops the workflow
+until maintainers review this boundary; it never falls back to a PR or event ref.
+
+### Installing optional skills
 
 To use these tools, [install APM](../../getting-started/installation/) if needed,
 then run from the repository root:
