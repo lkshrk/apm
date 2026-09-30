@@ -300,6 +300,7 @@ requirements:
     keyword: MUST
     section: "6.3.1"
     conformance_class: governance
+    notes: "allow, deny, and exact require package operands use the documented per-host repository case rule of req-rs-016 plus the registry-coordinate case rule; ASCII normalization does not cross virtual paths, refs, registry names, MCP names, unmanaged paths, or case-sensitive host/source identities; recursive-glob ambiguity remains case-sensitive and deny precedence remains unchanged"
   - id: req-pl-019
     keyword: MUST
     section: "6.8.1"
@@ -308,7 +309,6 @@ requirements:
     keyword: MUST
     section: "6.8.1"
     conformance_class: governance
-    notes: "allow, deny, and exact require package operands use the documented per-host repository case rule of req-rs-016 plus the registry-coordinate case rule; ASCII normalization does not cross virtual paths, refs, registry names, MCP names, unmanaged paths, or case-sensitive host/source identities; recursive-glob ambiguity remains case-sensitive and deny precedence remains unchanged"
   - id: req-rs-001
     keyword: MUST
     section: "7.2"

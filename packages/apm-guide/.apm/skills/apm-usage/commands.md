@@ -268,10 +268,12 @@ Non-CI JSON exposes `coverage.complete` and `coverage.primitives`; CI includes
 inventory in `content-integrity.primitive_coverage`, separate from violation
 `details`; SARIF uses invocation `primitiveCoverage` properties, including on
 passing checks. Structured findings identify pointers and decoded offsets,
-not physical file line/column positions. Copilot App's SQLite workflow prompts
+not physical file line/column positions. CI `content_findings` retains the exact
+offending file and pointer; SARIF locates that artifact, not the lockfile.
+Copilot App's SQLite workflow prompts
 are not covered by filesystem discovery. Tracking is file-level,
 not entry ownership or hash verification. Automatic `--strip` refuses
-structured/shared or external-root findings and incomplete coverage without
+structured/shared, user-scope or external-root findings and incomplete coverage without
 rewriting files. Explicit `--file` remains user-directed.
 
 | Command | Purpose | Key flags |

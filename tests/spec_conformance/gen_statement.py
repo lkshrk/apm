@@ -44,11 +44,13 @@ USER_SCOPE_DISCLOSURE = {
 DEPLOYED_PROMPT_AUDIT = (
     "APM claims the proposed deployed-prompt-audit capability (req-pl-019, req-pl-020), "
     "subject to the pending Section 9.3 amendment process, not adopted-spec approval. "
-    "Project and user scopes follow TargetProfile deployment roots and PrimitiveMapping "
+    "APM's own Consumer deployment implementation supplies the definitions: "
+    "project and user scopes follow TargetProfile deployment roots and PrimitiveMapping "
     "formats, including shared native hook settings via native_hook_config. "
     "The target-by-target locations, supported formats, prompt applicability and exclusions "
     "are published in docs/src/content/docs/reference/cli/audit.md. "
-    "ContentScanner checks hidden controls and prompt-injection markers; this is not a "
+    "ContentScanner checks hidden or suspicious Unicode code points that may conceal "
+    "instructions, not semantic prompt-injection detection; a clean result is not a "
     "guarantee that prompt text is safe. App SQLite state and unrelated transcripts are "
     "excluded. Detection does not grant execution, ownership or remediation authority."
 )

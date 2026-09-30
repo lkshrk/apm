@@ -17,6 +17,113 @@ from tests.spec_conformance._helpers import (
 audit_project = audit_contract.project
 
 
+@pytest.mark.req("req-pl-020")
+@pytest.mark.parametrize("tracked", [False, True])
+def test_static_user_scope_refuses_automatic_strip_in_real_cli(audit_project, tracked):
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from apm_cli.deps.lockfile import LockFile
+    from apm_cli.security.file_scanner import scan_project_result
+
+    home = Path.home()
+    workspace = home / ".apm"
+    workspace.mkdir(exist_ok=True)
+    (workspace / "apm.yml").write_text("name: user-audit\nversion: 1.0.0\ntarget: copilot\n")
+    relative = ".copilot/copilot-instructions.md"
+    prompt = home / relative
+    prompt.parent.mkdir(exist_ok=True)
+    prompt.write_text("user-owned \u202e instructions")
+    LockFile(local_deployed_files=[relative] if tracked else []).write(workspace / "apm.lock.yaml")
+    scan = scan_project_result(workspace)
+    assert scan.inventory and all(not entry.strippable for entry in scan.inventory)
+    assert scan.protected_files == frozenset({relative})
+    assert scan.inventory[0].tracked is tracked
+    paths = [prompt, workspace / "apm.yml", workspace / "apm.lock.yaml"]
+    before = {path: path.read_bytes() for path in paths}
+    result = subprocess.run(
+        [sys.executable, "-m", "apm_cli.cli", "audit", "--strip"],
+        cwd=workspace,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert relative in result.stdout
+    assert {path: path.read_bytes() for path in paths} == before
+
+
+@pytest.mark.req("req-pl-019")
+@pytest.mark.parametrize("ci_mode", [False, True])
+@pytest.mark.parametrize("output_format", ["json", "sarif", "text"])
+@pytest.mark.parametrize("dirty_index", [0, 1])
+def test_native_findings_identify_only_the_offending_field(
+    audit_project, ci_mode, output_format, dirty_index
+):
+    import json
+    from urllib.parse import unquote, urlparse
+
+    from click.testing import CliRunner
+
+    from apm_cli.cli import cli
+
+    native = audit_project / ".claude/settings.json"
+    native.parent.mkdir()
+    native.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "prompt",
+                                    "prompt": "\u202e" if i == dirty_index else "Clean",
+                                }
+                                for i in range(2)
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
+    )
+    expected = f"/hooks/Stop/0/hooks/{dirty_index}/prompt"
+    args = ["audit", "--no-drift", "--format", output_format]
+    if ci_mode:
+        args += ["--ci", "--no-policy", "--no-fail-fast"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 1, result.output
+    if output_format == "text":
+        assert expected in result.output
+        if ci_mode:
+            assert f"unicode: .claude/settings.json{expected}" in " ".join(result.output.split())
+        return
+    report = json.loads(result.output)
+    if output_format == "json":
+        if ci_mode:
+            check = next(c for c in report["checks"] if c["name"] == "content-integrity")
+            findings = check["content_findings"]
+            assert len(check["primitive_coverage"]) == 2
+        else:
+            findings = report["findings"]
+        assert len(findings) == 1
+        assert findings[0]["pointer"] == expected
+        assert findings[0]["file"] == ".claude/settings.json"
+        assert findings[0]["coordinate_space"] == "decoded-prompt"
+        assert "line" not in findings[0] and "column" not in findings[0]
+    else:
+        findings = [f for f in report["runs"][0]["results"] if "pointer" in f.get("properties", {})]
+        assert len(findings) == 1
+        assert findings[0]["properties"]["pointer"] == expected
+        location = findings[0]["locations"][0]["physicalLocation"]
+        assert (
+            unquote(urlparse(location["artifactLocation"]["uri"]).path) == ".claude/settings.json"
+        )
+        assert "region" not in location
+
+
 @pytest.mark.req("req-pl-019")
 @pytest.mark.parametrize("ci_mode", [False, True])
 def test_deployed_prompt_applicability_and_incomplete_exit(audit_project, ci_mode):

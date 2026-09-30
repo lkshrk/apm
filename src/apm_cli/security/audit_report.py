@@ -121,27 +121,7 @@ def findings_to_json(
         "info": sum(1 for f in all_findings if f.severity == "info"),
     }
 
-    items = []
-    for finding in all_findings:
-        items.append(
-            {
-                "severity": finding.severity,
-                "file": relative_path_for_report(finding.file),
-                **(
-                    {
-                        "coordinate_space": "decoded-prompt",
-                        "decoded_line": finding.line,
-                        "decoded_column": finding.column,
-                    }
-                    if finding.pointer
-                    else {"line": finding.line, "column": finding.column}
-                ),
-                "codepoint": finding.codepoint,
-                "category": finding.category,
-                "description": finding.description,
-                **({"pointer": finding.pointer} if finding.pointer else {}),
-            }
-        )
+    items = [finding_to_json(finding) for finding in all_findings]
     items.extend(_owner_json(violation) for violation in owner_violations)
 
     report = {
@@ -157,6 +137,53 @@ def findings_to_json(
             "primitives": [asdict(entry) for entry in coverage],
         }
     return report
+
+
+def finding_to_json(finding: ScanFinding) -> dict[str, Any]:
+    """Serialize one finding without conflating decoded and physical coordinates."""
+    return {
+        "severity": finding.severity,
+        "file": relative_path_for_report(finding.file),
+        **(
+            {
+                "coordinate_space": "decoded-prompt",
+                "decoded_line": finding.line,
+                "decoded_column": finding.column,
+            }
+            if finding.pointer
+            else {"line": finding.line, "column": finding.column}
+        ),
+        "codepoint": finding.codepoint,
+        "category": finding.category,
+        "description": finding.description,
+        **({"pointer": finding.pointer} if finding.pointer else {}),
+    }
+
+
+def finding_to_sarif(finding: ScanFinding) -> dict[str, Any]:
+    """Use the actual prompt artifact and never invent physical native offsets."""
+    return {
+        "ruleId": _rule_id(finding.category),
+        "level": _SEVERITY_MAP.get(finding.severity, "note"),
+        "message": {"text": f"{finding.description} ({finding.codepoint})"},
+        "locations": [
+            {
+                "physicalLocation": {
+                    "artifactLocation": {"uri": relative_path_for_report(finding.file)},
+                    **(
+                        {"region": {"startLine": finding.line, "startColumn": finding.column}}
+                        if not finding.pointer
+                        else {}
+                    ),
+                }
+            }
+        ],
+        "properties": {
+            "codepoint": finding.codepoint,
+            "category": finding.category,
+            **({"pointer": finding.pointer} if finding.pointer else {}),
+        },
+    }
 
 
 def findings_to_sarif(
@@ -198,38 +225,7 @@ def findings_to_sarif(
         }
 
     # Build results
-    results = []
-    for finding in all_findings:
-        result: dict[str, Any] = {
-            "ruleId": _rule_id(finding.category),
-            "level": _SEVERITY_MAP.get(finding.severity, "note"),
-            "message": {"text": f"{finding.description} ({finding.codepoint})"},
-            "locations": [
-                {
-                    "physicalLocation": {
-                        "artifactLocation": {
-                            "uri": relative_path_for_report(finding.file),
-                        },
-                        **(
-                            {
-                                "region": {
-                                    "startLine": finding.line,
-                                    "startColumn": finding.column,
-                                }
-                            }
-                            if not finding.pointer
-                            else {}
-                        ),
-                    }
-                }
-            ],
-            "properties": {
-                "codepoint": finding.codepoint,
-                "category": finding.category,
-                **({"pointer": finding.pointer} if finding.pointer else {}),
-            },
-        }
-        results.append(result)
+    results = [finding_to_sarif(finding) for finding in all_findings]
     for violation in owner_violations:
         locator = violation.locator
         results.append(

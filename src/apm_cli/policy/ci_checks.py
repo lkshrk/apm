@@ -531,6 +531,12 @@ def _check_content_integrity(
     for rel_path, findings in findings_by_file.items():
         if any(f.severity == "critical" for f in findings):
             critical_files.append(rel_path)
+    critical_findings = tuple(
+        finding
+        for findings in findings_by_file.values()
+        for finding in findings
+        if finding.severity == "critical"
+    )
 
     from ..core.deployment_ledger import DeploymentLedgerCodec
     from ..core.deployment_state import LocatorKind
@@ -622,8 +628,9 @@ def _check_content_integrity(
     details: list[str] = []
     for entry in scan.incomplete:
         details.append(f"incomplete-coverage: {entry.file}{entry.pointer}: {entry.diagnostic}")
-    for rel_path in critical_files:
-        details.append(f"unicode: {rel_path}")
+    details.extend(
+        dict.fromkeys(f"unicode: {finding.file}{finding.pointer}" for finding in critical_findings)
+    )
     for rel_path in missing_ownership:
         details.append(f"missing-ownership: {rel_path}")
     for rel_path in unresolved_hash_paths:
@@ -668,6 +675,7 @@ def _check_content_integrity(
         message=f"{summary} -- run {remedy}",
         details=details,
         coverage=scan.inventory,
+        content_findings=critical_findings,
     )
 
 

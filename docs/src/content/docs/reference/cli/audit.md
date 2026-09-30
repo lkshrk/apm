@@ -78,6 +78,11 @@ text and Markdown label these offsets as decoded. SARIF omits a physical region.
 CI JSON stores inventory in `content-integrity.primitive_coverage`, separate
 from violation `details`. SARIF retains it in invocation `primitiveCoverage`
 properties, and text shows discovered hooks even when all checks pass.
+CI `content_findings` identifies each critical finding's actual file and prompt
+pointer separately from inventory; SARIF uses that file, not the lockfile.
+Automatic `--strip` also refuses user-scoped prompt files when auditing from
+`~/.apm`, even though the traversal root is the home directory. The explicit
+single-file `--file` operation is unchanged.
 
 ### CI gate
 

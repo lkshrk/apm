@@ -248,6 +248,7 @@ def _scan_primitive(
                     and not entry.pointer
                     and status == "checked"
                     and not surface.external
+                    and not surface.user_scope
                 ),
             )
         )
@@ -422,6 +423,7 @@ def _scan_claimed_files(
                 "recorded",
                 "document" if abs_path.suffix in {".md", ".mdc"} or is_directory else "executable",
                 "recorded",
+                user_scope=user_scope,
             )
         if is_directory:
             directory_surfaces = [

@@ -5,7 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from stat import S_ISLNK
 
@@ -32,6 +32,7 @@ class PrimitiveSurface:
     prompt_fields: tuple[str, ...] = ()
     shared: bool = False
     external: bool = False
+    user_scope: bool = False
 
     def contains(self, path: Path) -> bool:
         """Match a path without walking or resolving user-controlled links."""
@@ -135,7 +136,10 @@ def primitive_surfaces(
                 )
             )
     # Exact shared configs override an identical primitive filename (hooks.json).
-    return tuple({(s.path, s.pattern): s for s in surfaces}.values())
+    return tuple(
+        replace(surface, user_scope=user_scope)
+        for surface in {(s.path, s.pattern): s for s in surfaces}.values()
+    )
 
 
 def safe_surface_path(surface: PrimitiveSurface, path: Path) -> bool:
