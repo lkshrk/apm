@@ -32,6 +32,14 @@ _REQUIRED = {
     },
     "src/apm_cli/commands/audit.py": {"_audit_content_scan": {"scan_project_result"}},
     "src/apm_cli/policy/ci_checks.py": {"_check_content_integrity": {"scan_project_result"}},
+    "src/apm_cli/security/audit_report.py": {
+        "findings_to_json": {"finding_to_json"},
+        "findings_to_sarif": {"finding_to_sarif"},
+    },
+    "src/apm_cli/policy/models.py": {
+        "to_json": {"finding_to_json"},
+        "to_sarif": {"finding_to_sarif"},
+    },
 }
 
 
@@ -78,7 +86,7 @@ RULES = (
     Rule(
         id=RULE_ID,
         group="mutation_writes",
-        guard_ids=(RULE_ID,),
+        guard_ids=(RULE_ID, "audit-finding-serialization"),
         description="Deployed primitive discovery and applicable checks share registry-derived owners.",
         check=check_audit_discovery,
     ),

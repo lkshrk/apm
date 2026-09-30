@@ -2,6 +2,16 @@
   "version": 1,
   "owners": [
     {
+      "id": "audit-finding-serialization",
+      "decision": "Ordinary and CI finding artifact, pointer and coordinate serialization",
+      "owner": "security/audit_report.py (finding_to_json, finding_to_sarif)",
+      "selectors": [
+        "src/apm_cli/security/audit_report.py",
+        "src/apm_cli/policy/models.py"
+      ],
+      "guards": ["audit-finding-serialization"]
+    },
+    {
       "id": "audit-primitive-discovery",
       "decision": "Registry-derived deployed primitive discovery and applicable prompt coverage",
       "owner": "security/primitive_discovery.py (primitive_surfaces), security/file_scanner.py (scan_project_result) through target skills_deploy_path and native hook contracts",

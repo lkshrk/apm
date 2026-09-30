@@ -53,3 +53,22 @@ def test_skills_destination_has_one_authority(path: str) -> None:
     result = run_selected_rules(_ROOT, {_RULE}, source_overrides={path: mutated})
     assert result.failures == ()
     assert any(v.rule_id == _RULE and v.path == path for v in result.violations)
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["src/apm_cli/security/audit_report.py", "src/apm_cli/policy/models.py"],
+)
+@pytest.mark.parametrize("serializer", ["finding_to_json", "finding_to_sarif"])
+def test_finding_serialization_cannot_bypass_shared_authority(path: str, serializer: str) -> None:
+    source = (_ROOT / path).read_text(encoding="utf-8")
+    # Preserve the owner's definition and imports while replacing consumer calls.
+    mutated = source.replace(f"{serializer}(finding)", "bypass_serializer(finding)").replace(
+        f"{serializer}(f)", "bypass_serializer(f)"
+    )
+    assert mutated != source
+    result = run_selected_rules(_ROOT, {_RULE}, source_overrides={path: mutated})
+    assert result.failures == ()
+    assert any(
+        v.rule_id == _RULE and v.path == path and serializer in v.message for v in result.violations
+    )
