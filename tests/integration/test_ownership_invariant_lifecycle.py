@@ -28,7 +28,11 @@ from tests.integration.test_required_lifecycle_state_machine import (
     _run_success,
     _skill,
 )
-from tests.utils.artifact_snapshot import ArtifactSnapshotSet, assert_snapshot_set_unchanged
+from tests.utils.artifact_snapshot import (
+    ArtifactSnapshotSet,
+    assert_snapshot_changes_within,
+    assert_snapshot_set_unchanged,
+)
 from tests.utils.lifecycle_state import LifecycleStateRoot, LifecycleStateSnapshot
 from tests.utils.local_package import LocalPackage
 
@@ -907,6 +911,12 @@ def test_global_update_preserves_owned_external_skill_targets(
     assert str(hermes_skill.parent) in deployed
     assert str(external_roots["claude"] / "rules" / "revision.md") in deployed
 
+    artifact_roots = {
+        "project": consumer.root,
+        "user": scenario.isolated.home,
+        **external_roots,
+    }
+    before_compile = ArtifactSnapshotSet.capture(artifact_roots)
     _run_success(
         scenario,
         consumer,
@@ -914,7 +924,16 @@ def test_global_update_preserves_owned_external_skill_targets(
         environment=environment,
         scenario_id="global-update-external-compile",
     )
-    compiled_claude = (external_roots["claude"] / "CLAUDE.md").read_text(encoding="utf-8")
-    assert "revision-b" in compiled_claude
-    assert "revision-a" not in compiled_claude
+    native_claude = external_roots["claude"] / "rules" / "revision.md"
+    assert native_claude.read_text(encoding="utf-8") == "# revision-b\n"
+    assert not (external_roots["claude"] / "CLAUDE.md").exists()
+    compiled_hermes = (external_roots["hermes"] / "AGENTS.md").read_text(encoding="utf-8")
+    assert "# revision-b" in compiled_hermes
+    assert "# revision-a" not in compiled_hermes
+    assert_snapshot_changes_within(
+        before_compile,
+        ArtifactSnapshotSet.capture(artifact_roots),
+        exact_paths={"hermes": {"AGENTS.md"}},
+        tree_prefixes={},
+    )
     assert commit_a.sha != commit_b.sha
