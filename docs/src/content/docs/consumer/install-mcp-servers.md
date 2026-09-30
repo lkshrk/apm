@@ -294,6 +294,12 @@ etc.) are rejected with exit code 2.
 
 ## Token injection: GitHub MCP server
 
+For Cursor, env-var references are written using Cursor's native
+`${env:NAME}` syntax, so referenced secret values are resolved by Cursor
+when it starts the MCP server and are not written into the project-local
+`.cursor/mcp.json`. Explicit static values in `mcp.env` remain static and
+are written as authored; keep secrets out of those values.
+
 APM translates supported environment-variable references using each
 target's native syntax. It also injects one specific GitHub credential
 automatically when the server is recognized as the GitHub MCP server:

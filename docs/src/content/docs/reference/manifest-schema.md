@@ -669,17 +669,18 @@ See [Token injection: GitHub MCP server](../../consumer/install-mcp-servers/#tok
 for the selection order and guidance for repairing existing generated
 configurations.
 
-| Syntax | Source | VS Code | JetBrains Copilot | Copilot CLI / Kiro | Codex / Gemini / Cursor |
-|---|---|---|---|---|---|
-| `${VAR}` | host environment | Translated to `${env:VAR}` (resolved at server-start by VS Code) | Translated to `${env:VAR}` | Native; passed through verbatim | `env`: resolved at install time from env (or interactive prompt). Codex `headers`: see note below |
-| `${env:VAR}` | host environment | Native; passed through verbatim | Native; passed through verbatim | Translated to `${VAR}` | `env`: resolved at install time from env (or interactive prompt). Codex `headers`: see note below |
-| `${input:<id>}` | user prompt | Native; VS Code prompts at runtime | Not supported; use `${VAR}` or `${env:VAR}` instead | Not supported; use `${VAR}` or `${env:VAR}` instead | Not supported; use `${VAR}` or `${env:VAR}` instead |
-| `<VAR>` (legacy) | host environment | Not recognized | Translated to `${env:VAR}` | Translated to `${VAR}` | Resolved at install time (kept for back-compat) |
+| Syntax | Source | VS Code | JetBrains Copilot | Copilot CLI / Kiro | Codex / Gemini | Cursor |
+|---|---|---|---|---|---|---|
+| `${VAR}` | host environment | Translated to `${env:VAR}` (resolved at server-start by VS Code) | Translated to `${env:VAR}` | Native; passed through verbatim | `env`: resolved at install time from env (or interactive prompt). Codex `headers`: see note below | Translated to `${env:VAR}`; resolved by Cursor at runtime |
+| `${env:VAR}` | host environment | Native; passed through verbatim | Native; passed through verbatim | Translated to `${VAR}` | `env`: resolved at install time from env (or interactive prompt). Codex `headers`: see note below | Native; passed through verbatim and resolved at runtime |
+| `${input:<id>}` | user prompt | Native; VS Code prompts at runtime | Not supported; use `${VAR}` or `${env:VAR}` instead | Not supported; use `${VAR}` or `${env:VAR}` instead | Not supported; use `${VAR}` or `${env:VAR}` instead | Not supported; use `${VAR}` or `${env:VAR}` instead |
+| `<VAR>` (legacy) | host environment | Not recognized | Translated to `${env:VAR}` | Translated to `${VAR}` | Resolved at install time (kept for back-compat) | Translated to `${env:VAR}`; resolved by Cursor at runtime |
 
 - **VS Code** has native `${env:VAR}` and `${input:VAR}` interpolation, so APM emits placeholders rather than baking secrets into `mcp.json`. Bare `${VAR}` is normalized to `${env:VAR}` for you.
 - **JetBrains Copilot** has native `${env:VAR}` interpolation in `mcp.json`; APM normalizes `${VAR}` and legacy `<VAR>` to `${env:VAR}`.
 - **Copilot CLI and Kiro** have native `${VAR}` interpolation in their MCP config files; APM normalizes `${env:VAR}` and legacy `<VAR>` to `${VAR}`.
-- **Codex, Gemini, and Cursor** have no runtime interpolation for `env`, so APM resolves `${VAR}`, `${env:VAR}`, and the legacy `<VAR>` there at install time using `os.environ` (or an interactive prompt when missing). Resolved values are not re-scanned, so a value containing literal `${...}` text is preserved.
+- **Codex and Gemini** have no runtime interpolation for `env`, so APM resolves `${VAR}`, `${env:VAR}`, and the legacy `<VAR>` there at install time using `os.environ` (or an interactive prompt when missing). Resolved values are not re-scanned, so a value containing literal `${...}` text is preserved.
+- **Cursor** resolves `${env:VAR}` references at runtime. APM translates `${VAR}` and legacy `<VAR>` into that native form in `env`, `args`, and `headers`, so referenced values are not written into the project-local Cursor config. This normalization does not cover `command` or `url`; their existing behavior is unchanged.
 - **Codex `headers` are the exception.** Codex does read a remote server's headers from the environment, through dedicated fields rather than from inside `http_headers`, which it documents as static values. APM writes `Authorization: "Bearer ${VAR}"` as `bearer_token_env_var` and a value that is exactly `${VAR}` as `env_http_headers`; Codex resolves both at server start, so no token is written to `config.toml`. A value Codex cannot express that way -- literal text around the reference, or a shell-style default such as `${VAR:-}` -- is skipped with a warning instead of being written as static text.
 - **Recommended:** Use `${VAR}` or `${env:VAR}` in all new manifests - they work on every target that supports remote MCP servers. `<VAR>` is legacy; in VS Code it would silently render as literal text in the generated config.
 - **Registry-backed servers** - APM auto-generates input prompts from registry metadata only for required variables. Optional variables do not generate prompts or runtime config entries when no value is available. If a user has already edited an optional value in runtime config, reinstall preserves that value rather than overwriting it.
