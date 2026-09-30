@@ -3,38 +3,9 @@ Integrates hook JSON files and referenced scripts during package installation.
 Supports VSCode Copilot (.github/hooks/), Claude Code
 (.claude/settings.json), and Cursor (.cursor/hooks.json) targets.
 
-Hook JSON format (Claude Code  -- nested matcher groups):
-    {
-        "hooks": {
-            "PreToolUse": [
-                {
-                    "hooks": [
-                        {"type": "command", "command": "./scripts/validate.sh", "timeout": 10}
-                    ]
-                }
-            ]
-        }
-    }
-
-Hook JSON format (GitHub Copilot  -- flat arrays with bash/powershell keys):
-    {
-        "version": 1,
-        "hooks": {
-            "preToolUse": [
-                {"type": "command", "bash": "./scripts/validate.sh", "timeoutSec": 10}
-            ]
-        }
-    }
-
-Hook JSON format (Cursor  -- flat arrays with command key):
-    {
-        "version": 1,
-        "hooks": {
-            "afterFileEdit": [
-                {"command": "./hooks/format.sh"}
-            ]
-        }
-    }
+Native handler layouts are declared in the merge-target registry below and
+converted through ``hook_native_formats``: Claude uses nested matcher groups,
+GitHub Copilot accepts bash/powershell commands, and Cursor uses flat commands.
 
 Script path handling:
     - Supported plugin-root aliases -> package-relative path rewritten for target
