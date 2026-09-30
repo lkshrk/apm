@@ -500,12 +500,14 @@ dependencies:
       registry: false
       transport: http
       url: "https://mcp.internal.example.com"
+      enabled: false  # OpenCode only; other targets ignore this field
 
     # Self-defined remote with harness-specific extra keys
     # Unknown keys (e.g. oauth) are passthrough: preserved and written into
     # the generated config for EVERY installed harness. Keys that collide with
     # a modeled or adapter-owned field
-    # (command/url/headers/env/enabled/environment/http_headers/id/...) are rejected.
+    # (command/url/headers/env/environment/http_headers/id/...) are rejected.
+    # Top-level enabled is modeled for OpenCode; extra.enabled remains reserved.
     - name: slack
       registry: false
       transport: http
@@ -514,6 +516,13 @@ dependencies:
         clientId: "<pre-registered-client-id>"
         callbackPort: 3118
 ```
+
+For OpenCode, top-level `enabled` passes the supplied value and JSON type
+unchanged, including `false`, `null`, and non-boolean values. Only omission
+defaults to `true`; OpenCode interprets the value, not APM. Reinstall applies
+changes to this field. OpenCode remains project-only. See the
+[manifest schema](https://microsoft.github.io/apm/reference/manifest-schema/#422-dependenciesmcp)
+for the dependency contract.
 
 MCP Registry v0.1 uses `registryType: oci` for container packages. APM
 maps that type to the Docker launcher automatically, preserves Docker
