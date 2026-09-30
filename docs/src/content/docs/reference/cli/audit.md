@@ -72,8 +72,12 @@ Non-CI JSON also includes `coverage.complete` and `coverage.primitives`.
 Each entry identifies its file, target, primitive kind, structured pointer,
 file-level `tracked` status and prompt-check status (`checked`,
 `not-applicable`, or `incomplete`). Structured findings include their prompt
-pointer; SARIF does not invent a source line for a decoded JSON/TOML string.
-CI reports hook inventory and coverage diagnostics under `content-integrity`.
+pointer. JSON uses `coordinate_space: decoded-prompt`, `decoded_line` and
+`decoded_column` for structured values instead of physical `line`/`column`;
+text and Markdown label these offsets as decoded. SARIF omits a physical region.
+CI JSON stores inventory in `content-integrity.primitive_coverage`, separate
+from violation `details`. SARIF retains it in invocation `primitiveCoverage`
+properties, and text shows discovered hooks even when all checks pass.
 
 ### CI gate
 
@@ -201,7 +205,8 @@ not every file in a skill bundle.
 | OpenCode | `.opencode/agents/*.md`, `commands/*.md`; shared skills | None |
 | Grok Build / Cloud | `.grok/skills/**/SKILL.md`; Build also `rules/*.md`, `agents/*.md`, `commands/*.md` | None |
 | Agent Skills, OpenClaw, Hermes | `.agents/skills/**/SKILL.md` | None |
-| Copilot Cowork / App | Managed skills / `workflows/*.prompt.md` in their resolved native roots | None |
+| Copilot Cowork | `**/SKILL.md` directly under the resolved managed skills root | None |
+| Copilot App | Deployed workflow prompts are SQLite rows, not filesystem primitives; this scan does not cover them | None |
 
 Directory shorthand in a row stays under that row's target root. Shared skills
 use `.agents/skills/**/SKILL.md`. A target's generated context files and
@@ -287,7 +292,7 @@ as metadata repair; see [`apm prune`](../prune/#canonical-deployment-ownership).
 | Code | Meaning |
 |---|---|
 | `0` | Clean, info-only findings, drift-only (advisory) in bare audit, or successful `--strip`. |
-| `1` | Critical findings detected, or an invalid canonical deployment-owner reference in `apm.lock.yaml` (always hard-fails, unlike ordinary drift). |
+| `1` | Critical findings, incomplete primitive coverage (including unreadable parents), refused `--strip` remediation, or an invalid canonical deployment-owner reference in `apm.lock.yaml`. |
 | `2` | Warning-only findings, or usage error (mutually exclusive flags). |
 | `3` | Configuration or infrastructure error (feature not enabled, scanner not found, malformed SARIF). |
 

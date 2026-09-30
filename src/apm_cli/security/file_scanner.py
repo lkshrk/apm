@@ -52,7 +52,7 @@ class CoverageEntry:
 
 
 @dataclass(frozen=True)
-class _FileScanResult:
+class FileScanResult:
     """Findings plus the exact repository-relative files examined."""
 
     findings_by_file: dict[str, list[ScanFinding]]
@@ -69,12 +69,12 @@ class _FileScanResult:
         """Keep shared/structured content out of whole-file Unicode remediation."""
         return frozenset(entry.file for entry in self.inventory if not entry.strippable)
 
-    def merged(self, other: _FileScanResult) -> _FileScanResult:
+    def merged(self, other: FileScanResult) -> FileScanResult:
         """Union scopes, treating ``self`` as the authoritative first scope."""
         return _merge_results((self, other))
 
 
-def _merge_results(results: Iterable[_FileScanResult]) -> _FileScanResult:
+def _merge_results(results: Iterable[FileScanResult]) -> FileScanResult:
     """Union scan evidence in linear time, retaining the first scope's metadata."""
     findings: dict[str, list[ScanFinding]] = {}
     scanned: set[str] = set()
@@ -85,12 +85,12 @@ def _merge_results(results: Iterable[_FileScanResult]) -> _FileScanResult:
         scanned.update(result.scanned_files)
         for entry in result.inventory:
             inventory.setdefault((entry.file, entry.pointer), entry)
-    return _FileScanResult(findings, frozenset(scanned), tuple(inventory.values()))
+    return FileScanResult(findings, frozenset(scanned), tuple(inventory.values()))
 
 
-def _empty_scan() -> _FileScanResult:
+def _empty_scan() -> FileScanResult:
     """Return an empty independent scan result."""
-    return _FileScanResult({}, frozenset())
+    return FileScanResult({}, frozenset())
 
 
 def _is_safe_lockfile_path(rel_path: str, project_root: Path, *, user_scope: bool = False) -> bool:
@@ -102,12 +102,12 @@ def _is_safe_lockfile_path(rel_path: str, project_root: Path, *, user_scope: boo
     return BaseIntegrator.validate_deploy_path(rel_path, project_root, user_scope=user_scope)
 
 
-def _scan_directory_result(dir_path: Path, base_label: str) -> _FileScanResult:
+def _scan_directory_result(dir_path: Path, base_label: str) -> FileScanResult:
     """Recursively scan a directory and label exact project-relative paths."""
     from ..security.gate import REPORT_POLICY, SecurityGate
 
     verdict = SecurityGate.scan_files(dir_path, policy=REPORT_POLICY)
-    return _FileScanResult(
+    return FileScanResult(
         findings_by_file={
             f"{base_label}/{rel_path}": file_findings
             for rel_path, file_findings in verdict.findings_by_file.items()
@@ -184,12 +184,20 @@ def _content_entries(path: Path, surface: PrimitiveSurface) -> tuple[HookContent
 
 
 def _scan_primitive(
-    path: Path, surface: PrimitiveSurface, label: str, *, tracked: bool
-) -> _FileScanResult:
+    path: Path,
+    surface: PrimitiveSurface,
+    label: str,
+    *,
+    tracked: bool,
+    cache: dict[PrimitiveSurface, FileScanResult] | None = None,
+) -> FileScanResult:
     """Check one recognized surface and retain non-applicability/coverage evidence."""
-    if not safe_surface_path(surface, path):
-        return _empty_scan()
+    key = replace(surface, path=path, pattern=None)
     try:
+        if not safe_surface_path(surface, path):
+            return _empty_scan()
+        if cache is not None and key in cache:
+            return cache[key]
         entries = _content_entries(path, surface)
     except (OSError, UnicodeError, ValueError) as exc:
         entries = (
@@ -218,7 +226,7 @@ def _scan_primitive(
                     not surface.shared
                     and not entry.pointer
                     and status == "checked"
-                    and not label.startswith(f"{surface.target}:")
+                    and not surface.external
                 ),
             )
         )
@@ -227,19 +235,21 @@ def _scan_primitive(
                 findings.append(
                     replace(
                         finding,
-                        description=f"{finding.description} (prompt field {entry.pointer})",
                         pointer=entry.pointer,
                     )
                     if entry.pointer
                     else finding
                 )
-    return _FileScanResult(
+    result = FileScanResult(
         {label: findings} if findings else {},
         frozenset({label})
         if any(entry.status == "checked" for entry in inventory)
         else frozenset(),
         tuple(inventory),
     )
+    if cache is not None:
+        cache[key] = result
+    return result
 
 
 def _scan_deployed_trees(
@@ -247,7 +257,8 @@ def _scan_deployed_trees(
     targets: Sequence[TargetProfile] = (),
     *,
     user_scope: bool = False,
-) -> _FileScanResult:
+    cache: dict[PrimitiveSurface, FileScanResult] | None = None,
+) -> FileScanResult:
     """Discover recognized primitives without consulting a deployment baseline."""
     from ..integration.targets import resolve_targets
 
@@ -256,22 +267,24 @@ def _scan_deployed_trees(
         if targets
         else resolve_targets(project_root, user_scope=user_scope, create_config=False)
     )
-    results: list[_FileScanResult] = []
-    visited: set[Path] = set()
+    results: list[FileScanResult] = []
+    cache = {} if cache is None else cache
     for surface in primitive_surfaces(project_root, scoped, user_scope=user_scope):
         try:
             for path in iter_surface_files(surface):
-                if path not in visited:
-                    visited.add(path)
-                    results.append(
-                        _scan_primitive(
-                            path, surface, _label(path, surface, project_root), tracked=False
-                        )
+                results.append(
+                    _scan_primitive(
+                        path,
+                        surface,
+                        _label(path, surface, project_root),
+                        tracked=False,
+                        cache=cache,
                     )
+                )
         except OSError as exc:
             label = _label(surface.path, surface, project_root)
             results.append(
-                _FileScanResult(
+                FileScanResult(
                     {},
                     frozenset(),
                     (
@@ -303,7 +316,8 @@ def _scan_claimed_files(
     targets: Sequence[TargetProfile] = (),
     *,
     user_scope: bool = False,
-) -> _FileScanResult:
+    cache: dict[PrimitiveSurface, FileScanResult] | None = None,
+) -> FileScanResult:
     """Scan one canonical deployment-claim projection."""
     from ..integration.targets import KNOWN_TARGETS
 
@@ -316,7 +330,8 @@ def _scan_claimed_files(
         and not profile.user_root_resolver
     ]
     surfaces = primitive_surfaces(project_root, profiles, user_scope=user_scope)
-    results: list[_FileScanResult] = []
+    results: list[FileScanResult] = []
+    cache = {} if cache is None else cache
     for rel_path, owner in claims.items():
         if package_filter and owner != package_filter:
             continue
@@ -336,13 +351,38 @@ def _scan_claimed_files(
             if decoded is None:
                 continue
             abs_path = decoded
+        candidates = [
+            s
+            for s in surfaces
+            if s.contains(abs_path) or (s.pattern is not None and abs_path.is_relative_to(s.path))
+        ]
+        try:
+            if candidates and not safe_surface_path(candidates[0], abs_path):
+                continue
+            is_directory = abs_path.is_dir()
+        except OSError as exc:
+            if candidates:
+                candidate = candidates[0]
+                results.append(
+                    FileScanResult(
+                        {},
+                        frozenset(),
+                        (
+                            CoverageEntry(
+                                rel_path,
+                                candidate.target,
+                                candidate.kind,
+                                "",
+                                True,
+                                "incomplete",
+                                f"cannot inspect recorded primitive ({type(exc).__name__})",
+                            ),
+                        ),
+                    )
+                )
+            continue
         surface = next(
-            (
-                s
-                for s in surfaces
-                if s.contains(abs_path)
-                or (s.pattern is not None and abs_path.is_dir() and abs_path.is_relative_to(s.path))
-            ),
+            (s for s in candidates if s.contains(abs_path) or is_directory),
             None,
         )
         external = surface is not None and surface.root != project_root
@@ -357,14 +397,12 @@ def _scan_claimed_files(
             surface = PrimitiveSurface(
                 project_root,
                 abs_path,
-                "*.md" if abs_path.is_dir() else None,
+                "*.md" if is_directory else None,
                 "recorded",
-                "document"
-                if abs_path.suffix in {".md", ".mdc"} or abs_path.is_dir()
-                else "executable",
+                "document" if abs_path.suffix in {".md", ".mdc"} or is_directory else "executable",
                 "recorded",
             )
-        if abs_path.is_dir():
+        if is_directory:
             directory_surfaces = [
                 replace(candidate, path=abs_path)
                 if candidate.pattern and abs_path.is_relative_to(candidate.path)
@@ -382,11 +420,12 @@ def _scan_claimed_files(
                                 directory_surface,
                                 _label(path, directory_surface, project_root),
                                 tracked=True,
+                                cache=cache,
                             )
                         )
                 except OSError as exc:
                     results.append(
-                        _FileScanResult(
+                        FileScanResult(
                             {},
                             frozenset(),
                             (
@@ -405,7 +444,11 @@ def _scan_claimed_files(
             continue
         results.append(
             _scan_primitive(
-                abs_path, surface, _label(abs_path, surface, project_root), tracked=True
+                abs_path,
+                surface,
+                _label(abs_path, surface, project_root),
+                tracked=True,
+                cache=cache,
             )
         )
 
@@ -416,7 +459,7 @@ def _scan_lockfile_packages(
     project_root: Path,
     package_filter: str | None = None,
     lockfile: LockFile | None = None,
-) -> _FileScanResult:
+) -> FileScanResult:
     """Collect the exact lockfile-driven scan result."""
     lock = lockfile if lockfile is not None else LockFile.read(get_lockfile_path(project_root))
     if lock is None:
@@ -480,7 +523,7 @@ def scan_project_result(
     include_deployed_trees: bool = True,
     targets: Sequence[TargetProfile] = (),
     user_scope: bool = False,
-) -> _FileScanResult:
+) -> FileScanResult:
     """Return findings, discovery inventory and explicit incomplete coverage."""
     from ..core.deployment_ledger import DeploymentLedgerCodec
     from ..core.scope import get_workspace_deploy_root
@@ -503,7 +546,12 @@ def scan_project_result(
     )
     lock = lockfile if lockfile is not None else LockFile.read(get_lockfile_path(project_root))
     claims = DeploymentLedgerCodec.legacy_deployed_file_claims(lock) if lock else {}
-    result = _scan_claimed_files(deploy_root, claims, package_filter, scoped, user_scope=user_scope)
+    cache: dict[PrimitiveSurface, FileScanResult] = {}
+    result = _scan_claimed_files(
+        deploy_root, claims, package_filter, scoped, user_scope=user_scope, cache=cache
+    )
     if include_deployed_trees:
-        result = result.merged(_scan_deployed_trees(deploy_root, scoped, user_scope=user_scope))
+        result = result.merged(
+            _scan_deployed_trees(deploy_root, scoped, user_scope=user_scope, cache=cache)
+        )
     return result

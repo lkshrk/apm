@@ -6,7 +6,11 @@ baseline checks (``ci_checks``) and policy checks (``policy_checks``).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from apm_cli.security.file_scanner import CoverageEntry
 
 # Check name -> most relevant artifact for SARIF locations.
 _CHECK_ARTIFACT_MAP: dict[str, str] = {
@@ -50,6 +54,7 @@ class CheckResult:
     passed: bool
     message: str  # human-readable description
     details: list[str] = field(default_factory=list)  # individual violations
+    coverage: tuple[CoverageEntry, ...] = ()
 
 
 @dataclass
@@ -76,6 +81,11 @@ class CIAuditResult:
                     "passed": c.passed,
                     "message": c.message,
                     "details": c.details,
+                    **(
+                        {"primitive_coverage": [asdict(entry) for entry in c.coverage]}
+                        if c.coverage
+                        else {}
+                    ),
                 }
                 for c in self.checks
             ],
@@ -140,6 +150,22 @@ class CIAuditResult:
                         },
                     },
                     "results": results,
+                    "invocations": [
+                        {
+                            "executionSuccessful": not any(
+                                entry.status == "incomplete"
+                                for check in self.checks
+                                for entry in check.coverage
+                            ),
+                            "properties": {
+                                "primitiveCoverage": [
+                                    asdict(entry)
+                                    for check in self.checks
+                                    for entry in check.coverage
+                                ],
+                            },
+                        }
+                    ],
                 }
             ],
         }

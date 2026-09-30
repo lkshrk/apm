@@ -260,7 +260,11 @@ unrelated settings, transcripts or caches. Command-only hooks remain visible
 and non-failing; hooks are never executed. Unreadable or unsupported recognized
 content fails with incomplete coverage, including with `--no-drift`/`--no-policy`.
 Non-CI JSON exposes `coverage.complete` and `coverage.primitives`; CI includes
-inventory and diagnostics under `content-integrity`. Tracking is file-level,
+inventory in `content-integrity.primitive_coverage`, separate from violation
+`details`; SARIF uses invocation `primitiveCoverage` properties, including on
+passing checks. Structured findings identify pointers and decoded offsets,
+not physical file line/column positions. Copilot App's SQLite workflow prompts
+are not covered by filesystem discovery. Tracking is file-level,
 not entry ownership or hash verification. Automatic `--strip` refuses
 structured/shared or external-root findings and incomplete coverage without
 rewriting files. Explicit `--file` remains user-directed.

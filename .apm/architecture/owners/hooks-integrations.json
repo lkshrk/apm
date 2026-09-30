@@ -4,7 +4,7 @@
     {
       "id": "audit-primitive-discovery",
       "decision": "Registry-derived deployed primitive discovery and applicable prompt coverage",
-      "owner": "security/primitive_discovery.py (primitive_surfaces), security/file_scanner.py (scan_project_result) through target and native hook contracts",
+      "owner": "security/primitive_discovery.py (primitive_surfaces), security/file_scanner.py (scan_project_result) through target skills_deploy_path and native hook contracts",
       "selectors": [
         "src/apm_cli/security/primitive_discovery.py",
         "src/apm_cli/security/file_scanner.py"

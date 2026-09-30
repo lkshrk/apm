@@ -77,8 +77,9 @@ def test_shared_settings_command_inventory_is_visible_and_non_failing(
     report = json.loads(result.output)
     if ci_mode:
         check = next(c for c in report["checks"] if c["name"] == "content-integrity")
-        assert any("discovered/untracked:" in detail for detail in check["details"])
-        assert any("not-applicable" in detail for detail in check["details"])
+        assert check["details"] == []
+        assert check["primitive_coverage"][0]["tracked"] is False
+        assert check["primitive_coverage"][0]["status"] == "not-applicable"
     else:
         assert report["summary"]["files_scanned"] == 0
         assert report["findings"] == []
@@ -387,24 +388,232 @@ def test_native_formats_apply_only_documented_prompt_fields(
 
 def test_scope_resolved_external_root_and_symlink_boundaries(project: Path) -> None:
     external = project.parent / "external-claude"
-    _write(external, "skills/manual/SKILL.md", _BIDI)
+    _write(external, "manual/SKILL.md", _BIDI)
     _write(
         external,
         "settings.json",
         '{"hooks":{"Stop":[{"hooks":[{"type":"prompt","prompt":"\\u202e"}]}]}}',
     )
     outside = _write(project.parent, "outside/SKILL.md", _BIDI)
-    (external / "skills" / "linked").symlink_to(outside.parent, target_is_directory=True)
+    (external / "linked").symlink_to(outside.parent, target_is_directory=True)
     profile = replace(KNOWN_TARGETS["claude"], resolved_deploy_root=external)
     result = scan_project_result(project, targets=(profile,), user_scope=True)
     assert result.scanned_files == frozenset(
         {
-            "claude:skills/manual/SKILL.md",
+            "claude:manual/SKILL.md",
             "claude:settings.json",
         }
     )
     assert all("linked" not in entry.file for entry in result.inventory)
     assert result.protected_files == result.scanned_files
+
+
+@pytest.mark.parametrize("dirty", [False, True])
+@pytest.mark.parametrize("output_format", ["text", "json", "sarif"])
+def test_ci_inventory_is_informational_on_pass_and_failure(
+    project: Path, dirty: bool, output_format: str
+) -> None:
+    _settings(project)
+    if dirty:
+        _write(project, ".claude/rules/dirty.md", _BIDI)
+    result = CliRunner().invoke(
+        cli,
+        ["audit", "--ci", "--no-policy", "--no-drift", "--no-fail-fast", "--format", output_format],
+    )
+    assert result.exit_code == int(dirty), result.output
+    if output_format == "text":
+        assert "Discovered/untracked:" in result.output
+        assert "not-applicable" in " ".join(result.output.split())
+    elif output_format == "json":
+        check = next(
+            c for c in json.loads(result.output)["checks"] if c["name"] == "content-integrity"
+        )
+        assert any(e["status"] == "not-applicable" for e in check["primitive_coverage"])
+        assert check["details"] == (["unicode: .claude/rules/dirty.md"] if dirty else [])
+    else:
+        run = json.loads(result.output)["runs"][0]
+        entries = run["invocations"][0]["properties"]["primitiveCoverage"]
+        assert any(e["status"] == "not-applicable" for e in entries)
+        assert len(run["results"]) == int(dirty)
+        assert all("not-applicable" not in r["message"]["text"] for r in run["results"])
+
+
+@pytest.mark.parametrize("ci_mode", [False, True])
+def test_incomplete_coverage_sarif_never_claims_success(project: Path, ci_mode: bool) -> None:
+    _write(project, _SETTINGS, '{"hooks":')
+    args = ["audit", "--no-drift", "--format", "sarif"]
+    if ci_mode:
+        args += ["--ci", "--no-policy", "--no-fail-fast"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 1, result.output
+    run = json.loads(result.output)["runs"][0]
+    assert run["invocations"][0]["executionSuccessful"] is False
+    assert len(run["results"]) == 1
+    finding = run["results"][0]
+    assert finding["level"] == "error"
+    if not ci_mode:
+        assert finding["ruleId"] == "apm/audit/incomplete-coverage"
+        assert finding["locations"][0]["physicalLocation"]["artifactLocation"]["uri"] == _SETTINGS
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_denied_parent_reports_incomplete_coverage(
+    project: Path, monkeypatch: pytest.MonkeyPatch, tracked: bool
+) -> None:
+    settings = _settings(project, prompt=True)
+    if tracked:
+        LockFile(local_deployed_files=[_SETTINGS]).write(project / "apm.lock.yaml")
+    lstat = Path.lstat
+
+    def denied(path: Path, *args: object, **kwargs: object) -> os.stat_result:
+        if path == settings:
+            raise PermissionError("fixture parent traversal denied")
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", denied)
+    result = CliRunner().invoke(cli, ["audit", "--no-drift", "--format", "json"])
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.output)
+    assert report["passed"] is False
+    assert report["summary"]["files_scanned"] == 0
+    assert report["findings"] == []
+    assert report["coverage"]["complete"] is False
+    assert any(
+        e["file"] == _SETTINGS and e["tracked"] == tracked for e in report["coverage"]["primitives"]
+    )
+
+
+@pytest.mark.skipif(
+    os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+    reason="requires enforced POSIX directory permissions",
+)
+def test_real_denied_parent_is_not_clean(project: Path) -> None:
+    settings = _settings(project, prompt=True)
+    settings.parent.chmod(0)
+    try:
+        result = CliRunner().invoke(cli, ["audit", "--no-drift", "--format", "json"])
+        assert result.exit_code == 1, result.output
+        report = json.loads(result.output)
+        assert report["coverage"]["complete"] is False
+        assert report["summary"]["files_scanned"] == 0
+    finally:
+        settings.parent.chmod(0o700)
+
+
+@pytest.mark.parametrize("inside", [False, True])
+def test_cowork_installer_root_is_discovered_but_never_stripped(
+    project: Path, monkeypatch: pytest.MonkeyPatch, inside: bool
+) -> None:
+    from apm_cli.integration.skill_integrator import SkillIntegrator
+
+    root = (project if inside else project.parent) / "Documents/Cowork/skills"
+    profile = replace(KNOWN_TARGETS["copilot-cowork"], resolved_deploy_root=root)
+    skill = SkillIntegrator._target_skill_dir(profile, project, "manual") / "SKILL.md"
+    assert skill == root / "manual/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(_BIDI, encoding="utf-8")
+    result = scan_project_result(project, targets=(profile,))
+    assert len(result.scanned_files) == 1
+    assert result.protected_files == result.scanned_files
+    monkeypatch.setattr("apm_cli.integration.targets.resolve_targets", lambda *a, **k: [profile])
+    before = skill.read_bytes()
+    stripped = CliRunner().invoke(cli, ["audit", "--strip"])
+    assert stripped.exit_code == 1, stripped.output
+    assert skill.read_bytes() == before
+    assert "manual/SKILL.md" in " ".join(stripped.output.split())
+
+
+@pytest.mark.parametrize("output_format", ["text", "json", "sarif", "markdown"])
+def test_structured_locations_are_safe_and_not_physical_offsets(
+    project: Path, output_format: str
+) -> None:
+    event = f"Stop{_BIDI}[red]|`"
+    _write(
+        project,
+        _SETTINGS,
+        json.dumps(
+            {"hooks": {event: [{"hooks": [{"type": "prompt", "prompt": f"safe {_BIDI}"}]}]}}
+        ),
+    )
+    result = CliRunner().invoke(cli, ["audit", "--no-drift", "--format", output_format])
+    assert result.exit_code == 1, result.output
+    pointer = f"/hooks/{event}/0/hooks/0/prompt"
+    if output_format == "json":
+        finding = json.loads(result.output)["findings"][0]
+        assert finding["pointer"] == pointer
+        assert finding["coordinate_space"] == "decoded-prompt"
+        assert (finding["decoded_line"], finding["decoded_column"]) == (1, 6)
+        assert "line" not in finding and "column" not in finding
+    elif output_format == "sarif":
+        finding = json.loads(result.output)["runs"][0]["results"][0]
+        assert finding["properties"]["pointer"] == pointer
+        assert "region" not in finding["locations"][0]["physicalLocation"]
+    else:
+        assert _BIDI not in result.output
+        assert "decoded" in result.output
+        if output_format == "markdown":
+            assert r"\[red\]\|\`" in result.output
+
+
+def test_warning_protected_prompt_names_manual_remediation(project: Path) -> None:
+    relative = ".gemini/commands/manual.toml"
+    _write(project, relative, 'prompt = "warn\\u200b"')
+    (project / "apm.yml").write_text("name: audit-contract\nversion: 1.0.0\ntarget: gemini\n")
+    result = CliRunner().invoke(cli, ["audit", "--no-drift"])
+    assert result.exit_code == 2, result.output
+    assert "manually" in result.output
+    stripped = CliRunner().invoke(cli, ["audit", "--strip"])
+    assert stripped.exit_code == 1, stripped.output
+    assert relative + "/prompt" in " ".join(stripped.output.split())
+
+
+@pytest.mark.parametrize("count", [10, 100])
+def test_overlapping_claims_read_each_interpretation_once(
+    project: Path, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    paths = [_write(project, f".claude/skills/item{i}/SKILL.md", _BIDI) for i in range(count)]
+    relative = [path.relative_to(project).as_posix() for path in paths]
+    reads: list[Path] = []
+    read_text = Path.read_text
+
+    def counted(path: Path, *args: object, **kwargs: object) -> str:
+        if path in paths:
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted)
+    result = scan_project_result(
+        project,
+        targets=(KNOWN_TARGETS["claude"],),
+        lockfile=LockFile(local_deployed_files=[".claude/skills/", *relative]),
+    )
+    assert len(reads) == count
+    assert len(result.scanned_files) == count
+    assert all(entry.tracked for entry in result.inventory)
+
+
+@pytest.mark.parametrize("count", [10, 100])
+def test_claim_directory_stat_is_not_per_surface(
+    project: Path, monkeypatch: pytest.MonkeyPatch, count: int
+) -> None:
+    from apm_cli.security.file_scanner import _scan_claimed_files
+
+    paths = {_write(project, f".claude/hooks/scripts/run{i}.py", "pass") for i in range(count)}
+    is_dir = Path.is_dir
+    probes: list[Path] = []
+
+    def counted(path: Path) -> bool:
+        if path in paths:
+            probes.append(path)
+        return is_dir(path)
+
+    monkeypatch.setattr(Path, "is_dir", counted)
+    result = _scan_claimed_files(
+        project, {p.relative_to(project).as_posix(): "." for p in paths}, None
+    )
+    assert len(probes) == count
+    assert len(result.inventory) == count
+    assert all(e.status == "not-applicable" for e in result.inventory)
 
 
 def test_audit_and_failures_preserve_complete_workspace_snapshot(project: Path) -> None:

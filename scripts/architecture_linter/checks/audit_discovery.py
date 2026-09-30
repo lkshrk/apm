@@ -20,8 +20,12 @@ _REQUIRED = {
         "scan_project_result": {"_scan_claimed_files", "_scan_deployed_trees"},
     },
     _DISCOVERY: {
+        "_mapping_surface": {"skills_deploy_path"},
         "primitive_surfaces": {"native_hook_config", "_mapping_surface", "root_context_filename"},
         "safe_surface_path": {"ensure_path_within", "has_symlink_component"},
+    },
+    "src/apm_cli/integration/skill_integrator.py": {
+        "_target_skills_root": {"skills_deploy_path"},
     },
     "src/apm_cli/integration/hook_native_formats.py": {
         "inspect_native_hooks": {"hook_handlers"},

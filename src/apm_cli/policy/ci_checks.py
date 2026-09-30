@@ -525,12 +525,6 @@ def _check_content_integrity(
         user_scope=user_scope,
     )
     findings_by_file = scan.findings_by_file
-    inventory_details = [
-        f"discovered/{'recorded-file' if entry.tracked else 'untracked'}: "
-        f"{entry.file}{entry.pointer} (prompt check: {entry.status})"
-        for entry in scan.inventory
-        if entry.kind == "hooks"
-    ]
 
     # Only critical findings fail this check
     critical_files: list[str] = []
@@ -622,10 +616,10 @@ def _check_content_integrity(
             name="content-integrity",
             passed=True,
             message="No critical hidden Unicode or hash drift detected",
-            details=inventory_details,
+            coverage=scan.inventory,
         )
 
-    details: list[str] = list(inventory_details)
+    details: list[str] = []
     for entry in scan.incomplete:
         details.append(f"incomplete-coverage: {entry.file}{entry.pointer}: {entry.diagnostic}")
     for rel_path in critical_files:
@@ -673,6 +667,7 @@ def _check_content_integrity(
         passed=False,
         message=f"{summary} -- run {remedy}",
         details=details,
+        coverage=scan.inventory,
     )
 
 

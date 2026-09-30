@@ -256,6 +256,26 @@ def test_native_hook_discovery_across_reinstall_update_and_user_scope(
     assert user_instructions.read_bytes() == _BIDI_BYTES
     assert not (lifecycle.project.root / "NEVER_EXECUTE").exists()
 
+    dirty_skill = lifecycle.project.root / ".claude/skills/manual/SKILL.md"
+    dirty_skill.parent.mkdir(parents=True, exist_ok=True)
+    dirty_skill.write_bytes(_BIDI_BYTES)
+    settings["hooks"]["Stop"][0]["hooks"].append({"type": "prompt", "prompt": "\u202e"})
+    settings_path.write_text(json.dumps(settings), encoding="utf-8")
+    mixed_before = LifecycleStateSnapshot.capture(
+        lifecycle.project.root, targets=("claude",), config_paths=configs
+    )
+    refused = _run(
+        lifecycle, ("audit", "--strip"), expected=1, scenario_id="native-hooks-mixed-strip-refusal"
+    )
+    assert "does not rewrite native configuration" in " ".join(refused.stdout.split())
+    assert dirty_skill.read_bytes() == _BIDI_BYTES
+    _assert_same_state(
+        mixed_before,
+        LifecycleStateSnapshot.capture(
+            lifecycle.project.root, targets=("claude",), config_paths=configs
+        ),
+    )
+
 
 def test_unrecorded_unicode_detect_strip_and_idempotent_audit(
     tmp_path: Path,

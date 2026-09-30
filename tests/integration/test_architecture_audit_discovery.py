@@ -37,3 +37,19 @@ def test_guard_rejects_discovery_applicability_or_containment_bypass(old: str, n
     result = run_selected_rules(_ROOT, {_RULE}, source_overrides={_SCANNER: mutated})
     assert result.failures == ()
     assert any(v.rule_id == _RULE and v.path == _SCANNER for v in result.violations)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/apm_cli/security/primitive_discovery.py",
+        "src/apm_cli/integration/skill_integrator.py",
+    ],
+)
+def test_skills_destination_has_one_authority(path: str) -> None:
+    source = (_ROOT / path).read_text(encoding="utf-8")
+    mutated = source.replace("target.skills_deploy_path(", "target.bypass_skills_root(")
+    assert mutated != source
+    result = run_selected_rules(_ROOT, {_RULE}, source_overrides={path: mutated})
+    assert result.failures == ()
+    assert any(v.rule_id == _RULE and v.path == path for v in result.violations)

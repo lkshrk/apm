@@ -338,6 +338,13 @@ class TargetProfile:
             return False
         return primitive in self.primitives
 
+    def skills_deploy_path(self, project_root: Path) -> Path:
+        """Return the actual skills root for static and resolved dynamic targets."""
+        if self.resolved_deploy_root is not None:
+            return self.deploy_path(project_root)
+        mapping = self.primitives["skills"]
+        return project_root / (mapping.deploy_root or self.root_dir) / "skills"
+
     def deploy_path(self, project_root: Path, *parts: str) -> Path:
         """Return the filesystem path for deployment.
 

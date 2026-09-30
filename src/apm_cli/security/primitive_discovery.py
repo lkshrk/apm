@@ -7,6 +7,7 @@ import os
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from stat import S_ISLNK
 
 from apm_cli.compilation.root_context_protection import root_context_filename
 from apm_cli.integration.hook_integrator import native_hook_config
@@ -30,6 +31,7 @@ class PrimitiveSurface:
     format_id: str
     prompt_fields: tuple[str, ...] = ()
     shared: bool = False
+    external: bool = False
 
     def contains(self, path: Path) -> bool:
         """Match a path without walking or resolving user-controlled links."""
@@ -52,7 +54,7 @@ def _mapping_surface(
     )
     if mapping.deploy_root:
         root = project_root
-    path = base / mapping.subdir
+    path = target.skills_deploy_path(project_root) if kind == "skills" else base / mapping.subdir
     if not mapping.subdir:
         if mapping.extension.startswith("."):
             # Root-level aggregate mappings declare exact generated filenames.
@@ -64,7 +66,14 @@ def _mapping_surface(
     else:
         pattern = f"*{mapping.extension}"
     return PrimitiveSurface(
-        root, path, pattern, target.name, kind, mapping.format_id, mapping.prompt_fields
+        root,
+        path,
+        pattern,
+        target.name,
+        kind,
+        mapping.format_id,
+        mapping.prompt_fields,
+        external=root != project_root,
     )
 
 
@@ -91,6 +100,7 @@ def primitive_surfaces(
                     target.name,
                     "context",
                     "markdown",
+                    external=root != project_root,
                 )
             )
         context = root_context_filename(target.compile_family)
@@ -106,6 +116,7 @@ def primitive_surfaces(
                     target.name,
                     "context",
                     "markdown",
+                    external=user_scope and root != project_root,
                 )
             )
         config = native_hook_config(target.name)
@@ -120,6 +131,7 @@ def primitive_surfaces(
                     "hooks",
                     mapping.format_id,
                     shared=True,
+                    external=root != project_root,
                 )
             )
     # Exact shared configs override an identical primitive filename (hooks.json).
@@ -128,11 +140,15 @@ def primitive_surfaces(
 
 def safe_surface_path(surface: PrimitiveSurface, path: Path) -> bool:
     """Apply containment and reject symlinks at every component before reading."""
-    if surface.root.is_symlink() or has_symlink_component(surface.root, path):
+    try:
+        root_linked = S_ISLNK(surface.root.lstat().st_mode)
+    except FileNotFoundError:
+        return False
+    if root_linked or has_symlink_component(surface.root, path, raise_on_error=True):
         return False
     try:
         ensure_path_within(path, surface.root)
-    except (PathTraversalError, OSError, RuntimeError):
+    except (PathTraversalError, RuntimeError):
         return False
     return True
 

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from apm_cli.security.file_scanner import _FileScanResult
+from apm_cli.security.file_scanner import FileScanResult
 
 
 def _make_cfg(tmp_path):
@@ -62,7 +62,7 @@ def _run(tmp_path, fail_on_drift, drift_ret=None):
         patch.object(
             audit_mod,
             "scan_project_result",
-            return_value=_FileScanResult({}, frozenset({"checked.md"})),
+            return_value=FileScanResult({}, frozenset({"checked.md"})),
         ),
         patch.object(audit_mod, "_resolve_fail_on_drift", return_value=fail_on_drift),
         patch("apm_cli.install.drift.render_drift_text", return_value=""),

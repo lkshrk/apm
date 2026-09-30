@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..core.deployment_ledger import DEPLOYMENT_OWNER_REMEDIATION
+from ..utils.diagnostics import printable_ascii_text
 from .content_scanner import ScanFinding
 
 if TYPE_CHECKING:
@@ -24,6 +26,24 @@ def relative_path_for_report(file_path: str) -> str:
         except ValueError:
             return p.name
     return file_path.replace("\\", "/")
+
+
+def finding_location(finding: ScanFinding) -> str:
+    """Distinguish physical source positions from decoded structured prompt offsets."""
+    offset = f"{finding.line}:{finding.column}"
+    return f"{finding.pointer} (decoded {offset})" if finding.pointer else offset
+
+
+def _markdown_cell(value: str) -> str:
+    """Render untrusted labels as printable, literal Markdown table content."""
+    return re.sub(r"([\\`*_{}\[\]<>()|#!])", r"\\\1", printable_ascii_text(value))
+
+
+def _markdown_code(value: str) -> str:
+    """Keep filename code spans literal even when the filename contains backticks."""
+    value = printable_ascii_text(value).replace("|", "\\|")
+    delimiter = "`" * (1 + max((len(run) for run in re.findall(r"`+", value)), default=0))
+    return f"{delimiter} {value} {delimiter}" if "`" in value else f"{delimiter}{value}{delimiter}"
 
 
 # SARIF schema version
@@ -107,8 +127,15 @@ def findings_to_json(
             {
                 "severity": finding.severity,
                 "file": relative_path_for_report(finding.file),
-                "line": finding.line,
-                "column": finding.column,
+                **(
+                    {
+                        "coordinate_space": "decoded-prompt",
+                        "decoded_line": finding.line,
+                        "decoded_column": finding.column,
+                    }
+                    if finding.pointer
+                    else {"line": finding.line, "column": finding.column}
+                ),
                 "codepoint": finding.codepoint,
                 "category": finding.category,
                 "description": finding.description,
@@ -296,14 +323,14 @@ def write_report(report: dict, output_path: Path) -> None:
     """Write a report dict (JSON or SARIF) to a file."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(report, indent=2, ensure_ascii=True) + "\n",
         encoding="utf-8",
     )
 
 
 def serialize_report(report: dict) -> str:
     """Serialize a report dict to a JSON string (for stdout)."""
-    return json.dumps(report, indent=2, ensure_ascii=False)
+    return json.dumps(report, indent=2, ensure_ascii=True)
 
 
 def findings_to_markdown(
@@ -337,9 +364,7 @@ def findings_to_markdown(
                 entry.diagnostic or "",
             )
             coverage_lines.append(
-                "| "
-                + " | ".join(value.replace("|", "\\|").replace("\n", " ") for value in values)
-                + " |"
+                "| " + " | ".join(_markdown_cell(value) for value in values) + " |"
             )
     incomplete = any(entry.status == "incomplete" for entry in coverage)
     if not all_findings and not owner_violations and not incomplete:
@@ -415,10 +440,10 @@ def findings_to_markdown(
         )
         for finding in sorted_findings:
             severity = finding.severity.upper()
-            escaped_desc = finding.description.replace("|", "\\|")
+            escaped_desc = _markdown_cell(finding.description)
             lines.append(
-                f"| {severity} | `{relative_path_for_report(finding.file)}` | "
-                f"{finding.line}:{finding.column} | `{finding.codepoint}` | "
+                f"| {severity} | {_markdown_code(relative_path_for_report(finding.file))} | "
+                f"{_markdown_cell(finding_location(finding))} | `{finding.codepoint}` | "
                 f"{escaped_desc} |"
             )
         lines.extend(

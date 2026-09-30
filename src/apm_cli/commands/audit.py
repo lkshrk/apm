@@ -34,6 +34,7 @@ from ..utils.console import (
     _rich_error,
     _rich_success,
 )
+from ..utils.diagnostics import printable_ascii_text
 
 # -- Shared config --------------------------------------------------
 
@@ -145,6 +146,8 @@ def _render_findings_table(
     verbose: bool = False,
 ) -> None:
     """Render a Rich table of scan findings."""
+    from ..security.audit_report import finding_location, relative_path_for_report
+
     console = _get_console()
 
     # Flatten into rows, sorted by severity (critical first)
@@ -167,8 +170,7 @@ def _render_findings_table(
     if console:
         try:
             from rich.table import Table
-
-            from ..security.audit_report import relative_path_for_report
+            from rich.text import Text
 
             table = Table(
                 title=title,
@@ -179,7 +181,7 @@ def _render_findings_table(
             if has_external:
                 table.add_column("Source", style="cyan", width=14)
             table.add_column("File", style="white")
-            table.add_column("Location", style="dim", width=10)
+            table.add_column("Location", style="dim")
             if has_external:
                 table.add_column("Category", style="bold white")
             else:
@@ -205,13 +207,13 @@ def _render_findings_table(
                 row_cells.extend(
                     [
                         relative_path_for_report(f.file),
-                        f"{f.line}:{f.column}",
+                        finding_location(f),
                         category_or_codepoint,
                         f.description,
                     ]
                 )
                 table.add_row(
-                    *row_cells,
+                    *(Text(printable_ascii_text(cell)) for cell in row_cells),
                     style=sev_styles.get(f.severity, "white"),
                 )
             console.print()
@@ -231,8 +233,10 @@ def _render_findings_table(
         source_part = f" [{_finding_source(f)}]" if has_external else ""
         detail = f.category if has_external else f.codepoint
         _rich_echo(
-            f"  {sev_label:<10}{source_part} {f.file} {f.line}:{f.column}  {detail}  "
-            f"{f.description}",
+            printable_ascii_text(
+                f"  {sev_label:<10}{source_part} {f.file} {finding_location(f)}  {detail}  "
+                f"{f.description}"
+            ),
             color=color,
         )
 
@@ -298,6 +302,11 @@ def _render_summary(
     warning = counts.get("warning", 0)
     info = counts.get("info", 0)
     affected = len(findings_by_file)
+    remedy = (
+        "Review structured or external prompt fields manually; --strip does not rewrite native settings."
+        if any(not entry.strippable and entry.file in findings_by_file for entry in coverage)
+        else "  Review file contents, then run 'apm audit --strip' to remove hidden characters"
+    )
 
     _rich_echo("")
     if critical > 0:
@@ -305,14 +314,10 @@ def _render_summary(
             f"{critical} critical finding(s) in {affected} file(s) -- hidden characters detected"
         )
         logger.progress("  These characters may embed invisible instructions")
-        logger.progress(
-            "Review structured prompt fields manually; --strip does not rewrite native settings."
-            if any(not entry.strippable and entry.status == "checked" for entry in coverage)
-            else "  Review file contents, then run 'apm audit --strip' to remove"
-        )
+        logger.progress(remedy)
     elif warning > 0:
         logger.warning(f"{warning} warning(s) in {affected} file(s) -- hidden characters detected")
-        logger.progress("  Run 'apm audit --strip' to remove hidden characters")
+        logger.progress(remedy)
     elif info > 0:
         logger.progress(
             f"{info} info-level finding(s) in "
@@ -327,13 +332,11 @@ def _render_summary(
 
 def _render_coverage(coverage: tuple[CoverageEntry, ...], logger: CommandLogger) -> None:
     """Keep discovery visible without inventing ownership or unsafe-content findings."""
-    from ..utils.diagnostics import printable_ascii_text
-
     for entry in coverage:
         label = printable_ascii_text(entry.file + entry.pointer)
         if entry.status == "incomplete":
             logger.error(
-                f"Incomplete coverage: {label}: {entry.diagnostic}. "
+                f"Incomplete coverage: {label}: {printable_ascii_text(entry.diagnostic or '')}. "
                 "Review the format or file access and rerun audit."
             )
         elif entry.kind == "hooks":
@@ -480,10 +483,13 @@ def _render_ci_results(ci_result: "CIAuditResult") -> None:
     """Render CI check results as a Rich table (text format)."""
 
     console = _get_console()
+    for check in ci_result.checks:
+        _render_coverage(check.coverage, CommandLogger("audit"))
 
     if console:
         try:
             from rich.table import Table
+            from rich.text import Text
 
             table = Table(
                 title=f"{STATUS_SYMBOLS['search']} APM Policy Compliance",
@@ -500,7 +506,7 @@ def _render_ci_results(ci_result: "CIAuditResult") -> None:
                     if check.passed
                     else f"[red]{STATUS_SYMBOLS['cross']}[/red]"
                 )
-                table.add_row(status, check.name, check.message)
+                table.add_row(status, Text(check.name), Text(printable_ascii_text(check.message)))
 
             console.print()
             console.print(table)
@@ -515,7 +521,7 @@ def _render_ci_results(ci_result: "CIAuditResult") -> None:
                         bold=True,
                     )
                     for detail in check.details:
-                        _rich_echo(f"    - {detail}", color="dim")
+                        _rich_echo(f"    - {printable_ascii_text(detail)}", color="dim")
 
             console.print()
             summary = ci_result.to_json()["summary"]
@@ -540,10 +546,10 @@ def _render_ci_results(ci_result: "CIAuditResult") -> None:
     for check in ci_result.checks:
         symbol = STATUS_SYMBOLS["check"] if check.passed else STATUS_SYMBOLS["cross"]
         color = "green" if check.passed else "red"
-        _rich_echo(f"  {symbol} {check.name}: {check.message}", color=color)
+        _rich_echo(printable_ascii_text(f"  {symbol} {check.name}: {check.message}"), color=color)
         if not check.passed and check.details:
             for detail in check.details:
-                _rich_echo(f"      - {detail}", color="dim")
+                _rich_echo(f"      - {printable_ascii_text(detail)}", color="dim")
 
     _rich_echo("")
     summary = ci_result.to_json()["summary"]
@@ -1000,6 +1006,12 @@ def _audit_content_scan(
         blocked = protected_files.intersection(findings_by_file)
         if blocked or any(entry.status == "incomplete" for entry in coverage):
             _render_coverage(coverage, logger)
+            for entry in coverage:
+                if entry.file in blocked and not entry.strippable:
+                    logger.error_detail(
+                        "Manual review required: "
+                        + printable_ascii_text(entry.file + entry.pointer)
+                    )
             logger.error(
                 "Content was not modified: structured/shared or external prompt findings, or incomplete coverage, "
                 "require manual review. --strip does not rewrite native configuration."
