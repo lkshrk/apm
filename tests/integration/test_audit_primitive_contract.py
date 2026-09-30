@@ -440,6 +440,23 @@ def test_symlink_prompt_is_never_read(project: Path, monkeypatch: pytest.MonkeyP
     assert result.inventory == ()
 
 
+def test_user_scope_claims_keep_tracking_metadata(project: Path) -> None:
+    profile = KNOWN_TARGETS["copilot"].for_scope(user_scope=True)
+    assert profile is not None
+    path = ".copilot/copilot-instructions.md"
+    _write(project, path, _BIDI)
+    result = scan_project_result(
+        project,
+        lockfile=LockFile(local_deployed_files=[path]),
+        targets=(profile,),
+        user_scope=True,
+        include_deployed_trees=False,
+    )
+    assert set(result.findings_by_file) == {path}
+    assert len(result.inventory) == 1
+    assert result.inventory[0].tracked is True
+
+
 @pytest.mark.parametrize("ci_mode", [False, True])
 def test_lockless_cli_still_discovers_prompt_primitives(project: Path, ci_mode: bool) -> None:
     (project / "apm.lock.yaml").unlink()

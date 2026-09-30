@@ -93,13 +93,13 @@ def _empty_scan() -> _FileScanResult:
     return _FileScanResult({}, frozenset())
 
 
-def _is_safe_lockfile_path(rel_path: str, project_root: Path) -> bool:
+def _is_safe_lockfile_path(rel_path: str, project_root: Path, *, user_scope: bool = False) -> bool:
     """Return True if a relative path from the lockfile is safe to read.
 
     Reuses the same logic as ``BaseIntegrator.validate_deploy_path``
     (no ``..``, allowed prefix, resolves within root).
     """
-    return BaseIntegrator.validate_deploy_path(rel_path, project_root)
+    return BaseIntegrator.validate_deploy_path(rel_path, project_root, user_scope=user_scope)
 
 
 def _scan_directory_result(dir_path: Path, base_label: str) -> _FileScanResult:
@@ -346,7 +346,9 @@ def _scan_claimed_files(
             None,
         )
         external = surface is not None and surface.root != project_root
-        if not external and not _is_safe_lockfile_path(safe_path, project_root):
+        if not external and not _is_safe_lockfile_path(
+            safe_path, project_root, user_scope=user_scope
+        ):
             continue
         if not abs_path.exists():
             continue
