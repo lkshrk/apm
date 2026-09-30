@@ -250,7 +250,9 @@ def _all_project_sentinels(project_root: Path) -> tuple[_Sentinel, ...]:
             relative_paths.setdefault(relative, _sentinel_content("project-generated", relative))
         for primitive, mapping in profile.primitives.items():
             relative = _mapping_sentinel_path(profile, primitive, mapping)
-            relative_paths.setdefault(relative, _sentinel_content("project", relative))
+            relative_paths.setdefault(
+                relative, _primitive_sentinel_content("project", relative, mapping)
+            )
     return tuple(
         _Sentinel("workspace", project_root, relative, content)
         for relative, content in sorted(relative_paths.items(), key=lambda item: item[0].as_posix())
@@ -292,7 +294,7 @@ def _all_user_sentinels(
                     _root_id(root_dir),
                     root,
                     relative,
-                    _sentinel_content(f"user-{profile.name}", relative),
+                    _primitive_sentinel_content(f"user-{profile.name}", relative, mapping),
                 ),
             )
     return tuple(
@@ -342,6 +344,23 @@ def _mapping_sentinel_path(
 
 def _sentinel_content(label: str, relative_path: PurePosixPath) -> bytes:
     return _SENTINEL_PREFIX + f"{label}:{relative_path.as_posix()}\n".encode("ascii")
+
+
+def _primitive_sentinel_content(
+    label: str, relative: PurePosixPath, mapping: PrimitiveMapping
+) -> bytes:
+    """Happy-path ownership sentinels must also be valid recognized native content."""
+    marker = _sentinel_content(label, relative).decode("ascii")
+    if mapping.prompt_fields:
+        return "\n".join(
+            f"{field} = {json.dumps(marker)}" for field in mapping.prompt_fields
+        ).encode()
+    if mapping.extension == ".json":
+        document = {"user_sentinel": marker, "hooks": {}}
+        if mapping.format_id == "kiro_hooks":
+            document.update(version="v1", hooks=[])
+        return json.dumps(document).encode()
+    return marker.encode()
 
 
 def _root_id(root_dir: str) -> str:

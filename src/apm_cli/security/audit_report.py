@@ -36,7 +36,7 @@ def finding_location(finding: ScanFinding) -> str:
 
 def _markdown_cell(value: str) -> str:
     """Render untrusted labels as printable, literal Markdown table content."""
-    return re.sub(r"([\\`*_{}\[\]<>()|#!])", r"\\\1", printable_ascii_text(value))
+    return re.sub(r"([\\`*_{}\[\]<>()|#!&])", r"\\\1", printable_ascii_text(value))
 
 
 def _markdown_code(value: str) -> str:

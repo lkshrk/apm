@@ -192,12 +192,33 @@ def _scan_primitive(
     cache: dict[PrimitiveSurface, FileScanResult] | None = None,
 ) -> FileScanResult:
     """Check one recognized surface and retain non-applicability/coverage evidence."""
-    key = replace(surface, path=path, pattern=None)
+    key = replace(
+        surface,
+        path=path,
+        pattern=None,
+        target=surface.target if surface.kind == "hooks" else "",
+    )
     try:
         if not safe_surface_path(surface, path):
             return _empty_scan()
         if cache is not None and key in cache:
-            return cache[key]
+            cached = cache[key]
+            return FileScanResult(
+                {
+                    label: [
+                        replace(finding, file=label)
+                        for findings in cached.findings_by_file.values()
+                        for finding in findings
+                    ]
+                }
+                if cached.findings_by_file
+                else {},
+                frozenset({label}) if cached.scanned_files else frozenset(),
+                tuple(
+                    replace(entry, file=label, target=surface.target, tracked=tracked)
+                    for entry in cached.inventory
+                ),
+            )
         entries = _content_entries(path, surface)
     except (OSError, UnicodeError, ValueError) as exc:
         entries = (
@@ -323,12 +344,12 @@ def _scan_claimed_files(
 
     # Catalog profiles classify historical claims; only selected profiles are
     # enumerated by automatic discovery.
-    profiles = list(targets) + [
+    profiles = [
         profile
         for profile in KNOWN_TARGETS.values()
         if profile.name not in {target.name for target in targets}
         and not profile.user_root_resolver
-    ]
+    ] + list(reversed(targets))
     surfaces = primitive_surfaces(project_root, profiles, user_scope=user_scope)
     results: list[FileScanResult] = []
     cache = {} if cache is None else cache

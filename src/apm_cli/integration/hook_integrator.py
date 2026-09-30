@@ -319,7 +319,6 @@ _MERGE_HOOK_TARGETS: dict[str, _MergeHookConfig] = {
         target_key="cursor",
         require_dir=True,
         top_level_defaults={"version": 1},
-        nested_handlers=False,
     ),
     "codex": _MergeHookConfig(
         config_filename="hooks.json",
@@ -344,7 +343,6 @@ _MERGE_HOOK_TARGETS: dict[str, _MergeHookConfig] = {
         config_filename="hooks.json",
         target_key="windsurf",
         require_dir=True,
-        nested_handlers=False,
     ),
 }
 

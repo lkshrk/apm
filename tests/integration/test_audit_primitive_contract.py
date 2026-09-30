@@ -616,6 +616,123 @@ def test_claim_directory_stat_is_not_per_surface(
     assert all(e.status == "not-applicable" for e in result.inventory)
 
 
+def test_markdown_entities_cannot_reintroduce_hidden_controls(project: Path) -> None:
+    from markdown_it import MarkdownIt
+
+    event = "&rlm;&NewLine;&Tab;&#8238;&#x202e;"
+    _write(
+        project,
+        _SETTINGS,
+        json.dumps({"hooks": {event: [{"hooks": [{"type": "prompt", "prompt": _BIDI}]}]}}),
+    )
+    result = CliRunner().invoke(cli, ["audit", "--no-drift", "--format", "markdown"])
+    assert result.exit_code == 1, result.output
+    parser = MarkdownIt().enable("table")
+    cells = [
+        child.content
+        for token in parser.parse(result.output)
+        for child in token.children or []
+        if child.type == "text" and "/hooks/" in child.content
+    ]
+    assert len(cells) == 2
+    assert all(event in cell for cell in cells)
+    assert all(all(0x20 <= ord(char) <= 0x7E for char in cell) for cell in cells)
+
+
+@pytest.mark.parametrize("targets", [("copilot",), ("copilot", "agent-skills")])
+def test_shared_skills_use_one_interpretation_and_selected_attribution(
+    project: Path, monkeypatch: pytest.MonkeyPatch, targets: tuple[str, ...]
+) -> None:
+    skill = _write(project, ".agents/skills/manual/SKILL.md", _BIDI)
+    read_text = Path.read_text
+    reads: list[Path] = []
+
+    def counted(path: Path, *args: object, **kwargs: object) -> str:
+        if path == skill:
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counted)
+    relative = skill.relative_to(project).as_posix()
+    result = scan_project_result(
+        project,
+        lockfile=LockFile(local_deployed_files=[relative]),
+        targets=tuple(KNOWN_TARGETS[name] for name in targets),
+    )
+    assert reads == [skill]
+    assert len(result.inventory) == 1
+    assert result.inventory[0].target == "copilot"
+    assert result.inventory[0].tracked is True
+
+
+def test_cached_content_rebinds_attribution_without_reparsing(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from apm_cli.security.file_scanner import FileScanResult, _scan_primitive
+    from apm_cli.security.primitive_discovery import PrimitiveSurface
+
+    skill = _write(project, ".agents/skills/manual/SKILL.md", _BIDI)
+    surfaces = [
+        next(s for s in primitive_surfaces(project, (KNOWN_TARGETS[name],)) if s.kind == "skills")
+        for name in ("copilot", "agent-skills")
+    ]
+    cache: dict[PrimitiveSurface, FileScanResult] = {}
+    first = _scan_primitive(skill, surfaces[0], "first", tracked=False, cache=cache)
+
+    def no_read(*args: object, **kwargs: object) -> str:
+        pytest.fail("equivalent cached content was read again")
+
+    monkeypatch.setattr(Path, "read_text", no_read)
+    second = _scan_primitive(skill, surfaces[1], "second", tracked=True, cache=cache)
+    assert first.inventory[0].tracked is False
+    assert second.inventory[0].tracked is True
+    assert second.inventory[0].target == "agent-skills"
+    assert second.scanned_files == frozenset({"second"})
+    assert second.findings_by_file["second"][0].file == "second"
+
+
+@pytest.mark.parametrize("target", ["cursor", "windsurf"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_preserved_nested_command_layout_is_visible_non_prompt(
+    project: Path, target: str, nested: bool
+) -> None:
+    profile = KNOWN_TARGETS[target]
+    path = profile.deploy_path(project, "hooks.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    marker = project / "HOOK_MUST_NOT_RUN"
+    command = {"type": "command", "command": f"touch {marker}{_BIDI}"}
+    entry = {"matcher": "*", "hooks": [command]} if nested else command
+    payload = json.dumps({"version": 1, "hooks": {"PreToolUse": [entry]}})
+    path.write_text(payload, encoding="utf-8")
+    result = scan_project_result(project, targets=(profile,))
+    assert result.incomplete == ()
+    assert result.findings_by_file == {}
+    assert [entry.status for entry in result.inventory] == ["not-applicable"]
+    assert path.read_text() == payload
+    assert not list(project.glob("HOOK_MUST_NOT_RUN*"))
+
+
+@pytest.mark.parametrize("target", ["cursor", "windsurf"])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"hooks":{"Stop":[{"hooks":[{"hooks":[{"command":"ignored"}]}]}]}}',
+        '{"hooks":{"Stop":[{"hooks":[{"type":"unknown","command":"ignored"}]}]}}',
+        '{"hooks":{"Stop":[{"type":"unknown","command":"ignored"}]}}',
+    ],
+)
+def test_preserved_command_layout_still_rejects_extra_depth(
+    project: Path, target: str, payload: str
+) -> None:
+    profile = KNOWN_TARGETS[target]
+    path = profile.deploy_path(project, "hooks.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload)
+    result = scan_project_result(project, targets=(profile,))
+    assert result.incomplete
+    assert result.findings_by_file == {}
+
+
 def test_audit_and_failures_preserve_complete_workspace_snapshot(project: Path) -> None:
     _settings(project, prompt=True)
     _write(project, ".claude/history.jsonl", _BIDI)

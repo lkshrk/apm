@@ -196,12 +196,12 @@ not every file in a skill bundle.
 |---|---|---|
 | Copilot | `.github/instructions/*.instructions.md`, `prompts/*.prompt.md`, `agents/*.agent.md`, `.github/copilot-instructions.md`; shared skills | `.github/hooks/*.json`; commands are non-prompt |
 | Claude | `.claude/rules/*.md`, `agents/*.md`, `commands/*.md`, `skills/**/SKILL.md` | `.claude/hooks/*.json`, `.claude/settings.json`; nested `prompt`/`agent` handlers' `prompt` field |
-| Cursor | `.cursor/rules/*.mdc`, `agents/*.md`, `commands/*.md`; shared skills | `.cursor/hooks/*.json`, `.cursor/hooks.json`; flat command handlers |
+| Cursor | `.cursor/rules/*.mdc`, `agents/*.md`, `commands/*.md`; shared skills | `.cursor/hooks/*.json`, `.cursor/hooks.json`; flat or APM-preserved nested command handlers |
 | Kiro | `.kiro/steering/*.md`, `agents/*.md`, `skills/**/SKILL.md` | `.kiro/hooks/*.json`; v1 `hooks[].action.prompt` for agent actions |
 | Gemini | `.gemini/commands/*.toml`: `prompt`; shared skills | `.gemini/hooks/*.json`, `.gemini/settings.json`; nested command handlers |
 | Codex | `.codex/agents/*.toml`: `developer_instructions`; shared skills | `.codex/hooks.json`; nested command handlers |
 | Antigravity | `.agents/rules/*.md`, skills | `.agents/hooks.json`; named containers, nested tool events and flat other events |
-| Windsurf | `.windsurf/rules/*.md`, `workflows/*.md`; shared skills | `.windsurf/hooks.json`; flat command handlers |
+| Windsurf | `.windsurf/rules/*.md`, `workflows/*.md`; shared skills | `.windsurf/hooks.json`; flat or APM-preserved nested command handlers |
 | OpenCode | `.opencode/agents/*.md`, `commands/*.md`; shared skills | None |
 | Grok Build / Cloud | `.grok/skills/**/SKILL.md`; Build also `rules/*.md`, `agents/*.md`, `commands/*.md` | None |
 | Agent Skills, OpenClaw, Hermes | `.agents/skills/**/SKILL.md` | None |
@@ -251,8 +251,10 @@ or missing APM-owned hooks report `modified`. `unrecorded` findings fail
 
 Drift is whole-project only; `--file` and explicit `PACKAGE` runs skip it.
 Use `--no-drift` to opt out with reduced coverage. In bare `apm audit`, drift
-findings are advisory and do not change the exit code (see
-[Exit codes](#exit-codes)).
+findings are advisory by default. With `security.audit.fail_on_drift: true`,
+a failed drift check (including one that could not run) promotes an otherwise
+clean audit to exit `1`. An advisory cache-miss skip remains non-failing
+(see [Exit codes](#exit-codes)).
 
 Bare `apm audit` keeps replay cache-only, so a cache miss produces an
 informational skip. `apm audit --ci` instead self-hydrates one lock-pinned
@@ -291,8 +293,8 @@ as metadata repair; see [`apm prune`](../prune/#canonical-deployment-ownership).
 
 | Code | Meaning |
 |---|---|
-| `0` | Clean, info-only findings, drift-only (advisory) in bare audit, or successful `--strip`. |
-| `1` | Critical findings, incomplete primitive coverage (including unreadable parents), refused `--strip` remediation, or an invalid canonical deployment-owner reference in `apm.lock.yaml`. |
+| `0` | Clean, info-only findings, advisory drift without `security.audit.fail_on_drift`, an advisory cache-miss skip, or successful `--strip`. |
+| `1` | Critical findings, incomplete primitive coverage (including unreadable parents), refused `--strip` remediation, invalid canonical deployment-owner references, or drift-check failures promoted by `security.audit.fail_on_drift`. |
 | `2` | Warning-only findings, or usage error (mutually exclusive flags). |
 | `3` | Configuration or infrastructure error (feature not enabled, scanner not found, malformed SARIF). |
 
