@@ -97,6 +97,9 @@ class PrimitiveMapping:
     ``format_id`` to perform the transform.
     """
 
+    prompt_fields: tuple[str, ...] = ()
+    """Documented prompt-bearing fields in structured native primitives."""
+
     def __post_init__(self) -> None:
         """Keep ``output_compare`` and :data:`RULE_FORMATS` in lockstep.
 
@@ -686,7 +689,9 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["gemini"],
         root_dir=".gemini",
         primitives={
-            "commands": PrimitiveMapping("commands", ".toml", "gemini_command"),
+            "commands": PrimitiveMapping(
+                "commands", ".toml", "gemini_command", prompt_fields=("prompt",)
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",
@@ -785,7 +790,9 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         capability=TARGET_CAPABILITIES["codex"],
         root_dir=".codex",
         primitives={
-            "agents": PrimitiveMapping("agents", ".toml", "codex_agent"),
+            "agents": PrimitiveMapping(
+                "agents", ".toml", "codex_agent", prompt_fields=("developer_instructions",)
+            ),
             "skills": PrimitiveMapping(
                 "skills",
                 "/SKILL.md",

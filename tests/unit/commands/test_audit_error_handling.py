@@ -31,6 +31,7 @@ from apm_cli.commands.audit import (
     _scan_single_file,
 )
 from apm_cli.security.content_scanner import ScanFinding
+from apm_cli.security.file_scanner import _FileScanResult
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -447,8 +448,10 @@ class TestAuditContentScanBranches:
         with pytest.raises(SystemExit) as exc_info:
             with patch("apm_cli.commands.audit.get_lockfile_path") as mock_lf:
                 mock_lf.return_value = tmp_path / "apm.lock.yaml"
-                with patch("apm_cli.commands.audit.scan_project_files") as mock_scan:
-                    mock_scan.return_value = ({}, 3)
+                with patch("apm_cli.commands.audit.scan_project_result") as mock_scan:
+                    mock_scan.return_value = _FileScanResult(
+                        {}, frozenset({"a.md", "b.md", "c.md"})
+                    )
                     _audit_content_scan(cfg, None, None, strip=True, dry_run=False)
         assert exc_info.value.code == 0
 
@@ -487,8 +490,8 @@ class TestAuditContentScanBranches:
         with pytest.raises(SystemExit) as exc_info:
             with patch("apm_cli.commands.audit.get_lockfile_path") as mock_lf:
                 mock_lf.return_value = lock_file
-                with patch("apm_cli.commands.audit.scan_project_files") as mock_scan:
-                    mock_scan.return_value = ({}, 1)
+                with patch("apm_cli.commands.audit.scan_project_result") as mock_scan:
+                    mock_scan.return_value = _FileScanResult({}, frozenset({"checked.md"}))
                     with patch(
                         "apm_cli.commands.audit._has_actionable_findings", return_value=False
                     ):
@@ -512,8 +515,8 @@ class TestAuditContentScanBranches:
         with pytest.raises(SystemExit) as exc_info:
             with patch("apm_cli.commands.audit.get_lockfile_path") as mock_lf:
                 mock_lf.return_value = lock_file
-                with patch("apm_cli.commands.audit.scan_project_files") as mock_scan:
-                    mock_scan.return_value = ({}, 0)
+                with patch("apm_cli.commands.audit.scan_project_result") as mock_scan:
+                    mock_scan.return_value = _FileScanResult({}, frozenset())
                     _audit_content_scan(cfg, "owner/repo", None, strip=False, dry_run=False)
         assert exc_info.value.code == 0
         logger.warning.assert_called()
@@ -534,8 +537,8 @@ class TestAuditContentScanBranches:
         with pytest.raises(SystemExit):
             with patch("apm_cli.commands.audit.get_lockfile_path") as mock_lf:
                 mock_lf.return_value = lock_file
-                with patch("apm_cli.commands.audit.scan_project_files") as mock_scan:
-                    mock_scan.return_value = ({}, 1)
+                with patch("apm_cli.commands.audit.scan_project_result") as mock_scan:
+                    mock_scan.return_value = _FileScanResult({}, frozenset({"checked.md"}))
                     with patch(
                         "apm_cli.commands.audit._has_actionable_findings", return_value=False
                     ):

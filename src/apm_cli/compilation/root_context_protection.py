@@ -31,6 +31,12 @@ _ROOT_CONTEXT_BY_COMPILE_FAMILY = {
 }
 
 
+def root_context_filename(compile_family: str | None) -> str | None:
+    """Return the known context filename for one catalog compile family."""
+    contract = _ROOT_CONTEXT_BY_COMPILE_FAMILY.get(compile_family)
+    return contract[0] if contract is not None else None
+
+
 def catalog_root_context_markers() -> dict[str, tuple[str, ...]]:
     """Return generated root context filenames implied by the target catalog."""
     markers_by_name: dict[str, tuple[str, ...]] = {}

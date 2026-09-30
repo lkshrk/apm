@@ -253,6 +253,18 @@ descendants, are skipped.
 
 ## Security and audit
 
+Automatic `apm audit` discovers registry-recognized primitive files, including
+untracked native hook definitions in shared settings. It checks prompt
+documents and decoded native prompt fields, not command strings, executables,
+unrelated settings, transcripts or caches. Command-only hooks remain visible
+and non-failing; hooks are never executed. Unreadable or unsupported recognized
+content fails with incomplete coverage, including with `--no-drift`/`--no-policy`.
+Non-CI JSON exposes `coverage.complete` and `coverage.primitives`; CI includes
+inventory and diagnostics under `content-integrity`. Tracking is file-level,
+not entry ownership or hash verification. Automatic `--strip` refuses
+structured/shared or external-root findings and incomplete coverage without
+rewriting files. Explicit `--file` remains user-directed.
+
 | Command | Purpose | Key flags |
 |---------|---------|-----------|
 | `apm audit [PKG]` | Scan installed primitives for hidden Unicode, drift, and lockfile/policy violations | `--file PATH`, `--strip`, `--dry-run`, `-v`, `-f [text\|json\|sarif\|md]`, `-o PATH`, `--ci`, `--policy SOURCE`, `--no-cache`, `--no-fail-fast`, `--no-drift`, `--external NAME` (experimental; ingest a third-party SARIF scanner, e.g. `skillspector`), `--external-sarif PATH`, `--external-llm/--no-external-llm`, `--external-args TEXT` |

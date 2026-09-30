@@ -26,7 +26,7 @@ from ..deps.lockfile import LockFile, get_lockfile_path
 from ..install.locking import serialized_lifecycle_when
 from ..policy._help_text import POLICY_SOURCE_FORMS_HELP
 from ..security.content_scanner import ContentScanner, ScanFinding
-from ..security.file_scanner import scan_project_files
+from ..security.file_scanner import CoverageEntry, scan_project_result
 from ..utils.console import (
     STATUS_SYMBOLS,
     _get_console,
@@ -285,6 +285,8 @@ def _render_summary(
     findings_by_file: dict[str, list[ScanFinding]],
     files_scanned: int,
     logger,
+    *,
+    coverage: tuple[CoverageEntry, ...] = (),
 ) -> None:
     """Render a summary panel with counts."""
     all_findings: list[ScanFinding] = []
@@ -303,7 +305,11 @@ def _render_summary(
             f"{critical} critical finding(s) in {affected} file(s) -- hidden characters detected"
         )
         logger.progress("  These characters may embed invisible instructions")
-        logger.progress("  Review file contents, then run 'apm audit --strip' to remove")
+        logger.progress(
+            "Review structured prompt fields manually; --strip does not rewrite native settings."
+            if any(not entry.strippable and entry.status == "checked" for entry in coverage)
+            else "  Review file contents, then run 'apm audit --strip' to remove"
+        )
     elif warning > 0:
         logger.warning(f"{warning} warning(s) in {affected} file(s) -- hidden characters detected")
         logger.progress("  Run 'apm audit --strip' to remove hidden characters")
@@ -312,11 +318,30 @@ def _render_summary(
             f"{info} info-level finding(s) in "
             f"{affected} file(s) -- unusual characters (use --verbose to see)"
         )
-    else:
+    elif not any(entry.status == "incomplete" for entry in coverage):
         logger.success(f"{files_scanned} file(s) scanned -- no issues found")
 
     if info > 0 and (critical > 0 or warning > 0):
         logger.progress(f"  Plus {info} info-level finding(s) (use --verbose to see)")
+
+
+def _render_coverage(coverage: tuple[CoverageEntry, ...], logger: CommandLogger) -> None:
+    """Keep discovery visible without inventing ownership or unsafe-content findings."""
+    from ..utils.diagnostics import printable_ascii_text
+
+    for entry in coverage:
+        label = printable_ascii_text(entry.file + entry.pointer)
+        if entry.status == "incomplete":
+            logger.error(
+                f"Incomplete coverage: {label}: {entry.diagnostic}. "
+                "Review the format or file access and rerun audit."
+            )
+        elif entry.kind == "hooks":
+            tracking = "recorded-file" if entry.tracked else "untracked"
+            logger.progress(
+                f"Discovered/{tracking}: {label} (prompt check: {entry.status}; "
+                "ownership and hash verification are separate)"
+            )
 
 
 def _render_owner_violations(
@@ -892,6 +917,8 @@ def _audit_content_scan(
     """
     logger = cfg.logger
     project_root = cfg.project_root
+    coverage: tuple[CoverageEntry, ...] = ()
+    protected_files: frozenset[str] = frozenset()
 
     # Resolve effective format (auto-detect from extension when needed)
     effective_format = cfg.output_format
@@ -915,51 +942,44 @@ def _audit_content_scan(
         scan_paths = [project_root]
         # -- Package mode: scan from lockfile --
         lockfile_path = get_lockfile_path(project_root)
-        if not lockfile_path.exists():
-            if not external:
-                logger.progress(
-                    "No apm.lock.yaml found -- nothing to scan. Use --file to scan a specific file."
+        if effective_format == "text":
+            if package:
+                logger.progress(f"Scanning package: {package}")
+            else:
+                logger.start("Scanning installed packages and deployed files...")
+
+        from apm_cli.deps.lockfile import LockfileFormatError
+
+        try:
+            lockfile = LockFile.read(lockfile_path)
+            owner_violations = (
+                DeploymentLedgerCodec.owner_reference_violations(lockfile)
+                if lockfile is not None
+                else ()
+            )
+            scan = scan_project_result(
+                project_root,
+                package_filter=package,
+                lockfile=lockfile,
+                include_deployed_trees=package is None,
+            )
+            findings_by_file = scan.findings_by_file
+            files_scanned = len(scan.scanned_files)
+            coverage = scan.inventory
+            protected_files = scan.protected_files
+        except LockfileFormatError as exc:
+            logger.error(f"Cannot audit invalid apm.lock.yaml: {exc}")
+            sys.exit(1)
+
+        if files_scanned == 0 and not coverage and not external and not owner_violations:
+            if package:
+                logger.warning(
+                    f"Package '{package}' not found in apm.lock.yaml or has no deployed files"
                 )
-                sys.exit(0)
-            # External scanners are an independent source: proceed with an
-            # empty native result set so their findings still surface.
-            findings_by_file, files_scanned = {}, 0
-        else:
+            elif effective_format == "text":
+                logger.progress("No recognized deployed primitives found -- nothing to scan")
             if effective_format == "text":
-                if package:
-                    logger.progress(f"Scanning package: {package}")
-                else:
-                    logger.start("Scanning installed packages and deployed files...")
-
-            from apm_cli.deps.lockfile import LockfileFormatError
-
-            try:
-                lockfile = LockFile.read(lockfile_path)
-                owner_violations = (
-                    DeploymentLedgerCodec.owner_reference_violations(lockfile)
-                    if lockfile is not None
-                    else ()
-                )
-                findings_by_file, files_scanned = scan_project_files(
-                    project_root,
-                    package_filter=package,
-                    lockfile=lockfile,
-                    include_deployed_trees=package is None,
-                )
-            except LockfileFormatError as exc:
-                logger.error(f"Cannot audit invalid apm.lock.yaml: {exc}")
-                sys.exit(1)
-
-            if files_scanned == 0 and not external and not owner_violations:
-                if package:
-                    logger.warning(
-                        f"Package '{package}' not found in apm.lock.yaml or has no deployed files"
-                    )
-                else:
-                    logger.progress("No deployed files found")
                 sys.exit(0)
-        if not lockfile_path.exists():
-            owner_violations = ()
 
     # -- External scanners (opt-in, additive) -----------------------
     if external:
@@ -977,6 +997,14 @@ def _audit_content_scan(
 
     # -- Strip mode --
     if strip:
+        blocked = protected_files.intersection(findings_by_file)
+        if blocked or any(entry.status == "incomplete" for entry in coverage):
+            _render_coverage(coverage, logger)
+            logger.error(
+                "Content was not modified: structured/shared or external prompt findings, or incomplete coverage, "
+                "require manual review. --strip does not rewrite native configuration."
+            )
+            sys.exit(1)
         if owner_violations:
             _render_owner_violations(owner_violations, logger)
             logger.error_detail("Content was not modified while lockfile ownership is invalid.")
@@ -987,7 +1015,9 @@ def _audit_content_scan(
         if dry_run:
             _preview_strip(findings_by_file, logger)
             sys.exit(0)
-        modified = _apply_strip(findings_by_file, project_root, logger)
+        from ..core.scope import get_workspace_deploy_root
+
+        modified = _apply_strip(findings_by_file, get_workspace_deploy_root(project_root), logger)
         if modified > 0:
             logger.success(f"Cleaned {modified} file(s)")
         else:
@@ -1057,7 +1087,7 @@ def _audit_content_scan(
     else:
         all_findings = [f for ff in findings_by_file.values() for f in ff]
         exit_code = 1 if ContentScanner.has_critical(all_findings) else 2
-    if owner_violations:
+    if owner_violations or any(entry.status == "incomplete" for entry in coverage):
         exit_code = 1
 
     # Bare `apm audit` is advisory for drift by default: drift findings are
@@ -1081,9 +1111,10 @@ def _audit_content_scan(
             sys.exit(1)
         if findings_by_file:
             _render_findings_table(findings_by_file, verbose=cfg.verbose)
-            _render_summary(findings_by_file, files_scanned, logger)
+            _render_summary(findings_by_file, files_scanned, logger, coverage=coverage)
         elif not owner_violations:
-            _render_summary(findings_by_file, files_scanned, logger)
+            _render_summary(findings_by_file, files_scanned, logger, coverage=coverage)
+        _render_coverage(coverage, logger)
         _render_owner_violations(owner_violations, logger)
         if not file_path:
             _render_canvas_note(cfg.project_root, package, logger)
@@ -1099,6 +1130,7 @@ def _audit_content_scan(
             findings_by_file,
             files_scanned=files_scanned,
             owner_violations=owner_violations,
+            coverage=coverage,
         )
         if cfg.output_path:
             Path(cfg.output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -1119,6 +1151,7 @@ def _audit_content_scan(
                 findings_by_file,
                 files_scanned=files_scanned,
                 owner_violations=owner_violations,
+                coverage=coverage,
             )
         else:
             report = findings_to_json(
@@ -1126,6 +1159,7 @@ def _audit_content_scan(
                 files_scanned=files_scanned,
                 exit_code=exit_code,
                 owner_violations=owner_violations,
+                coverage=coverage,
             )
 
         if cfg.output_path:

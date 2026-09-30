@@ -197,7 +197,13 @@ This prevents lockfile membership from shrinking silently. Shared merge-hook
 targets and sidecars remain exempt because APM merges into user-owned files
 rather than claiming them.
 
-A whole-project scan checks **every regular file under the deploy directories your targets govern** (primitive directories such as `.claude/skills/` and generated files, not the whole target root) for hidden Unicode, unioned with every file recorded in `apm.lock.yaml`, so a recorded path outside those directories such as `.claude/settings.json` stays covered. Hash verification and positional `PACKAGE` scans remain lockfile-scoped because they need recorded ownership. Source content under `.apm/` is not added by the deploy-tree walk; install-time scanning owns that surface, while any `.apm/` path already recorded in the lockfile remains covered.
+A whole-project scan discovers **recognized primitive filenames and patterns**
+from resolved target profiles, unioned with recorded paths in `apm.lock.yaml`.
+Both paths apply the same prompt/non-prompt distinction, including shared native
+settings. Hash verification and positional `PACKAGE` scans remain
+lockfile-scoped. Source content under `.apm/` is not added by discovery;
+install-time scanning owns that surface, while recorded prompt documents remain
+covered.
 
 CI and remediation are separate commands because `--ci` and `--strip` are mutually exclusive:
 
@@ -220,6 +226,17 @@ Both bare `apm audit` and `apm audit --ci` fail closed on stale canonical
 deployment owners; see
 [Baseline CI checks](../../reference/baseline-checks/#deployment-ledger-owners)
 for the boundary and remediation.
+
+Automatic audit separates discovery from prompt checks. It inventories
+recognized hook definitions, including untracked entries in shared native
+settings, but scans only documented prompt fields and prompt documents.
+Commands, executables and unrelated settings are not prompt content; hooks
+are never executed. Transcripts, history and caches are not walked.
+Unreadable or unsupported recognized content exits nonzero with incomplete
+coverage, not an unsafe-content verdict. File tracking does not establish
+entry ownership or a hash baseline. Shared/structured settings and external
+roots are not automatically rewritten by `--strip`; review them manually.
+See [Discovery and prompt coverage](../../reference/cli/audit/#discovery-and-prompt-coverage).
 
 :::tip[External scanners (Experimental)]
 `apm audit` can also ingest findings from **third-party SARIF scanners** (Semgrep, CodeQL, NVIDIA SkillSpector, etc.) so a single audit run reports both APM's native findings and external tool results. See [External scanners](../../integrations/external-scanners/) for setup.

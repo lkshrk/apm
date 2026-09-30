@@ -15,7 +15,7 @@ apm audit [PACKAGE] [OPTIONS]
 
 `apm audit` is the explicit security and integrity tool. It runs in two modes:
 
-- **Content scan mode** (default). Scans deployed files across the project for hidden Unicode, including governed files absent from the lockfile and lockfile-recorded files outside the current target directories. It replays the install pipeline into a scratch tree to detect drift (hand-edits to deployed files, missing integrations, orphaned files vs the lockfile). Can also remediate findings with `--strip` or scan an arbitrary file with `--file`.
+- **Content scan mode** (default). Discovers recognized deployed primitives and checks applicable prompt content for hidden Unicode, including untracked primitives and recorded files outside currently selected target directories. It replays the install pipeline into a scratch tree to detect drift (hand-edits to deployed files, missing integrations, orphaned files vs the lockfile). Can also remediate regular prompt documents with `--strip` or scan an arbitrary file with `--file`.
 - **CI gate mode** (`--ci`). Runs lockfile consistency checks plus drift in machine-readable form (text, JSON, or SARIF) suitable for branch-protection gates. When `apm_modules/` is absent but `apm.lock.yaml` is present, CI mode self-hydrates a lock-pinned scratch install for `config-consistency` and drift without mutating the checkout. Auto-discovers org policy from your project's git remote unless `--no-policy` is set.
 
 Global audit also checks resolved external deployment roots such as
@@ -67,6 +67,13 @@ boolean (`exit_code == 0`), alongside the existing `summary` and finding
 list. Deployment-owner integrity findings render in every format --
 text, JSON, SARIF, and markdown -- as a `deployment-owner` category entry
 naming the locator, its invalid owner(s), and the remediation.
+
+Non-CI JSON also includes `coverage.complete` and `coverage.primitives`.
+Each entry identifies its file, target, primitive kind, structured pointer,
+file-level `tracked` status and prompt-check status (`checked`,
+`not-applicable`, or `incomplete`). Structured findings include their prompt
+pointer; SARIF does not invent a source line for a decoded JSON/TOML string.
+CI reports hook inventory and coverage diagnostics under `content-integrity`.
 
 ### CI gate
 
@@ -168,6 +175,54 @@ apm audit --ci -f sarif -o audit.sarif
 For the full workflow, see [Enforce in CI](../../../enterprise/enforce-in-ci/).
 
 ## Behavior
+
+### Discovery and prompt coverage
+
+Whole-project audit discovers recognized primitives even without a lockfile.
+Discovery is not a safety verdict: command-only hooks are listed as
+discovered/untracked when appropriate, without failing the prompt check.
+`tracked` means a file claim exists, not that every entry in a shared file
+is APM-owned or hash-verified. Hash and ownership checks remain independent.
+
+The target registry supplies the following project patterns. Patterns are
+recursive inside their named directory; skill entry points are `SKILL.md`,
+not every file in a skill bundle.
+
+| Target | Prompt documents/fields | Hook definitions |
+|---|---|---|
+| Copilot | `.github/instructions/*.instructions.md`, `prompts/*.prompt.md`, `agents/*.agent.md`, `.github/copilot-instructions.md`; shared skills | `.github/hooks/*.json`; commands are non-prompt |
+| Claude | `.claude/rules/*.md`, `agents/*.md`, `commands/*.md`, `skills/**/SKILL.md` | `.claude/hooks/*.json`, `.claude/settings.json`; nested `prompt`/`agent` handlers' `prompt` field |
+| Cursor | `.cursor/rules/*.mdc`, `agents/*.md`, `commands/*.md`; shared skills | `.cursor/hooks/*.json`, `.cursor/hooks.json`; flat command handlers |
+| Kiro | `.kiro/steering/*.md`, `agents/*.md`, `skills/**/SKILL.md` | `.kiro/hooks/*.json`; v1 `hooks[].action.prompt` for agent actions |
+| Gemini | `.gemini/commands/*.toml`: `prompt`; shared skills | `.gemini/hooks/*.json`, `.gemini/settings.json`; nested command handlers |
+| Codex | `.codex/agents/*.toml`: `developer_instructions`; shared skills | `.codex/hooks.json`; nested command handlers |
+| Antigravity | `.agents/rules/*.md`, skills | `.agents/hooks.json`; named containers, nested tool events and flat other events |
+| Windsurf | `.windsurf/rules/*.md`, `workflows/*.md`; shared skills | `.windsurf/hooks.json`; flat command handlers |
+| OpenCode | `.opencode/agents/*.md`, `commands/*.md`; shared skills | None |
+| Grok Build / Cloud | `.grok/skills/**/SKILL.md`; Build also `rules/*.md`, `agents/*.md`, `commands/*.md` | None |
+| Agent Skills, OpenClaw, Hermes | `.agents/skills/**/SKILL.md` | None |
+| Copilot Cowork / App | Managed skills / `workflows/*.prompt.md` in their resolved native roots | None |
+
+Directory shorthand in a row stays under that row's target root. Shared skills
+use `.agents/skills/**/SKILL.md`. A target's generated context files and
+compile-family root file (`AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`) are also
+recognized. Global audit uses scope-resolved profiles instead: for example
+Copilot's root becomes `~/.copilot` with the exact `copilot-instructions.md`
+aggregate, and Claude/Hermes respect their configured external roots.
+Primitives unsupported in user scope are not discovered there.
+
+Only documented prompt fields are decoded and checked in structured formats.
+Command strings, referenced scripts, unrelated settings, ownership sidecars,
+transcripts, history and caches are excluded from prompt scanning; hooks are
+never executed. A recorded script remains non-prompt. Recognized unreadable,
+malformed or unsupported content produces **incomplete coverage and exit 1**,
+not a malicious-content finding or a clean result. This also applies with
+`--no-drift` and `--no-policy`.
+
+`--strip` refuses automatic remediation when findings involve structured/shared
+configuration or external-root content, or coverage is incomplete; it leaves
+all files unchanged. Review those files manually. Explicit `--file` retains
+its user-directed whole-file scan and remediation behavior.
 
 ### Severity levels (content scan)
 

@@ -2,6 +2,16 @@
   "version": 1,
   "owners": [
     {
+      "id": "audit-primitive-discovery",
+      "decision": "Registry-derived deployed primitive discovery and applicable prompt coverage",
+      "owner": "security/primitive_discovery.py (primitive_surfaces), security/file_scanner.py (scan_project_result) through target and native hook contracts",
+      "selectors": [
+        "src/apm_cli/security/primitive_discovery.py",
+        "src/apm_cli/security/file_scanner.py"
+      ],
+      "guards": ["audit-primitive-discovery"]
+    },
+    {
       "id": "mcp-target-selection-precedence",
       "decision": "MCP target-selection precedence",
       "owner": "integration/mcp_integrator_install.py (_resolve_target_runtimes)",

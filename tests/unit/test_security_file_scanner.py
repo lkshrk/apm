@@ -183,25 +183,18 @@ class TestScanLockfilePackages:
         dir_path = tmp_path / ".github" / "skills" / "pkg"
         dir_path.mkdir(parents=True)
 
-        mock_findings = {"inner.md": [MagicMock()]}
-        mock_verdict = MagicMock()
-        mock_verdict.findings_by_file = mock_findings
-        mock_verdict.files_scanned = 2
-        mock_verdict.scanned_files = frozenset({"inner.md", "clean.md"})
+        (dir_path / "inner.md").write_text("hidden \u202e", encoding="utf-8")
+        (dir_path / "clean.md").write_text("clean", encoding="utf-8")
+        (dir_path / "run.py").write_text("# hidden \u202e", encoding="utf-8")
 
         dep = _make_dep([".github/skills/pkg/"])
         lock = _make_lockfile({"pkg": dep})
 
-        with (
-            patch("apm_cli.security.file_scanner.LockFile.read", return_value=lock),
-            patch(
-                "apm_cli.security.gate.SecurityGate.scan_files",
-                return_value=mock_verdict,
-            ),
-        ):
-            _findings, count = scan_lockfile_packages(tmp_path)
+        with patch("apm_cli.security.file_scanner.LockFile.read", return_value=lock):
+            findings, count = scan_lockfile_packages(tmp_path)
 
         assert count == 2
+        assert set(findings) == {".github/skills/pkg/inner.md"}
 
     def test_package_filter_limits_scan(self, tmp_path: Path) -> None:
         file_a = tmp_path / ".github" / "prompts" / "a.md"
