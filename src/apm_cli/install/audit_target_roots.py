@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import replace
 from pathlib import Path
 
 from apm_cli.core.scope import InstallScope, get_deploy_root, get_modules_dir
 from apm_cli.integration.targets import TargetProfile
+from apm_cli.utils.atomic_io import write_text_lf
 from apm_cli.utils.path_security import PathTraversalError, ensure_path_within
 
 _EXTERNAL_REPLAY_ROOT = ".apm-audit-targets"
@@ -16,6 +19,56 @@ def replay_modules_root(scratch_root: Path, *, user_scope: bool) -> Path:
     """Project the canonical scope's deployment source layout into scratch."""
     scope = InstallScope.USER if user_scope else InstallScope.PROJECT
     return scratch_root / get_modules_dir(scope).relative_to(get_deploy_root(scope))
+
+
+def _project_runtime_paths(value, replacements: list[tuple[str, str]]):
+    """Rewrite one JSON value using only its target's path frame."""
+    if isinstance(value, str):
+        for source, destination in replacements:
+            value = (
+                destination if value == source else value.replace(source + "/", destination + "/")
+            )
+        return value
+    if isinstance(value, list):
+        return [_project_runtime_paths(item, replacements) for item in value]
+    if isinstance(value, dict):
+        return {key: _project_runtime_paths(item, replacements) for key, item in value.items()}
+    return value
+
+
+def canonicalize_omp_hook_replay(
+    scratch_root: Path,
+    project_root: Path,
+    targets: list[TargetProfile],
+    live_targets: list[TargetProfile],
+    package_roots: dict[Path, Path],
+) -> None:
+    """Project scratch-only runtime paths into the live frame before comparison.
+
+    Both the descriptor and ownership sidecar are rewritten so ownership matching
+    remains exact. Only scratch output changes; live handler commands and runtime
+    metadata still participate in the normal owned-entry drift comparison.
+    """
+    live_by_replay_root = {replay_target(target).root_dir: target for target in live_targets}
+    for target in targets:
+        if target.name != "omp" or "hooks" not in target.primitives:
+            continue
+        replay_root = ensure_path_within(target.deploy_path(scratch_root), scratch_root)
+        live_root = live_by_replay_root[target.root_dir].deploy_path(project_root)
+        replacements = {
+            str(source.resolve()): str(destination.resolve())
+            for source, destination in {**package_roots, replay_root: live_root}.items()
+            if source.resolve() != destination.resolve()
+        }
+        ordered = sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True)
+
+        for name in ("hooks.json", "apm-hooks.json"):
+            path = replay_root / name
+            if path.is_file():
+                document = json.loads(path.read_text(encoding="utf-8"))
+                write_text_lf(
+                    path, json.dumps(_project_runtime_paths(document, ordered), indent=2) + "\n"
+                )
 
 
 def governed_root_dirs(targets: list[TargetProfile] | None) -> set[str]:
@@ -45,21 +98,26 @@ def governed_root_dirs(targets: list[TargetProfile] | None) -> set[str]:
 
 
 def canvas_deploy_prefixes(targets: list[TargetProfile] | None) -> set[str]:
-    """Return ``root/subdir/`` prefixes for every target carrying a canvas mapping.
+    """Return deployment prefixes for Copilot canvas bundles omitted by replay."""
+    return _primitive_deploy_prefixes(targets, "canvas")
 
-    Used to exclude canvas extension deploy paths from drift comparison
-    (the replay deliberately does not re-integrate canvases).
-    """
+
+def extension_deploy_prefixes(targets: list[TargetProfile] | None) -> set[str]:
+    """Return deployment prefixes for native extension bundles omitted by replay."""
+    return _primitive_deploy_prefixes(targets, "extensions")
+
+
+def _primitive_deploy_prefixes(targets: list[TargetProfile] | None, primitive: str) -> set[str]:
     prefixes: set[str] = set()
     for target in targets or []:
-        mapping = getattr(target, "primitives", {}).get("canvas")
+        mapping = getattr(target, "primitives", {}).get(primitive)
         if mapping is None:
             continue
         effective_root = mapping.deploy_root or target.root_dir
         if mapping.subdir:
-            prefixes.add(f"{effective_root}/{mapping.subdir}/")
+            prefixes.add((Path(effective_root) / mapping.subdir).as_posix().rstrip("/") + "/")
         else:
-            prefixes.add(f"{effective_root}/")
+            prefixes.add(Path(effective_root).as_posix().rstrip("/") + "/")
     return prefixes
 
 
@@ -69,14 +127,58 @@ def replay_target(target: TargetProfile) -> TargetProfile:
         return target
     return replace(
         target,
-        root_dir=f"{_EXTERNAL_REPLAY_ROOT}/{target.name}",
+        root_dir=_external_replay_relative_root(target).as_posix(),
         resolved_deploy_root=None,
     )
 
 
 def external_replay_root(scratch_root: Path, target: TargetProfile) -> Path:
     """Return the scratch projection root for an external target."""
-    return scratch_root / _EXTERNAL_REPLAY_ROOT / target.name
+    return scratch_root / _external_replay_relative_root(target)
+
+
+def _external_replay_relative_root(target: TargetProfile) -> Path:
+    root = Path(_EXTERNAL_REPLAY_ROOT) / target.name
+    if target.name == "omp" and target.managed_deploy_root is not None:
+        # One lock can retain distinct historical native roots. Never replay
+        # their independent configs into the same scratch directory.
+        identity = str(target.managed_deploy_root).encode("utf-8")
+        root /= hashlib.sha256(identity).hexdigest()
+    return root
+
+
+def replay_targets_for_owner(
+    targets: list[TargetProfile],
+    live_targets: list[TargetProfile],
+    lockfile,
+    deployment_root: Path,
+    dependency_key: str,
+) -> list[TargetProfile]:
+    """Restrict replayed omp targets to the native roots the ledger recorded for one owner."""
+    from apm_cli.integration.extension_roots import recorded_omp_roots
+
+    owner_roots = recorded_omp_roots(lockfile, deployment_root, dependency_keys={dependency_key})
+    native_live_roots = {
+        replay_target(target).root_dir: target.deploy_path(deployment_root)
+        for target in live_targets
+        if target.name == "omp"
+    }
+    return [
+        target
+        for target in targets
+        if target.name != "omp"
+        or not owner_roots
+        or native_live_roots[target.root_dir] in owner_roots
+    ]
+
+
+def omp_hook_runtime_paths(targets: list[TargetProfile]) -> set[str]:
+    """Return omp hook runtime metadata paths that scratch replay never projects."""
+    return {
+        (Path(target.root_dir) / "apm-hooks-runtime.json").as_posix()
+        for target in targets
+        if target.name == "omp" and "hooks" in target.primitives
+    }
 
 
 def external_target_relative_roots(target: TargetProfile) -> set[str]:
@@ -93,6 +195,14 @@ def external_target_relative_roots(target: TargetProfile) -> set[str]:
         elif mapping.extension:
             roots.add(mapping.extension.lstrip("/"))
     roots.update(Path(path).parts[0] for path in target.generated_files if Path(path).parts)
+    from apm_cli.install.manifest_reconcile import merge_hook_config_projection_specs
+
+    for config, (sidecar, _container) in merge_hook_config_projection_specs(
+        [replace(target, root_dir=".", resolved_deploy_root=None)]
+    ).items():
+        roots.update((Path(config).parts[0], Path(sidecar).parts[0]))
+    if target.name == "omp" and target.supports("hooks"):
+        roots.add("apm-hooks-runtime.json")
     return roots
 
 

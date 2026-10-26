@@ -57,6 +57,62 @@ def _optional_source_directory(root: Path) -> bool | None:
         return None
 
 
+def _native_plugin_source_paths(source_root: Path, native_plugin_root: Path) -> Iterator[Path]:
+    """Yield every path of a native plugin, rejecting unsafe paths before any is admitted."""
+    from apm_cli.integration.base_integrator import BaseIntegrator
+
+    if native_plugin_root != source_root:
+        raise ValueError("Native source plan must use the admitted package root.")
+    for parent, directories, files in BaseIntegrator.walk_source_tree(source_root):
+        for name in (*directories, *files):
+            path = Path(parent) / name
+            if not _is_safe_source_path(path, source_root):
+                raise ValueError(
+                    "Native plugin contains an unsafe path or symlink; "
+                    "a live loader cannot honor partial source exclusions."
+                )
+            yield path
+        directories[:] = [name for name in directories if name != ".git"]
+
+
+def _native_extension_source_files(
+    source_root: Path, *, is_first_party: bool, approved: bool
+) -> Iterator[Path]:
+    """Discover native extension bundles; yield their deployable files once approved.
+
+    Discovery always runs so malformed bundles fail before any write. Approved
+    bundles are enumerated completely: a path-safety failure aborts instead of
+    deploying a partial executable bundle.
+    """
+    from apm_cli.integration.base_integrator import BaseIntegrator
+    from apm_cli.integration.extension_discovery import find_extension_bundles
+
+    bundles = find_extension_bundles(source_root, is_first_party=is_first_party)
+    if not approved:
+        return
+    from apm_cli.integration.extension_integrator import _IGNORED_DIRS, RECEIPT_FILENAME
+
+    for bundle in bundles:
+        # Native modules may import arbitrary package-relative resources.
+        # Do not silently deploy a partial executable bundle.
+        for parent, directories, files in BaseIntegrator.walk_source_tree(bundle.source_root):
+            directories[:] = [
+                name
+                for name in directories
+                if name not in _IGNORED_DIRS
+                and not (Path(parent) / name / RECEIPT_FILENAME).is_file()
+            ]
+            for name in (*directories, *files):
+                if not _is_safe_source_path(Path(parent) / name, source_root):
+                    raise ValueError(
+                        "Native extension contains an unsafe path or symlink; "
+                        "a live loader cannot honor partial source exclusions."
+                    )
+            for name in files:
+                if name not in (MARKER_FILENAME, RECEIPT_FILENAME):
+                    yield Path(parent) / name
+
+
 @dataclass(frozen=True)
 class DeployableSourcePlan:
     """Authorized sources plus a skill-scoped discovery witness.
@@ -98,6 +154,8 @@ class DeployableSourcePlan:
         hooks_approved: bool,
         canvas_approved: bool,
         skip_bin: bool,
+        extensions_approved: bool = False,
+        is_first_party: bool = False,
         plugin_bin_deployable: bool = False,
         native_plugin_root: Path | None = None,
         diagnostics: DiagnosticCollector | None = None,
@@ -223,29 +281,28 @@ class DeployableSourcePlan:
             hook_source_selection = HookIntegrator.select_deployable_hook_sources(
                 source_root,
                 hook_target_names,
+                is_first_party=is_first_party,
             )
             for path in hook_source_selection.files:
                 add_file(path)
 
         if native_plugin_root is not None:
-            if native_plugin_root != source_root:
-                raise ValueError("Native source plan must use the admitted package root.")
-            for parent, directories, files in BaseIntegrator.walk_source_tree(source_root):
-                for name in (*directories, *files):
-                    path = Path(parent) / name
-                    if not _is_safe_source_path(path, source_root):
-                        raise ValueError(
-                            "Native plugin contains an unsafe path or symlink; "
-                            "a live loader cannot honor partial source exclusions."
-                        )
-                    add_file(path)
-                directories[:] = [name for name in directories if name != ".git"]
+            for path in _native_plugin_source_paths(source_root, native_plugin_root):
+                add_file(path)
 
         if canvas_approved and "canvas" in target_primitives:
             from apm_cli.integration.canvas_integrator import CanvasIntegrator
 
             for bundle in CanvasIntegrator.find_canvas_bundles(source_root):
                 add_tree(bundle)
+
+        if "extensions" in target_primitives:
+            for path in _native_extension_source_files(
+                source_root,
+                is_first_party=is_first_party,
+                approved=extensions_approved,
+            ):
+                add_file(path)
 
         if "skills" in target_primitives:
             from apm_cli.models.apm_package import PackageType

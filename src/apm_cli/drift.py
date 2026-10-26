@@ -255,7 +255,7 @@ def should_force_ref_recheck(
 
     This is the single gate shared by the dependency resolver and its download
     callback. A normal install rechecks only manifest/lock drift. An explicit
-    update rechecks semver ranges and hook-only packages. Hook replacements
+    update rechecks semver ranges and executable-only packages. Replacements
     must pass staged admission before any live content is replaced.
     """
     if locked_dep is not None and not locked_dep.matches_replacement(dep_ref):
@@ -279,7 +279,7 @@ def should_force_ref_recheck(
             from apm_cli.models.validation import PackageType, detect_package_type
 
             package_type, _ = detect_package_type(package_path)
-            if package_type is PackageType.HOOK_PACKAGE:
+            if package_type in (PackageType.HOOK_PACKAGE, PackageType.EXTENSION_PACKAGE):
                 return True
         return False
     return detect_ref_change(dep_ref, locked_dep, update_refs=False)

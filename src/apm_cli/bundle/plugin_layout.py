@@ -55,6 +55,6 @@ PLUGIN_LAYOUT: dict[str, PluginDirSpec] = {
     "skills": PluginDirSpec("skills", ("skills",), _identity),
     "commands": PluginDirSpec("commands", ("commands", "prompts"), plugin_command_prompt_name),
     "instructions": PluginDirSpec("instructions", ("instructions",), _identity),
-    "extensions": PluginDirSpec("extensions", ("canvas",), _identity),
+    "extensions": PluginDirSpec("extensions", ("extensions", "canvas"), _identity),
     "hooks": PluginDirSpec("hooks", ("hooks",), _identity),
 }

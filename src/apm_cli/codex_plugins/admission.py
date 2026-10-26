@@ -14,7 +14,12 @@ from apm_cli.install.native_plugin_admission import (
     record_native_exec_status,
 )
 from apm_cli.models.dependency.subsets import skill_subset_filter_tokens
-from apm_cli.security.executables import EXEC_TYPE_HOOKS, EXEC_TYPE_MCP, scan_package_executables
+from apm_cli.security.executables import (
+    EXEC_TYPE_EXTENSIONS,
+    EXEC_TYPE_HOOKS,
+    EXEC_TYPE_MCP,
+    scan_package_executables,
+)
 from apm_cli.utils.content_hash import compute_native_bundle_hash
 
 if TYPE_CHECKING:
@@ -110,6 +115,8 @@ def plan_native_codex_plugin(
     root = Path(package_info.install_path).resolve()
     types = set(plugin_root_exec_types(root))
     types.update(scan_package_executables(root, dependency_key, manifest.version).exec_types)
+    # Codex does not activate omp/pi factories from its registered plugin root.
+    types.discard(EXEC_TYPE_EXTENSIONS)
     if manifest.has_mcp:
         types.add(EXEC_TYPE_MCP)
     if manifest.has_hooks:

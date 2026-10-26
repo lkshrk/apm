@@ -421,6 +421,7 @@ def _allows_missing_manifest(
                 PackageType.APM_PACKAGE.value: "APM package",
                 PackageType.CLAUDE_SKILL.value: "Claude skill",
                 PackageType.AGENT_PLUGIN.value: "Agent plugin",
+                PackageType.EXTENSION_PACKAGE.value: "Native extension package",
             }
             accepted_kind = accepted_types.get(dependency.package_type)
             if accepted_kind is None:
@@ -442,11 +443,10 @@ def _allows_missing_manifest(
     package_type, selected_manifest = detect_package_type(package_dir)
     if package_type is PackageType.SKILL_BUNDLE:
         return dependency.package_type == PackageType.SKILL_BUNDLE.value
+    if package_type is PackageType.EXTENSION_PACKAGE:
+        return dependency.package_type == PackageType.EXTENSION_PACKAGE.value
     if package_type is PackageType.HOOK_PACKAGE:
-        return (
-            dependency.to_dependency_ref().is_virtual_subdirectory()
-            and dependency.package_type == PackageType.HOOK_PACKAGE.value
-        )
+        return dependency.package_type == PackageType.HOOK_PACKAGE.value
     if package_type is PackageType.AGENT_PLUGIN:
         return dependency.package_type == PackageType.AGENT_PLUGIN.value
     if is_codex_compatibility_manifest(package_dir, selected_manifest):

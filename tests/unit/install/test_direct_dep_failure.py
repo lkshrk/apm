@@ -81,14 +81,26 @@ class TestDirectDepFailLoud:
         assert ctx.diagnostics.has_diagnostics
         assert ctx.diagnostics.error_count >= 1
 
-    def test_pipeline_raises_direct_dependency_error(self, tmp_path):
+    def test_pipeline_raises_direct_dependency_error(self, tmp_path, monkeypatch):
         """run_install_pipeline must raise DirectDependencyError (not
         generic RuntimeError) when ctx.direct_dep_failed is set by the
         integrate phase."""
         from apm_cli.install.pipeline import run_install_pipeline
 
+        # The pipeline derives its deploy/source roots and target auto-detection
+        # from the cwd. Run in an isolated workspace with exactly one harness
+        # signal so the developer checkout's own harness markers cannot make
+        # detection ambiguous.
+        workspace = tmp_path / "workspace"
+        (workspace / ".claude").mkdir(parents=True)
+        monkeypatch.chdir(workspace)
+
         pkg = MagicMock()
         pkg.dependencies = {"apm": []}
+
+        def _fake_resolve_run(ctx: InstallContext) -> None:
+            """Provide the resolved work item required to enter integrate."""
+            ctx.deps_to_install = [MagicMock()]
 
         def _fake_integrate_run(ctx):
             """Simulate the integrate phase setting the failure flag."""
@@ -99,7 +111,7 @@ class TestDirectDepFailLoud:
 
         with (
             patch("apm_cli.install.phases.integrate.run", side_effect=_fake_integrate_run),
-            patch("apm_cli.install.phases.resolve.run"),
+            patch("apm_cli.install.phases.resolve.run", side_effect=_fake_resolve_run),
             patch("apm_cli.install.phases.targets.run", side_effect=_fake_targets_run),
             patch("apm_cli.install.phases.download.run"),
             pytest.raises(DirectDependencyError),

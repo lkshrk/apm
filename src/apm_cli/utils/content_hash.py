@@ -104,6 +104,20 @@ def compute_native_bundle_hash(package_path: Path) -> str:
     return f"sha256:{hasher.hexdigest()}"
 
 
+def decode_text_content(raw: bytes) -> str | None:
+    """Decode UTF-8 text, or return ``None`` for binary content.
+
+    Binary is the same boundary the per-file hash uses: a NUL byte or invalid
+    UTF-8 (images, UTF-16, compiled artifacts).
+    """
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def _canonical_hash_bytes(raw: bytes) -> bytes:
     """Return the canonical byte image used for per-file content hashing.
 
@@ -130,11 +144,8 @@ def _canonical_hash_bytes(raw: bytes) -> bytes:
     per-file integrity hash deliberately does not -- those remain
     hash-visible here.)
     """
-    if b"\x00" in raw:
-        return raw
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
+    text = decode_text_content(raw)
+    if text is None:
         return raw
     return normalize_crlf_to_lf(text).encode("utf-8")
 

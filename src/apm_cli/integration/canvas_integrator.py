@@ -86,10 +86,15 @@ def is_canvas_bundle_path(rel: str) -> bool:
     dot-directory (legacy / direct deploy paths, e.g.
     ``.github/extensions/<name>/extension.mjs``).
     """
+    from .extension_discovery import is_native_extension_path
+
     parts = [seg for seg in rel.replace("\\", "/").split("/") if seg]
     for idx, seg in enumerate(parts):
         if seg.lower() != "extensions":
             continue
+        # Classify the outer bundle before inspecting any embedded resources.
+        if is_native_extension_path("/".join(parts[: idx + 1])):
+            return False
         if idx == 0:
             return True
         if parts[idx - 1].startswith("."):

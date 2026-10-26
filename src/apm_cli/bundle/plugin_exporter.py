@@ -167,7 +167,19 @@ def _collect_apm_components(apm_dir: Path) -> list[tuple[Path, str]]:
     # Preserved verbatim so an offline bundle can carry a canvas; the files are
     # inert until the consumer enables the ``canvas`` experimental flag AND
     # approves the package via allowExecutables / ``apm approve`` at install time.
-    _collect_recursive(apm_dir / "extensions", "extensions", components)
+    # When the same tree also carries native factory sources, only recognized
+    # canvas bundles use this portable layout; the factories keep their attested
+    # ``.omp`` namespace instead of being flattened into canvases.
+    from ..integration.extension_discovery import has_native_extension_sources
+
+    if has_native_extension_sources(apm_dir.parent):
+        from ..integration.canvas_integrator import CanvasIntegrator
+
+        for bundle in CanvasIntegrator.find_canvas_bundles(apm_dir.parent):
+            if bundle.parent == apm_dir / "extensions":
+                _collect_recursive(bundle, f"extensions/{bundle.name}", components)
+    else:
+        _collect_recursive(apm_dir / "extensions", "extensions", components)
 
     return components
 
@@ -184,6 +196,27 @@ def _collect_root_plugin_components(project_root: Path) -> list[tuple[Path, str]
             continue
         _collect_recursive(project_root / dir_name, dir_name, components)
     return components
+
+
+def _require_attested_native_sources(
+    project_root: Path, file_map: dict[str, tuple[Path, str]], target: str | None
+) -> None:
+    """Do not flatten an authored native source package into a foreign runtime."""
+    from ..integration.extension_discovery import find_extension_bundles
+    from ..integration.extension_integrator import ExtensionIntegrator
+
+    selected = {target} if isinstance(target, str) else set(target or ())
+    if selected and not selected.intersection({"all", "omp"}):
+        return
+    for bundle in find_extension_bundles(project_root, is_first_party=True):
+        name = ExtensionIntegrator._name(bundle, "_local")
+        prefixes = tuple(f"{root}/extensions/{name}/" for root in (".omp", ".omp/agent", ".pi"))
+        if not any(relative.startswith(prefixes) for relative in file_map):
+            raise ValueError(
+                "Native extension source requires an attested installed payload before packing. "
+                "Install the package with explicit extensions approval for target omp, then "
+                "pack the deployed tree. Raw native factories cannot be flattened into canvas bundles."
+            )
 
 
 def _emit_pack_warning(message: str, logger=None) -> None:
@@ -557,6 +590,12 @@ def _plugin_rel_for_deployed_path(
     parts = _deployed_path_parts(rel_path)
     if not parts:
         return None
+
+    from ..integration.extension_discovery import is_native_extension_path
+
+    if is_native_extension_path(rel_path):
+        # Preserve native identity rather than reclassifying factories as canvases.
+        return PurePosixPath(*parts).as_posix()
 
     if parts[0] == "skills":
         skill_name = _skill_name_from_deployed_parts(parts)
@@ -958,6 +997,7 @@ def export_plugin_bundle(
 
     own_apm_dir = project_root / ".apm"
     hook_documents: list[tuple[Path, dict]] = []
+    _require_attested_native_sources(project_root, file_map, target)
     if isinstance(package.includes, list):
         own_components, root_hooks, _hooks_present = _collect_explicit_local_components(
             project_root,
@@ -993,6 +1033,16 @@ def export_plugin_bundle(
     ):
         _warn_no_local_primitives(logger)
 
+    from ..integration.extension_discovery import is_native_extension_path
+
+    selected_targets = {target} if isinstance(target, str) else set(target or ())
+    if selected_targets and not selected_targets.intersection({"all", "omp"}):
+        file_map = {
+            rel: source for rel, source in file_map.items() if not is_native_extension_path(rel)
+        }
+        own_components = [
+            (source, rel) for source, rel in own_components if not is_native_extension_path(rel)
+        ]
     _merge_file_map(file_map, own_components, pkg_name, force, collisions)
     hook_resources.validate_outputs(
         file_map,

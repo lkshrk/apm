@@ -60,7 +60,7 @@ def install_local_bundle(
         check_target_mismatch,
         verify_bundle_integrity,
     )
-    from ..core.scope import InstallScope, get_source_root
+    from ..core.scope import InstallScope, get_lockfile_dir, get_source_root
     from ..deps.lockfile import LockFile, get_lockfile_path
     from ..install.services import (
         enforce_agent_plugin_deployment_boundary,
@@ -89,6 +89,7 @@ def install_local_bundle(
     scope = InstallScope.USER if global_ else InstallScope.PROJECT
     project_root = Path.home() if global_ else Path.cwd()
     source_root = get_source_root(scope)
+    metadata_root = get_lockfile_dir(scope)
 
     logger.start(f"Installing local bundle from {bundle_arg}")
 
@@ -251,6 +252,29 @@ def install_local_bundle(
                     "no LSP-compatible runtime. Select --target claude or --target copilot."
                 )
 
+        from ..core.deployment_ledger import DeploymentLedgerCodec
+        from ..deps.lockfile import resolve_lockfile_path_for_read
+
+        previous_lockfile = LockFile.read(
+            resolve_lockfile_path_for_read(metadata_root, read_only=True)
+        )
+        managed_files = (
+            DeploymentLedgerCodec.local_bundle_paths(previous_lockfile)
+            if previous_lockfile is not None
+            else frozenset()
+        )
+        managed_hashes = (
+            {
+                path: digest
+                for path, digest in DeploymentLedgerCodec.deployed_file_hashes(
+                    previous_lockfile
+                ).items()
+                if path in managed_files
+            }
+            if previous_lockfile is not None
+            else {}
+        )
+
         result = integrate_local_bundle(
             bundle_info,
             project_root,
@@ -264,6 +288,8 @@ def install_local_bundle(
             allow_executables=allow_executables,
             approval_key=bundle_approval_key,
             create_config=create_config,
+            managed_files=set(managed_files),
+            managed_file_hashes=managed_hashes,
         )
 
         deployed = result.get("deployed_files", [])
@@ -320,14 +346,13 @@ def install_local_bundle(
                 force=force,
             )
 
-        # Persist into project lockfile -- never mutate apm.yml (per design).
+        # Keep ownership beside the scoped dependency lockfile, not the deploy root.
         if deployed:
             from ..deps.lockfile import migrate_lockfile_if_needed
 
-            migrate_lockfile_if_needed(project_root)
-            lockfile_path = get_lockfile_path(project_root)
+            migrate_lockfile_if_needed(metadata_root)
+            lockfile_path = get_lockfile_path(metadata_root)
             lockfile = LockFile.read(lockfile_path) or LockFile()
-            from ..core.deployment_ledger import DeploymentLedgerCodec
 
             DeploymentLedgerCodec.record_local_bundle_files(lockfile, deployed, deployed_hashes)
 
@@ -595,13 +620,16 @@ def _wire_legacy_bundle_mcp_servers(
             fail_on_write_error=True,
         )
     else:
+        from apm_cli.core.scope import InstallScope, get_lockfile_dir
         from apm_cli.deps.lockfile import get_lockfile_path
         from apm_cli.install.mcp.integration import run_owned_mcp_integration
 
         count = run_owned_mcp_integration(
             dependencies=deps,
             owner=owner,
-            lock_path=get_lockfile_path(project_root),
+            lock_path=get_lockfile_path(
+                get_lockfile_dir(InstallScope.USER) if user_scope else project_root
+            ),
             target_runtimes=target_names,
             verbose=verbose,
             project_root=project_root,
@@ -679,6 +707,7 @@ def _wire_bundle_lsp_servers(
     force: bool = False,
 ) -> int:
     """Wire bundle LSP servers through the canonical owned lifecycle."""
+    from apm_cli.core.scope import InstallScope, get_lockfile_dir
     from apm_cli.deps.lockfile import get_lockfile_path
     from apm_cli.install.lsp.integration import run_owned_lsp_integration
     from apm_cli.integration.lsp_integrator import LSPIntegrator
@@ -688,7 +717,9 @@ def _wire_bundle_lsp_servers(
     count = run_owned_lsp_integration(
         dependencies=deps,
         owner=owner,
-        lock_path=get_lockfile_path(project_root),
+        lock_path=get_lockfile_path(
+            get_lockfile_dir(InstallScope.USER) if user_scope else project_root
+        ),
         project_root=project_root,
         user_scope=user_scope,
         logger=logger,

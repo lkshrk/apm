@@ -565,6 +565,10 @@ def _check_content_integrity(
       * SHA-256 drift between the on-disk content and the canonical deployment
         ledger hash recorded at install time.
       * Missing canonical ownership metadata for a legacy deployed-file hash.
+      * Native omp extension bundles and hook runtime claimed by explicit
+        ledger rows, verified as whole owned units (receipt, ledger, exact
+        tree, bridge state) with one failure each. Their files are raw assets
+        to the scanner, not prompt documents; unmanaged siblings are untouched.
 
     Missing files are deliberately skipped here -- ``_check_deployed_files_present``
     already reports those, and double-reporting muddies the audit output.
@@ -614,17 +618,13 @@ def _check_content_integrity(
         legacy_hash_paths.update(dependency.deployed_file_hashes)
     missing_ownership = sorted(legacy_hash_paths.difference(ledger_values))
 
-    def _has_symlink_component(path: Path) -> bool:
-        try:
-            relative = path.relative_to(project_root)
-        except ValueError:
-            return path.is_symlink()
-        current = project_root
-        for part in relative.parts:
-            current = current / part
-            if current.is_symlink():
-                return True
-        return False
+    def _unsafe_lexical_path(path: Path) -> bool:
+        from ..utils.path_security import has_symlink_component
+
+        if ".." in path.parts:
+            return True
+        absolute = path.absolute()
+        return has_symlink_component(Path(absolute.anchor), absolute)
 
     # Per-file hash verification across canonical deployment records.
     hash_mismatches: list[tuple] = []  # (dep_key, rel_path, expected, actual)
@@ -637,6 +637,14 @@ def _check_content_integrity(
         if locator.kind == LocatorKind.URI:
             continue
         if locator.kind == LocatorKind.PROJECT_RELATIVE:
+            lexical_path = project_root / locator.value
+            if _unsafe_lexical_path(lexical_path):
+                if ".." in lexical_path.parts:
+                    unresolved_hash_paths.append(locator.value)
+                # Legacy project-file hashing skips symlinks. Native bundles
+                # and runtimes still fail their separate no-follow ownership
+                # verification below; never resolve or open the linked path.
+                continue
             file_path = _resolve_deployed_file_path(locator.value, project_root, targets)
             if file_path is None:
                 unresolved_hash_paths.append(locator.value)
@@ -647,6 +655,10 @@ def _check_content_integrity(
                 KNOWN_TARGETS.get(locator.target),
             )
             if target is None:
+                continue
+            deploy_root = target.managed_deploy_root
+            if deploy_root is not None and _unsafe_lexical_path(deploy_root / locator.value):
+                unresolved_hash_paths.append(locator.value)
                 continue
             try:
                 resolved = DeploymentLedgerCodec.resolve_locator(
@@ -663,8 +675,6 @@ def _check_content_integrity(
             file_path = resolved
         if not file_path.exists():
             continue  # _check_deployed_files_present owns this signal
-        if locator.kind == LocatorKind.PROJECT_RELATIVE and _has_symlink_component(file_path):
-            continue
         if file_path.is_symlink() or not file_path.is_file():
             unresolved_hash_paths.append(locator.value)
             continue
@@ -672,12 +682,24 @@ def _check_content_integrity(
         if actual_hash != expected_hash:
             hash_mismatches.append((record.active_owner, locator.value, expected_hash, actual_hash))
 
+    # Native bundles/runtime are verified as whole owned units from explicit
+    # ledger rows; one structured failure each, never per-asset prompt errors.
+    from ..integration.extension_audit import audit_native_extension_ownership
+
+    native_failures = audit_native_extension_ownership(
+        project_root,
+        lock,
+        targets,
+        lambda value: _resolve_deployed_file_path(value, project_root, targets),
+    )
+
     if (
         not critical_files
         and not hash_mismatches
         and not missing_ownership
         and not unresolved_hash_paths
         and not scan.incomplete
+        and not native_failures
     ):
         return CheckResult(
             name="content-integrity",
@@ -698,6 +720,7 @@ def _check_content_integrity(
         details.append(f"missing-ownership: {rel_path}")
     for rel_path in unresolved_hash_paths:
         details.append(f"unresolved: {rel_path}")
+    details.extend(failure.detail() for failure in native_failures)
     for dep_key, rel_path, expected, actual in hash_mismatches:
         # Truncate hashes for terminal width; full hashes available via JSON output.
         exp_short = expected.split(":", 1)[-1][:12] if ":" in expected else expected[:12]
@@ -730,6 +753,11 @@ def _check_content_integrity(
     if unresolved_hash_paths:
         parts.append(f"{len(unresolved_hash_paths)} unsafe or unresolved deployed path(s)")
         remedies.append("'apm install' to restore managed paths")
+    if native_failures:
+        parts.append(
+            f"{len(native_failures)} native extension bundle(s) or runtime(s) failing ownership"
+        )
+        remedies.append("'apm install' after removing foreign or edited native extension content")
     summary = "; ".join(parts)
     remedy = " and ".join(remedies)
     return CheckResult(
@@ -812,6 +840,7 @@ def _check_drift(
     from ..core.scope import get_workspace_deploy_root
     from ..deps.lockfile import get_lockfile_path
     from ..deps.path_anchoring import LocalResolutionError
+    from ..hook_contract import HookContractError
     from ..install.audit_target_roots import external_replay_root
     from ..install.drift import (
         CacheMissError,
@@ -836,7 +865,7 @@ def _check_drift(
 
         try:
             scratch = run_replay(config, logger)
-        except (AgentPluginDeploymentBoundaryError, CodexNativeError) as exc:
+        except (AgentPluginDeploymentBoundaryError, CodexNativeError, HookContractError) as exc:
             return (
                 CheckResult(
                     name="drift",

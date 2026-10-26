@@ -354,6 +354,7 @@ def _integrate_root_project(
             instruction_integrator=ctx.integrators["instruction"],
             command_integrator=ctx.integrators["command"],
             hook_integrator=ctx.integrators["hook"],
+            extension_integrator=ctx.integrators.get("extensions"),
             force=ctx.force,
             managed_files=_local_managed,
             diagnostics=diagnostics,
@@ -383,6 +384,7 @@ def _integrate_root_project(
                 "commands",
                 "hooks",
                 "canvases",
+                "extensions",
             )
         )
         if _local_total > 0 and logger:
@@ -398,6 +400,7 @@ def _integrate_root_project(
             "commands": _root_result["commands"],
             "hooks": _root_result["hooks"],
             "canvases": _root_result.get("canvases", 0),
+            "extensions": _root_result.get("extensions", 0),
             "links_resolved": _root_result["links_resolved"],
         }
     except Exception as e:
@@ -635,6 +638,7 @@ def run(ctx: InstallContext) -> None:
     total_instructions_integrated = ctx.total_instructions_integrated
     total_commands_integrated = ctx.total_commands_integrated
     total_hooks_integrated = ctx.total_hooks_integrated
+    total_extensions_integrated = ctx.total_extensions_integrated
     total_links_resolved = ctx.total_links_resolved
 
     # ------------------------------------------------------------------
@@ -753,6 +757,7 @@ def run(ctx: InstallContext) -> None:
         total_instructions_integrated += deltas.get("instructions", 0)
         total_commands_integrated += deltas.get("commands", 0)
         total_hooks_integrated += deltas.get("hooks", 0)
+        total_extensions_integrated += deltas.get("extensions", 0)
         total_links_resolved += deltas.get("links_resolved", 0)
 
     # ------------------------------------------------------------------
@@ -768,6 +773,7 @@ def run(ctx: InstallContext) -> None:
         total_instructions_integrated += root_deltas.get("instructions", 0)
         total_commands_integrated += root_deltas.get("commands", 0)
         total_hooks_integrated += root_deltas.get("hooks", 0)
+        total_extensions_integrated += root_deltas.get("extensions", 0)
         total_links_resolved += root_deltas.get("links_resolved", 0)
 
     # ------------------------------------------------------------------
@@ -783,6 +789,7 @@ def run(ctx: InstallContext) -> None:
     ctx.total_instructions_integrated = total_instructions_integrated
     ctx.total_commands_integrated = total_commands_integrated
     ctx.total_hooks_integrated = total_hooks_integrated
+    ctx.total_extensions_integrated = total_extensions_integrated
     ctx.total_links_resolved = total_links_resolved
 
     # ------------------------------------------------------------------

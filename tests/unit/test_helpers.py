@@ -352,6 +352,7 @@ class TestCoreOperations:
             ["my-server"],
             replace_existing=False,
             managed_fields=None,
+            managed_env_keys=None,
         )
 
     def test_install_package_exception_returns_false(self, monkeypatch):

@@ -327,6 +327,7 @@ class LockfileBuilder:
                 diagnostics=diagnostics,
                 on_ghost_drop=None if lockfile_only else _log_ghost_drop,
                 prior_ledger=prior_ledger,
+                prior_lockfile=self.ctx.existing_lockfile,
                 cleanup_retained_hashes=retained_hashes,
                 current_run_trusted=diagnostics.count_for_package(dep_key, "error") == 0,
                 owner=dep_key,
@@ -713,6 +714,7 @@ class LockfileBuilder:
                 active_targets=self.ctx.targets,
                 declared_targets=declared,
                 user_scope=is_user,
+                lockfile=self.ctx.existing_lockfile,
             )
         except Exception as exc:
             if self.ctx.logger:

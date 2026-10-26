@@ -196,12 +196,18 @@ def test_compile_target_all_exclusion_lists_explicit_only_targets():
 
     assert result.exit_code == 0
     help_text = result.output
-    # Assert the full exclusion sentence (normalize whitespace from help-text wrapping)
+    from apm_cli.core.target_catalog import TARGET_CAPABILITIES
+
     normalized = " ".join(help_text.split())
-    assert (
-        "excludes agent-skills, antigravity, grok-bot, hermes, experimental targets, and intellij"
-        in normalized
-    )
+    exclusions = normalized.split("'all' excludes ", 1)[1].split(";", 1)[0]
+    listed = {name.strip() for name in exclusions.replace(", and ", ", ").split(",")}
+    expected = {
+        capability.name
+        for capability in TARGET_CAPABILITIES.values()
+        if (capability.explicit_only and capability.experimental_flag is None)
+        or capability.mcp_only
+    }
+    assert listed == expected | {"experimental targets"}
 
 
 def test_mcp_install_help_lists_target_global_and_trust_transitive():

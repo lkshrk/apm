@@ -1504,10 +1504,15 @@ def run_mcp_install(  # noqa: PLR0913
         for target in target_runtimes:
             managed_target_servers.setdefault(target, set())
 
+    # Only an explicit per-server selection can suppress registry resolution.
+    # Unrestricted declarations retain the existing per-registry validation path,
+    # independently of whether the effective runtime set has any writable client.
     registry_deps = [
         dep
         for dep in registry_deps
-        if any(isinstance(dep, str) or dep.targets_runtime(rt) for rt in target_runtimes)
+        if isinstance(dep, str)
+        or dep.targets is None
+        or any(dep.targets_runtime(rt) for rt in target_runtimes)
     ]
     registry_dep_names = [dep if isinstance(dep, str) else dep.name for dep in registry_deps]
     self_defined_deps = [

@@ -36,8 +36,10 @@ def test_native_registration_and_shared_skills():
     assert not TARGET_CAPABILITIES["omp"].mcp_only
     assert TARGET_CAPABILITIES["omp"].explicit_only
     profile = KNOWN_TARGETS["omp"]
-    assert profile.root_dir == profile.user_root_dir == ".agents"
-    assert set(profile.primitives) == {"skills"}
+    assert profile.root_dir == ".omp"
+    assert profile.user_root_dir == ".omp/agent"
+    assert profile.skills_rel_root == ".agents/skills"
+    assert set(profile.primitives) == {"skills", "extensions", "hooks"}
     assert not profile.detect_by_dir
 
 
@@ -54,6 +56,9 @@ def test_default_profile_path_matches_omp(tmp_path, monkeypatch, override):
     adapter = OmpClientAdapter(project_root=tmp_path / "project", user_scope=True)
     expected = tmp_path / override if override else tmp_path / "home" / ".omp" / "agent"
     assert Path(adapter.get_config_path()) == expected / "mcp.json"
+    scoped = KNOWN_TARGETS["omp"].for_scope(user_scope=True)
+    assert (Path.home() / scoped.root_dir).resolve() == expected.resolve()
+    assert scoped.skills_rel_root == ".agents/skills"
     project = OmpClientAdapter(project_root=tmp_path / "project")
     assert Path(project.get_config_path()) == tmp_path / "project" / ".omp" / "mcp.json"
 

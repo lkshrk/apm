@@ -148,6 +148,7 @@ def _run_cleanup(ctx: InstallContext, receipt_retirements: list[Path]) -> None:
                 targets=None,
                 diagnostics=diagnostics,
                 recorded_hashes=dict(_orphan_dep.deployed_file_hashes),
+                prior_lockfile=existing_lockfile,
                 failed_path_retained=False,
                 user_scope=user_scope,
                 receipt_retirements=receipt_retirements,
@@ -220,6 +221,7 @@ def _run_cleanup(ctx: InstallContext, receipt_retirements: list[Path]) -> None:
                 targets=_targets or None,
                 diagnostics=diagnostics,
                 recorded_hashes=dict(prev_dep.deployed_file_hashes),
+                prior_lockfile=existing_lockfile,
                 user_scope=user_scope,
                 receipt_retirements=receipt_retirements,
             )

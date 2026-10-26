@@ -801,8 +801,8 @@ def test_missing_virtual_hook_package_records_problem(tmp_path: Path) -> None:
     assert "manifest not found" in view.problems[0].message
 
 
-def test_manifestless_hook_package_requires_virtual_subdirectory(tmp_path: Path) -> None:
-    """A hook shape alone cannot waive the manifest for a non-virtual package."""
+def test_manifestless_direct_hook_package_is_skipped(tmp_path: Path) -> None:
+    """A matching direct hook-only source has no APM manifest to inspect."""
     root = _write_manifest(tmp_path, name="root")
     modules_root = tmp_path / "apm_modules"
     locked = LockedDependency(
@@ -817,8 +817,9 @@ def test_manifestless_hook_package_requires_virtual_subdirectory(tmp_path: Path)
 
     view = _derive(root, _lock(locked), modules_root)
 
-    assert len(view.problems) == 1
-    assert "manifest not found" in view.problems[0].message
+    assert not (package_dir / "apm.yml").exists()
+    assert view.dependencies == ()
+    assert view.problems == ()
 
 
 def test_manifestless_virtual_hook_package_requires_matching_lock_type(
@@ -1388,3 +1389,15 @@ def test_manifestless_native_plugin_requires_matching_locked_type(
     assert view.dependencies == ()
     assert not (package_dir / "apm.yml").exists()
     assert before == {path: path.read_bytes() for path in package_dir.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_native_extension_lock_accepts_manifest_free_package(tmp_path: Path, strict: bool) -> None:
+    from apm_cli.integration.mcp_config_view import _allows_missing_manifest
+
+    (tmp_path / "package.json").write_text('{"omp":{"extensions":["entry.ts"]}}')
+    (tmp_path / "entry.ts").write_text("export default function () {}")
+    dependency = LockedDependency(repo_url="owner/native", package_type="extension_package")
+    assert _allows_missing_manifest(dependency, tmp_path, strict=strict)
+    mismatched = LockedDependency(repo_url="owner/native", package_type="claude_skill")
+    assert not _allows_missing_manifest(mismatched, tmp_path, strict=strict)

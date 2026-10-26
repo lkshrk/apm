@@ -507,6 +507,20 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
                 explicit_target=cleanup_target_names or None,
             )
             cleanup_keys = removed_keys | builtins.set(projected_orphans)
+            from ...install.removed_hook_ownership import reconcile_removed_native_hook_owners
+
+            native_hook_stats = reconcile_removed_native_hook_owners(
+                lockfile,
+                cleanup_keys,
+                deploy_root,
+                user_scope=scope is InstallScope.USER,
+            )
+            if native_hook_stats.get("errors", 0):
+                logger.error(
+                    "Native hook cleanup is incomplete; dependency ownership was retained. "
+                    "Repair the reported omp artifacts and retry uninstall."
+                )
+                sys.exit(1)
             retained_cleanup_paths = builtins.set()
             reconcile_target_deployed_files(
                 project_root=deploy_root,

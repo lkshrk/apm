@@ -27,6 +27,7 @@ class PackageType(Enum):
     APM_PACKAGE = "apm_package"  # Has apm.yml (.apm/ optional when deps declared)
     CLAUDE_SKILL = "claude_skill"  # Has SKILL.md, no apm.yml
     HOOK_PACKAGE = "hook_package"  # Has hooks/hooks.json, no apm.yml or SKILL.md
+    EXTENSION_PACKAGE = "extension_package"  # Explicit native extensions without apm.yml
     HYBRID = "hybrid"  # Has both apm.yml and SKILL.md (root)
     AGENT_PLUGIN = "agent_plugin"  # Has root plugin.json with Agent Plugins schema
     MARKETPLACE_PLUGIN = "marketplace_plugin"  # Has plugin.json or .claude-plugin/
@@ -189,6 +190,7 @@ class DetectionEvidence:
     has_claude_plugin_dir: bool = False
     nested_skill_dirs: tuple[str, ...] = ()
     has_plugin_manifest: bool = False
+    has_native_extensions: bool = False
 
     @property
     def has_plugin_evidence(self) -> bool:
@@ -250,6 +252,7 @@ def gather_detection_evidence(package_path: Path) -> DetectionEvidence:
         has_claude_plugin_dir=has_claude_plugin_dir,
         nested_skill_dirs=nested_skill_dirs,
         has_plugin_manifest=has_plugin_manifest,
+        has_native_extensions=report.native_extensions is not None,
     )
 
 
@@ -278,7 +281,8 @@ def detect_package_type(
     6. ``SKILL_BUNDLE`` -- nested ``skills/<x>/SKILL.md`` detected;
        ``apm.yml`` optional; no ``.apm/`` required.
     7. ``HOOK_PACKAGE`` -- ``hooks/*.json`` only, no other signals.
-    8. ``INVALID`` -- nothing recognisable.
+    8. ``EXTENSION_PACKAGE`` -- explicit native extensions without another format.
+    9. ``INVALID`` -- nothing recognisable.
 
     Returns:
         A ``(package_type, plugin_json_path)`` tuple.  *plugin_json_path*
@@ -344,11 +348,12 @@ def validate_apm_package(
 ) -> ValidationResult:
     """Validate that a directory contains a valid APM package or Claude Skill.
 
-    Supports six package types:
+    Supports these package types:
     - APM_PACKAGE: Has apm.yml (with .apm/ for own primitives, or
       dep-only as a curated dependency aggregator -- #1094)
     - CLAUDE_SKILL: Has SKILL.md but no apm.yml (auto-generates apm.yml)
     - HOOK_PACKAGE: Has hooks/*.json but no apm.yml or SKILL.md
+    - EXTENSION_PACKAGE: Has a native extension manifest or designated extensions directory
     - MARKETPLACE_PLUGIN: Has plugin.json or .claude-plugin/ (synthesizes apm.yml)
     - HYBRID: Has both apm.yml and root SKILL.md
     - SKILL_BUNDLE: Has skills/<name>/SKILL.md, apm.yml optional
@@ -362,63 +367,115 @@ def validate_apm_package(
     """
     result = ValidationResult()
 
-    # Check if directory exists
-    if not package_path.exists():
-        result.add_error(f"Package directory does not exist: {package_path}")
-        return result
-
-    if not package_path.is_dir():
-        result.add_error(f"Package path is not a directory: {package_path}")
-        return result
-
-    package_root = package_path.resolve()
-    if agent_plugin_detection is not None and (
-        agent_plugin_detection.manifest_path.parent.resolve() != package_root
-    ):
-        result.add_error("Agent Plugin detection root does not match package path")
+    directory_error = _package_directory_error(package_path, agent_plugin_detection)
+    if directory_error is not None:
+        result.add_error(directory_error)
         return result
 
     native_detection = agent_plugin_detection
     if native_detection is None:
         native_detection = detect_agent_plugin(package_path)
-    pkg_type, plugin_json_path = detect_package_type(
-        package_path,
-        agent_plugin_detection=native_detection,
-    )
+    try:
+        pkg_type, plugin_json_path = detect_package_type(
+            package_path,
+            agent_plugin_detection=native_detection,
+        )
+    except (ValueError, OSError) as exc:
+        result.add_error(f"Invalid package artifacts: {exc}")
+        return result
     if pkg_type not in {PackageType.AGENT_PLUGIN, PackageType.INVALID}:
         native_detection = None
     result.package_type = pkg_type
+    from .format_detection import NativeExtensionDetector
+
+    extensions = NativeExtensionDetector().detect(package_path)
+    if extensions is not None:
+        result.add_warning(
+            "Native extension(s) declared: "
+            f"{', '.join(extensions.bundle_names)}. "
+            "These execute code and require the separate 'extensions' executable approval."
+        )
 
     if pkg_type == PackageType.INVALID:
-        if native_detection is not None and native_detection.error is not None:
-            result.add_error(f"Failed to process Agent Plugin: {native_detection.error}")
-            return result
-        # Two sub-cases of INVALID:
-        # 1. apm.yml present but no .apm/ directory (or .apm is a file)
-        # 2. Nothing recognizable at all
-        apm_yml_path = package_path / APM_YML_FILENAME
-        if apm_yml_path.exists():
-            apm_path = package_path / APM_DIR
-            if apm_path.exists() and not apm_path.is_dir():
-                result.add_error(".apm must be a directory")
-            else:
-                result.legacy_metadata_only = not apm_path.exists()
-                result.add_error(
-                    f"Not a valid APM package: {package_path.name} has apm.yml but "
-                    "is missing the required .apm/ directory. "
-                    "Add .apm/ with primitives (instructions, skills, etc.), "
-                    "declare dependencies in apm.yml (curated aggregator), "
-                    "or add skills/<name>/SKILL.md for a skill bundle."
-                )
-        else:
-            result.add_error(
-                f"Not a valid APM package: no apm.yml, SKILL.md, hooks, or "
-                f"plugin structure found in {package_path.name}. "
-                "Ensure the package has SKILL.md (skill bundle), "
-                "apm.yml + .apm/ (APM package), or plugin.json (Claude plugin) "
-                "at its root."
-            )
+        return _report_invalid_package(package_path, result, native_detection)
+
+    return _validate_by_package_type(
+        package_path,
+        plugin_json_path,
+        result,
+        source_path=source_path,
+        native_detection=native_detection,
+        read_only=read_only,
+    )
+
+
+def _package_directory_error(
+    package_path: Path,
+    agent_plugin_detection: AgentPluginDetection | None,
+) -> str | None:
+    """Return the first package-root precondition failure, if any."""
+    if not package_path.exists():
+        return f"Package directory does not exist: {package_path}"
+
+    if not package_path.is_dir():
+        return f"Package path is not a directory: {package_path}"
+
+    if agent_plugin_detection is not None and (
+        agent_plugin_detection.manifest_path.parent.resolve() != package_path.resolve()
+    ):
+        return "Agent Plugin detection root does not match package path"
+    return None
+
+
+def _report_invalid_package(
+    package_path: Path,
+    result: ValidationResult,
+    native_detection: AgentPluginDetection | None,
+) -> ValidationResult:
+    """Record the error explaining why a package classified as INVALID."""
+    if native_detection is not None and native_detection.error is not None:
+        result.add_error(f"Failed to process Agent Plugin: {native_detection.error}")
         return result
+    # Two sub-cases of INVALID:
+    # 1. apm.yml present but no .apm/ directory (or .apm is a file)
+    # 2. Nothing recognizable at all
+    apm_yml_path = package_path / APM_YML_FILENAME
+    if apm_yml_path.exists():
+        apm_path = package_path / APM_DIR
+        if apm_path.exists() and not apm_path.is_dir():
+            result.add_error(".apm must be a directory")
+        else:
+            result.legacy_metadata_only = not apm_path.exists()
+            result.add_error(
+                f"Not a valid APM package: {package_path.name} has apm.yml but "
+                "is missing the required .apm/ directory. "
+                "Add .apm/ with primitives (instructions, skills, etc.), "
+                "declare dependencies in apm.yml (curated aggregator), "
+                "or add skills/<name>/SKILL.md for a skill bundle."
+            )
+    else:
+        result.add_error(
+            f"Not a valid APM package: no apm.yml, SKILL.md, hooks, native extensions, or "
+            f"plugin structure found in {package_path.name}. "
+            "Ensure the package has SKILL.md (skill bundle), "
+            "apm.yml + .apm/ (APM package), or plugin.json (Claude plugin) "
+            "at its root."
+        )
+    return result
+
+
+def _validate_by_package_type(
+    package_path: Path,
+    plugin_json_path: Path | None,
+    result: ValidationResult,
+    *,
+    source_path: Path | None,
+    native_detection: AgentPluginDetection | None,
+    read_only: bool,
+) -> ValidationResult:
+    """Dispatch a classified (non-INVALID) package to its type validator."""
+    if result.package_type == PackageType.EXTENSION_PACKAGE:
+        return _validate_extension_package(package_path, result, source_path=source_path)
 
     # Handle hook-only packages (no apm.yml or SKILL.md)
     if result.package_type == PackageType.HOOK_PACKAGE:
@@ -445,17 +502,16 @@ def validate_apm_package(
         from apm_cli.codex_plugins.manifest import is_codex_compatibility_manifest
 
         if is_codex_compatibility_manifest(package_path, plugin_json_path):
-            result = _validate_codex_plugin(package_path, result, source_path=source_path)
-        elif read_only:
+            return _validate_codex_plugin(package_path, result, source_path=source_path)
+        if read_only:
             result.add_error("Plugin requires normalization; prepare a local APM package manually.")
-        else:
-            result = _validate_marketplace_plugin(
-                package_path,
-                plugin_json_path,
-                result,
-                source_path=source_path,
-            )
-        return result
+            return result
+        return _validate_marketplace_plugin(
+            package_path,
+            plugin_json_path,
+            result,
+            source_path=source_path,
+        )
 
     # Handle Skill Bundles (nested skills/<name>/SKILL.md)
     if result.package_type == PackageType.SKILL_BUNDLE:
@@ -553,6 +609,38 @@ def _validate_hook_descriptors(package_path: Path, result: ValidationResult) -> 
                 f"Invalid hook descriptor {portable_relpath(hook_file, package_path)}: {exc}. "
                 "Fix the hook JSON and retry installation."
             )
+
+
+def _validate_extension_package(
+    package_path: Path,
+    result: ValidationResult,
+    *,
+    source_path: Path | None = None,
+) -> ValidationResult:
+    """Admit native artifacts without synthesizing or rewriting their manifests."""
+    from ..deps.plugin_parser import _bounded_read_json
+    from .apm_package import APMPackage
+
+    metadata = {}
+    manifest_path = package_path / "package.json"
+    if manifest_path.is_file():
+        try:
+            metadata = _bounded_read_json(manifest_path)
+        except (ValueError, OSError) as exc:
+            result.add_error(f"Invalid native extension package metadata: {exc}")
+            return result
+        if not isinstance(metadata, dict):
+            result.add_error("Native extension package.json must contain an object")
+            return result
+    result.package = APMPackage(
+        name=metadata.get("name") or package_path.name,
+        version=metadata.get("version") or "0.0.0",
+        description=metadata.get("description") or f"Native extension package: {package_path.name}",
+        package_path=package_path,
+        source_path=source_path,
+        type=PackageContentType.HYBRID,
+    )
+    return result
 
 
 def _validate_hook_package(
@@ -956,12 +1044,15 @@ def _validate_apm_package_with_yml(
         return result
 
     # Check for .apm directory
+    from .format_detection import NativeExtensionDetector
+
+    has_native_extensions = NativeExtensionDetector().detect(package_path) is not None
     apm_dir = package_path / APM_DIR
     if not apm_dir.exists():
         # Dep-only packages (apm.yml with dependencies, no .apm/) are valid
         # curated aggregators (#1094). Only fail if there are no dependencies
         # either -- that's the original "unfinished package" diagnostic.
-        if _apm_yml_declares_dependencies(apm_yml_path):
+        if has_native_extensions or _apm_yml_declares_dependencies(apm_yml_path):
             return result
         result.add_error(
             f"Missing required directory: {APM_DIR}/ -- "
@@ -977,7 +1068,7 @@ def _validate_apm_package_with_yml(
 
     # Check if .apm directory has any content
     primitive_types = ["instructions", "chatmodes", "contexts", "prompts"]
-    has_primitives = False
+    has_primitives = has_native_extensions
 
     for primitive_type in primitive_types:
         primitive_dir = apm_dir / primitive_type

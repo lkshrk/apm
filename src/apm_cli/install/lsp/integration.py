@@ -290,8 +290,13 @@ def prepare_lsp_integration(
         if transitive_lsp:
             logger.verbose_detail(f"Collected {len(transitive_lsp)} transitive LSP dependency(ies)")
             if not effective_allow_resolved:
+                from apm_cli.core.scope import InstallScope, get_manifest_path
                 from apm_cli.security.executables import effective_exec_map_for_project
 
+                # User-scope manifests live under ~/.apm, not the deployment HOME.
+                trust_root = (
+                    get_manifest_path(InstallScope.USER).parent if user_scope else project_root
+                )
                 policy = None
                 if not no_policy:
                     from apm_cli.policy.discovery import discover_policy_with_chain
@@ -302,7 +307,7 @@ def prepare_lsp_integration(
                         None,
                     )
                 effective_allow_executables = effective_exec_map_for_project(
-                    project_root,
+                    trust_root,
                     policy=policy,
                     fallback_allow_executables=getattr(
                         apm_package,

@@ -275,6 +275,7 @@ def inspect_native_hooks(
         "gemini_hooks",
         "antigravity_hooks",
         "windsurf_hooks",
+        "omp_hooks",
     }:
         return (HookContentEntry("", error="unsupported native hook format"),)
     if format_id in {"github_hooks", "cursor_hooks"}:

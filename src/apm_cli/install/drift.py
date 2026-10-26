@@ -43,8 +43,12 @@ from apm_cli.core.target_detection import (
     read_manifest_target as _read_apm_yml_target,  # noqa: F401 -- compatibility re-export
 )
 from apm_cli.deps.path_anchoring import build_local_parent_index, resolve_local_dep_dir
+from apm_cli.install.audit_target_roots import canonicalize_omp_hook_replay, omp_hook_runtime_paths
 from apm_cli.install.audit_target_roots import (
     canvas_deploy_prefixes as _canvas_deploy_prefixes,
+)
+from apm_cli.install.audit_target_roots import (
+    extension_deploy_prefixes as _extension_deploy_prefixes,
 )
 from apm_cli.install.audit_target_roots import (
     governed_root_dirs as _governed_root_dirs,
@@ -492,6 +496,7 @@ def _make_integrators():
     """
     from apm_cli.integration.agent_integrator import AgentIntegrator
     from apm_cli.integration.command_integrator import CommandIntegrator
+    from apm_cli.integration.extension_integrator import ExtensionIntegrator
     from apm_cli.integration.hook_integrator import HookIntegrator
     from apm_cli.integration.instruction_integrator import InstructionIntegrator
     from apm_cli.integration.prompt_integrator import PromptIntegrator
@@ -504,6 +509,7 @@ def _make_integrators():
         "command": CommandIntegrator(),
         "hook": HookIntegrator(),
         "instruction": InstructionIntegrator(),
+        "extensions": ExtensionIntegrator(),
     }
 
 
@@ -525,8 +531,13 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
     CacheMissError
         Surfaced verbatim when a locked dep cannot be materialized.
     """
+    from apm_cli.core.scope import InstallScope, get_workspace_deploy_root
     from apm_cli.deps.lockfile import _SELF_KEY, LockFile
-    from apm_cli.install.audit_target_roots import replay_modules_root, replay_target
+    from apm_cli.install.audit_target_roots import (
+        replay_modules_root,
+        replay_target,
+        replay_targets_for_owner,
+    )
     from apm_cli.install.native_plugin_admission import verify_native_plugin_cache
     from apm_cli.install.project_package import build_project_local_package_info
     from apm_cli.install.services import IntegratorBundle, integrate_package_primitives
@@ -543,6 +554,7 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
         raise CacheMissError(f"lockfile at {config.lockfile_path} is empty or unreadable")
 
     project_root = config.project_root.resolve()
+    deployment_root = get_workspace_deploy_root(project_root)
     scratch_root = (
         config.scratch_root.resolve()
         if config.scratch_root is not None
@@ -565,6 +577,7 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
         lockfile=lock,
     )
     targets = [replay_target(target) for target in _filter_targets(live_targets, config.targets)]
+    hook_package_roots: dict[Path, Path] = {}
     registries: dict[str, str] | None = None
     downloader = None
     registry_resolver = None
@@ -617,13 +630,20 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
     from apm_cli.agent_plugins.errors import AgentPluginTargetExcludedError
     from apm_cli.copilot_plugins.capability import native_registration_scope
 
+    # Lockfile enumeration puts <self> first for inventory, but installation
+    # integrates dependency content before authored root-local content. Preserve
+    # dependency order and apply the same final local overlay during replay;
+    # merged hook handler arrays have execution-order semantics.
+    replay_dependencies = lock.get_all_dependencies()
+    replay_dependencies.sort(key=lambda dependency: dependency.local_path == _SELF_KEY)
+
     try:
         with native_registration_scope(targets):
             with (
                 integrators["skill"].ownership_snapshot(replay_lockfile=lock),
                 _ReadOnlyProjectGuard(project_root, protected_subpaths),
             ):
-                for lock_dep in lock.get_all_dependencies():
+                for lock_dep in replay_dependencies:
                     if lock_dep.local_path == _SELF_KEY:
                         # Synthesized self-entry: project's own local content.
                         # Re-integrate from project_root itself.
@@ -658,27 +678,27 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
                         package_info.deployment_package_root = (
                             lock_dep.to_dependency_ref().get_install_path(deployment_modules_dir)
                         )
+                    hook_package_roots[Path(install_path).resolve()] = deployment_root / (
+                        package_info.deployment_package_root.relative_to(scratch_root)
+                    )
                     dep_key = lock_dep.get_unique_key()
+                    package_targets = replay_targets_for_owner(
+                        targets, live_targets, lock, deployment_root, dep_key
+                    )
 
                     try:
                         result = integrate_package_primitives(
                             package_info,
                             scratch_root,
-                            targets=targets,
-                            integrators=IntegratorBundle(
-                                prompt=integrators["prompt"],
-                                agent=integrators["agent"],
-                                skill=integrators["skill"],
-                                instruction=integrators["instruction"],
-                                command=integrators["command"],
-                                hook=integrators["hook"],
-                            ),
+                            targets=package_targets,
+                            integrators=IntegratorBundle(**integrators),
                             force=True,
                             managed_files=set(),
                             diagnostics=diagnostics,
-                            package_name=dep_key,
+                            package_name="_local" if lock_dep.local_path == _SELF_KEY else dep_key,
+                            is_first_party=lock_dep.local_path == _SELF_KEY,
                             logger=None,
-                            scope=None,
+                            scope=InstallScope.USER if config.user_scope else None,
                             skill_subset=(
                                 tuple(package_info.dependency_ref.skill_subset or ()) or None
                                 if package_info.dependency_ref
@@ -725,6 +745,10 @@ def run_replay(config: ReplayConfig, logger: CheckLogger) -> Path:
                 )
             except RuntimeError:
                 pass
+
+    canonicalize_omp_hook_replay(
+        scratch_root, deployment_root, targets, live_targets, hook_package_roots
+    )
 
     logger.replay_complete(replayed_count)
     return scratch_root
@@ -890,20 +914,19 @@ def diff_scratch_against_project(
             if relative_path not in local_bundle_paths
         }
 
-    # Canvas extensions are executable bundles that the drift replay does
-    # not re-integrate (their integrator is intentionally omitted from the
-    # replay bundle). Exclude their deploy prefixes from BOTH trees so a
-    # deployed canvas is never mis-reported as orphaned/unintegrated. Full
-    # canvas drift detection is a deferred follow-up.
-    _canvas_prefixes = _canvas_deploy_prefixes(targets)
-    if _canvas_prefixes:
+    # Executable bundles are not re-integrated by the scratch replay. Their
+    # deployed hashes are checked by content integrity, not source projection.
+    # Keep native extensions separate from the Copilot canvas primitive.
+    executable_prefixes = _canvas_deploy_prefixes(targets) | _extension_deploy_prefixes(targets)
+    runtime_metadata = omp_hook_runtime_paths(targets)
+    if executable_prefixes or runtime_metadata:
 
-        def _is_canvas(rel: str) -> bool:
+        def _is_executable_bundle(rel: str) -> bool:
             norm = rel.replace("\\", "/")
-            return any(norm.startswith(p) for p in _canvas_prefixes)
+            return norm in runtime_metadata or any(norm.startswith(p) for p in executable_prefixes)
 
-        scratch_files = {r: p for r, p in scratch_files.items() if not _is_canvas(r)}
-        project_files = {r: p for r, p in project_files.items() if not _is_canvas(r)}
+        scratch_files = {r: p for r, p in scratch_files.items() if not _is_executable_bundle(r)}
+        project_files = {r: p for r, p in project_files.items() if not _is_executable_bundle(r)}
 
     findings: list[DriftFinding] = []
     from apm_cli.integration.base_integrator import BaseIntegrator

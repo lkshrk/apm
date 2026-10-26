@@ -19,7 +19,7 @@ the result is an empty list (no silent ``[copilot]`` fallback).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -472,19 +472,24 @@ class TargetProfile:
         if self.name == "copilot":
             generated_files = ()
 
-        # Claude Code honors CLAUDE_CONFIG_DIR (default ~/.claude) and Hermes
-        # honors HERMES_HOME (default ~/.hermes); mirror that at user scope so
-        # `apm install -g` lands where the tool reads.
-        if self.name in ("claude", "hermes"):
+        # Mirror each native client's user-root override semantics.
+        if self.name in ("claude", "hermes", "omp"):
             import os
             from pathlib import Path
 
-            env_var = "CLAUDE_CONFIG_DIR" if self.name == "claude" else "HERMES_HOME"
-            env = os.environ.get(env_var, "").strip()
+            env_var = {
+                "claude": "CLAUDE_CONFIG_DIR",
+                "hermes": "HERMES_HOME",
+                "omp": "PI_CODING_AGENT_DIR",
+            }[self.name]
+            env = os.environ.get(env_var, "")
+            if self.name != "omp":
+                env = env.strip()
             if env:
                 # ``resolve`` collapses ``..`` so traversal segments cannot
                 # leak into ``root_dir`` and escape ``project_root / root_dir``.
-                abs_path = Path(env).expanduser().resolve(strict=False)
+                env_path = Path(env) if self.name == "omp" else Path(env).expanduser()
+                abs_path = env_path.resolve(strict=False)
                 home = Path.home().resolve(strict=False)
                 try:
                     # Keep ``root_dir`` home-relative so cleanup prefix matching holds.
@@ -512,7 +517,13 @@ class TargetProfile:
             filtered = merged
 
         return replace(
-            self, root_dir=new_root, primitives=filtered, generated_files=generated_files
+            self,
+            root_dir=new_root,
+            primitives=filtered,
+            generated_files=generated_files,
+            hooks_config_display=(
+                f"{new_root}/hooks.json" if self.name == "omp" else self.hooks_config_display
+            ),
         )
 
 
@@ -893,13 +904,26 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
     ),
     "omp": TargetProfile(
         capability=TARGET_CAPABILITIES["omp"],
-        root_dir=".agents",
-        primitives={"skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard")},
+        root_dir=".omp",
+        primitives={
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", deploy_root=".agents"
+            ),
+            "extensions": PrimitiveMapping("extensions", "", "omp_extension"),
+            "hooks": PrimitiveMapping("apm-hooks", ".json", "omp_hooks"),
+        },
         auto_create=True,
         detect_by_dir=False,
         user_supported=True,
-        user_root_dir=".agents",
-        generated_files=(),
+        user_root_dir=".omp/agent",
+        user_primitive_overrides={
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", deploy_root=".agents"
+            ),
+        },
+        pack_prefixes=(".omp/", ".agents/"),
+        hooks_config_display=".omp/hooks.json",
+        generated_files=("apm-hooks-runtime.json",),
     ),
     # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
     # the agentskills.io SKILL.md format and the AGENTS.md context-file
@@ -1528,8 +1552,11 @@ def resolve_audit_targets(
         resolve_audit_target_decision,
     )
     from apm_cli.deps.lockfile import LockFile, get_lockfile_path
+    from apm_cli.integration.extension_roots import recorded_omp_roots
 
     lock = lockfile if lockfile is not None else LockFile.read(get_lockfile_path(project_root))
+    deployment_root = get_workspace_deploy_root(project_root)
+    native_roots = recorded_omp_roots(lock, deployment_root)
     recorded = (
         DeploymentLedgerCodec.recorded_target_names(
             lock,
@@ -1539,6 +1566,10 @@ def resolve_audit_targets(
         if lock is not None
         else ()
     )
+    if native_roots and "omp" not in recorded:
+        # Historical user locators can carry project scope; their explicit omp
+        # ownership still belongs to the selected scope's lockfile.
+        recorded = (*recorded, "omp")
     decision = resolve_audit_target_decision(
         manifest_target=read_manifest_target(project_root),
         recorded_targets=recorded,
@@ -1556,9 +1587,31 @@ def resolve_audit_targets(
                 f"'{flag}' is disabled. Run "
                 f"'apm experimental enable {flag}' to audit this installation."
             )
-    return resolve_targets(
-        get_workspace_deploy_root(project_root),
+    profiles = resolve_targets(
+        deployment_root,
         user_scope=user_scope,
         explicit_target=decision.value,
         create_config=False,
     )
+    if not native_roots:
+        return profiles
+    audited: list[TargetProfile] = []
+    for profile in profiles:
+        if profile.name != "omp":
+            audited.append(profile)
+            continue
+        for root in sorted(native_roots):
+            try:
+                root_dir = root.relative_to(deployment_root).as_posix()
+            except ValueError:
+                root_dir = root.as_posix()
+            audited.append(
+                replace(
+                    profile,
+                    root_dir=root_dir,
+                    user_root_dir=root_dir,
+                    resolved_deploy_root=None,
+                    hooks_config_display=f"{root_dir}/hooks.json",
+                )
+            )
+    return audited

@@ -540,6 +540,7 @@ def test_template_accepts_only_typed_owner_matched_completion(
             "commands",
             "hooks",
             "canvases",
+            "extensions",
             "links_resolved",
         ),
         0,

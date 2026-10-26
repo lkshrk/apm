@@ -40,6 +40,20 @@ if TYPE_CHECKING:
 _MATERIALIZATION_UNSET = object()
 
 
+def _trust_manifest_root(ctx) -> Path | None:
+    """Return the directory whose ``apm.yml`` owns executable trust for *ctx*.
+
+    User scope keeps its manifest under ``~/.apm`` while deployment stays at
+    ``$HOME``; ``ctx.source_root`` is the deployment HOME there, so the
+    canonical manifest location must be used instead.
+    """
+    from apm_cli.core.scope import InstallScope, get_manifest_path
+
+    if getattr(ctx, "scope", None) is InstallScope.USER:
+        return get_manifest_path(InstallScope.USER).parent
+    return getattr(ctx, "source_root", None) or getattr(ctx, "project_root", None)
+
+
 def _effective_allow(ctx) -> dict | None:
     """Return the effective (deny-wins) allow-map for the install context.
 
@@ -63,7 +77,7 @@ def _effective_allow(ctx) -> dict | None:
         return getattr(ctx, "exec_allow_map", None)
 
     policy = getattr(getattr(ctx, "policy_fetch", None), "policy", None)
-    project_root = getattr(ctx, "source_root", None) or getattr(ctx, "project_root", None)
+    project_root = _trust_manifest_root(ctx)
     project_allow = getattr(getattr(ctx, "apm_package", None), "allow_executables", None)
     trust_ctx = exec_trust_context_for_project(
         project_root,
@@ -510,6 +524,7 @@ def _integrate_materialization(
                 command=ctx.integrators["command"],
                 hook=ctx.integrators["hook"],
                 canvas=ctx.integrators.get("canvas"),
+                extensions=ctx.integrators.get("extensions"),
             ),
             force=ctx.force,
             managed_files=ctx.managed_files,
@@ -533,6 +548,7 @@ def _integrate_materialization(
             "commands",
             "hooks",
             "canvases",
+            "extensions",
         )
         for k in (*mutation_keys, "links_resolved"):
             deltas[k] = int_result[k]

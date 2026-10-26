@@ -17,6 +17,15 @@ pytestmark = pytest.mark.component
 SKILL = b"---\r\nname: review\r\ndescription: Review code\r\n---\r\n# Review\r\n"
 
 
+@pytest.fixture(autouse=True)
+def _reset_console_state():
+    """Do not leak root CLI machine-output routing into unrelated tests."""
+    from apm_cli.utils.console import _reset_console
+
+    yield
+    _reset_console()
+
+
 def snapshot(root: Path) -> dict[str, bytes]:
     """Capture all regular file payloads without following symlinks."""
     return {

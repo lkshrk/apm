@@ -8,10 +8,10 @@ from typing import Any
 
 import pytest
 
+from apm_cli.integration.hook_diagnostics import _emit_hook_event_diagnostics
 from apm_cli.integration.hook_integrator import (
     _HOOK_EVENT_MAP,
     HookIntegrator,
-    _emit_hook_event_diagnostics,
 )
 from apm_cli.integration.targets import KNOWN_TARGETS
 from apm_cli.models.apm_package import APMPackage, PackageInfo

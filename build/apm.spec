@@ -97,6 +97,8 @@ datas = [
      'apm_cli/core/_child_tls'),
     (str(repo_root / 'src' / 'apm_cli' / 'core' / '_child_tls' / '_apm_tls.pth'),
      'apm_cli/core/_child_tls'),
+    (str(repo_root / 'src' / 'apm_cli' / 'integration' / 'omp_hook_runtime.ts'),
+     'apm_cli/integration'),
 ]
 
 # Bundle platform-appropriate token helper

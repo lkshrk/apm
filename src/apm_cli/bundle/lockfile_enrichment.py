@@ -9,7 +9,7 @@ from .formats import BundleFormat, coerce_bundle_format
 
 # Cross-target path equivalences for skills/ and agents/ directories.
 # Only these two directory types are semantically identical across targets;
-# commands, instructions, hooks are target-specific and are NOT mapped.
+# commands, instructions, hooks and native extensions are NOT mapped.
 #
 # .github/ is the canonical interop prefix -- install always creates it, so
 # all non-github targets map FROM .github/.  The copilot target additionally
@@ -125,8 +125,8 @@ def _filter_files_by_target(
 
     When files are deployed under one target prefix (e.g. ``.github/skills/``)
     but the pack target is different (e.g. ``claude``), skills and agents are
-    remapped to the equivalent target path.  Commands, instructions, and hooks
-    are NOT remapped -- they are target-specific.
+    remapped to the equivalent target path. Commands, instructions, hooks and
+    native extensions are NOT remapped -- their runtimes are target-specific.
 
     *target* may be a single string or a list of strings.  For a list, the
     union of all relevant prefixes and cross-target maps is used.

@@ -827,3 +827,43 @@ class TestValidateApmPackageWithYml:
         result: ValidationResult = validate_apm_package(tmp_path)
         assert not any("Canvas extension" in w for w in result.warnings)
         assert any("No primitive files" in w for w in result.warnings)
+
+
+class TestNativeExtensionAdmission:
+    def test_native_only_is_read_only_and_preserves_metadata(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(
+            '{"name":"native-widget","version":"2.3.4","omp":{"extensions":["entry.ts"]}}'
+        )
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        result = validate_apm_package(tmp_path, read_only=True)
+        assert result.is_valid, result.errors
+        assert result.package_type is PackageType.EXTENSION_PACKAGE
+        assert result.package.name == "native-widget"
+        assert result.package.version == "2.3.4"
+        assert not (tmp_path / "apm.yml").exists()
+        assert not (tmp_path / ".apm").exists()
+        assert any("'extensions'" in warning for warning in result.warnings)
+
+    def test_apm_manifest_with_native_only_keeps_target_restrictions(self, tmp_path: Path) -> None:
+        (tmp_path / "apm.yml").write_text("name: restricted\nversion: 1.0.0\ntargets: [claude]\n")
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["entry.ts"]}}')
+        result = validate_apm_package(tmp_path, read_only=True)
+        assert result.is_valid, result.errors
+        assert result.package_type is PackageType.APM_PACKAGE
+        assert result.package.targets == ["claude"]
+
+    def test_unbuilt_native_manifest_admitted_without_source_mutation(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["missing.ts"]}}')
+        result = validate_apm_package(tmp_path, read_only=True)
+        assert result.is_valid, result.errors
+        assert result.package_type is PackageType.EXTENSION_PACKAGE
+        assert not (tmp_path / "apm.yml").exists()
+        assert not (tmp_path / ".apm").exists()
+
+    def test_structure_validator_accepts_native_only(self, tmp_path: Path) -> None:
+        from apm_cli.deps.package_validator import PackageValidator
+
+        root = tmp_path / ".omp" / "extensions"
+        root.mkdir(parents=True)
+        (root / "entry.ts").write_text("export default function () {}")
+        assert PackageValidator().validate_package_structure(tmp_path).is_valid

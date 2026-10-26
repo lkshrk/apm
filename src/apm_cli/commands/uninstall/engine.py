@@ -2,7 +2,7 @@
 
 import builtins
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -1094,9 +1094,11 @@ def _native_hook_state_exists(project_root: Path, targets: list[object]) -> bool
         if config is None:
             continue
         target_dir = project_root / target.root_dir
-        if (target_dir / config.config_filename).exists() or (
-            target_dir / _APM_HOOKS_SIDECAR
-        ).exists():
+        if (
+            (target_dir / config.config_filename).exists()
+            or (target_dir / _APM_HOOKS_SIDECAR).exists()
+            or (target.name == "omp" and (target_dir / "apm-hooks-runtime.json").exists())
+        ):
             return True
     return False
 
@@ -1172,6 +1174,7 @@ def _sync_integrations_after_uninstall(
         command=_integrators["commands"],
         hook=_integrators["hooks"],
         canvas=_integrators["canvas"],
+        extensions=_integrators["extensions"],
     )
 
     # Resolve targets once -- used for both Phase 1 removal and Phase 2 re-integration.
@@ -1213,6 +1216,8 @@ def _sync_integrations_after_uninstall(
 
     counts = {entry.counter_key: 0 for entry in _dispatch.values()}
     package_deployed_files: dict[str, list[str]] = {}
+    failed_extension_paths: list[str] = []
+    extension_errors = 0
 
     # Phase 1: Remove all APM-deployed files
     # Per-target sync for primitives with sync_for_target
@@ -1233,13 +1238,20 @@ def _sync_integrations_after_uninstall(
             if _buckets is not None:
                 _bucket_key = BaseIntegrator.partition_bucket_key(_prim_name, _target.name)
                 _managed_subset = _buckets.get(_bucket_key, set())
+            sync_kwargs = {}
+            if _prim_name == "extensions":
+                sync_kwargs["managed_file_hashes"] = deployed_file_hashes
             result = _integrators[_prim_name].sync_for_target(
                 _target,
                 apm_package,
                 project_root,
                 managed_files=_managed_subset,
+                **sync_kwargs,
             )
             counts[_entry.counter_key] += result.get("files_removed", 0)
+            if _prim_name == "extensions":
+                failed_extension_paths.extend(result.get("failed_paths", []))
+                extension_errors += result.get("errors", 0)
 
     # Skills (multi-target, handled by SkillIntegrator)
     # Check the target's effective skills root (deploy_root + skills subdir)
@@ -1334,12 +1346,14 @@ def _sync_integrations_after_uninstall(
     # Phase 2 rebuild loop below iterates -- so a harness dropped from
     # this project's `targets:` list is never wiped for packages that
     # remain declared and installed (#2250).
+    # Native omp ownership was surgically reconciled before lock release.
+    # Do not clear/re-render surviving or first-party native hook handlers.
     result = _integrators["hooks"].sync_integration(
         apm_package,
         project_root,
         managed_files=_buckets["hooks"] if _buckets else None,
         managed_file_hashes=deployed_file_hashes,
-        targets=_resolved_targets,
+        targets=[target for target in _resolved_targets if target.name != "omp"],
     )
     counts["hooks"] = result.get("files_removed", 0)
     unsafe_hook_paths = result.get("unsafe_paths", [])
@@ -1394,15 +1408,41 @@ def _sync_integrations_after_uninstall(
             deployed_files = package_deployed_files.setdefault(dep_key, [])
 
             try:
+                from ...integration.extension_integrator import RECEIPT_FILENAME
+
+                locked_survivor = lockfile.get_dependency(dep_key) if lockfile is not None else None
+                rebuild_extensions = locked_survivor is not None and any(
+                    path in all_deployed_files and Path(path).name == RECEIPT_FILENAME
+                    for path in locked_survivor.deployed_files
+                )
+                # Native bundles have exclusive receipt-backed ownership. Only
+                # a refreshed source slot whose old bundle was removed needs
+                # rematerialization; unrelated survivors retain their evidence.
+                preserved_native_kinds = (
+                    {"hooks"} if rebuild_extensions else {"hooks", "extensions"}
+                )
+                survivor_targets = [
+                    replace(
+                        target,
+                        primitives={
+                            kind: mapping
+                            for kind, mapping in target.primitives.items()
+                            if kind not in preserved_native_kinds
+                        },
+                    )
+                    if target.name == "omp"
+                    else target
+                    for target in authorized_targets
+                ]
                 integration_result = integrate_package_primitives(
                     pkg_info,
                     project_root,
-                    targets=authorized_targets,
+                    targets=survivor_targets,
                     integrators=_integrator_bundle,
                     force=False,
                     managed_files=None,
                     diagnostics=reintegration_diagnostics,
-                    package_name=dep_ref.get_identity(),
+                    package_name=dep_ref.get_unique_key(),
                     logger=logger,
                     scope=_rebuild_scope,
                     allow_executables=_allow_executables,
@@ -1424,8 +1464,8 @@ def _sync_integrations_after_uninstall(
     return IntegrationCleanupOutcome(
         counts=counts,
         deployed_files=package_deployed_files,
-        failed_paths=failed_hook_paths,
-        error_count=result.get("errors", 0),
+        failed_paths=failed_hook_paths + failed_extension_paths,
+        error_count=result.get("errors", 0) + extension_errors,
         materialization_session=materialization_session,
     )
 

@@ -14,10 +14,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from apm_cli.integration.hook_bundle import copy_deployed_hook_bundle
+from apm_cli.integration.hook_diagnostics import _emit_hook_event_diagnostics
 from apm_cli.integration.hook_integrator import (
     _HOOK_EVENT_MAP,
     HookIntegrationResult,
-    _emit_hook_event_diagnostics,
 )
 from apm_cli.integration.hook_ir import HookBinding, HookHandler
 from apm_cli.integration.hook_native_formats import _entries_to_ir
@@ -242,6 +242,7 @@ def integrate_kiro_hooks(
         package_info,
         "kiro",
         source_plan=source_plan,
+        is_first_party=integrator._is_root_local_package(package_info, project_root),
     )
     hook_files = hook_sources.descriptors_for("kiro")
     if not hook_files:

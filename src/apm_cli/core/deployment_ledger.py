@@ -42,9 +42,11 @@ _LEGACY_TARGET_PREFIXES = {
     ".gemini/": "gemini",
     ".codex/": "codex",
     ".opencode/": "opencode",
+    ".omp/": "omp",
 }
 _LEGACY_USER_TARGET_PREFIXES = {
     ".copilot/": "copilot",
+    ".omp/agent/": "omp",
 }
 _LOCAL_BUNDLE_OWNER = "local-bundle"
 UNATTRIBUTED_TARGET = "legacy"

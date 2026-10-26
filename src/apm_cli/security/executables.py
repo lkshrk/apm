@@ -1,12 +1,12 @@
 """Executable primitive approval gate (npm v12-inspired opt-in model).
 
-APM packages can declare five kinds of executable primitives -- hooks,
-MCP servers, LSP servers, bin/ executables, and canvas extensions -- that run arbitrary
+APM packages can declare six kinds of executable primitives -- hooks,
+MCP servers, LSP servers, bin/ executables, canvas and native extensions -- that run arbitrary
 code on the developer's machine.  When the consuming project declares an
 ``allowExecutables`` block in its ``apm.yml``, this module enforces a
 deny-by-default policy: none of these primitives are deployed unless
-explicitly approved.  Projects that omit the block entirely get
-backward-compatible behaviour (all executables deployed).
+explicitly approved. Projects that omit the block retain backward-compatible
+behaviour for legacy executables; native extensions always require approval.
 
 The design mirrors npm v12's ``allowScripts`` (shipping July 2026):
 version-pinned per-package approval, interactive prompts at install
@@ -31,6 +31,7 @@ EXEC_TYPE_MCP = "mcp"
 EXEC_TYPE_BIN = "bin"
 EXEC_TYPE_CANVAS = "canvas"
 EXEC_TYPE_LSP = "lsp"
+EXEC_TYPE_EXTENSIONS = "extensions"
 
 # Types with active enforcement in the install gate.
 ENFORCED_EXEC_TYPES = (
@@ -39,6 +40,7 @@ ENFORCED_EXEC_TYPES = (
     EXEC_TYPE_MCP,
     EXEC_TYPE_CANVAS,
     EXEC_TYPE_LSP,
+    EXEC_TYPE_EXTENSIONS,
 )
 
 # All recognised exec-type keys (for manifest validation).
@@ -48,6 +50,7 @@ ALL_EXEC_TYPES = (
     EXEC_TYPE_BIN,
     EXEC_TYPE_CANVAS,
     EXEC_TYPE_LSP,
+    EXEC_TYPE_EXTENSIONS,
 )
 
 
@@ -67,11 +70,13 @@ class ExecutableDeclaration:
         lsp_count: Number of LSP server entries discovered.
         bin_count: Number of bin/ executables discovered.
         canvas_count: Number of canvas extensions discovered.
+        extension_count: Number of native extension bundles discovered.
         hook_details: Per-hook summaries for ``inspect`` display.
         mcp_details: Per-MCP-server summaries.
         lsp_details: Per-LSP-server summaries.
         bin_details: Per-binary summaries.
         canvas_details: Per-canvas summaries.
+        extension_details: Per-native-extension summaries.
     """
 
     package_key: str
@@ -88,6 +93,8 @@ class ExecutableDeclaration:
     lsp_details: list[str] = field(default_factory=list)
     bin_details: list[str] = field(default_factory=list)
     canvas_details: list[str] = field(default_factory=list)
+    extension_count: int = 0
+    extension_details: list[str] = field(default_factory=list)
 
     @property
     def has_executables(self) -> bool:
@@ -98,6 +105,7 @@ class ExecutableDeclaration:
             or self.mcp_count > 0
             or self.canvas_count > 0
             or self.lsp_count > 0
+            or self.extension_count > 0
         )
 
     @property
@@ -114,6 +122,8 @@ class ExecutableDeclaration:
             types.append(EXEC_TYPE_CANVAS)
         if self.lsp_count > 0:
             types.append(EXEC_TYPE_LSP)
+        if self.extension_count > 0:
+            types.append(EXEC_TYPE_EXTENSIONS)
         return types
 
     def summary_line(self) -> str:
@@ -129,6 +139,8 @@ class ExecutableDeclaration:
             parts.append(f"{self.canvas_count} canvas extension(s)")
         if self.lsp_count:
             parts.append(f"{self.lsp_count} LSP server(s)")
+        if self.extension_count:
+            parts.append(f"{self.extension_count} native extension(s)")
         return ", ".join(parts)
 
 
@@ -149,7 +161,7 @@ def is_package_approved(
             consuming project's ``apm.yml``.  ``None`` means no block
             exists (nothing approved).
         package_key: The approval key (e.g. ``owner/repo#v1.0``).
-        exec_type: One of ``hooks``, ``mcp``, ``lsp``, ``bin``, ``canvas``.
+        exec_type: One of ``hooks``, ``mcp``, ``lsp``, ``bin``, ``canvas``, ``extensions``.
 
     Returns:
         ``True`` only when the block contains a matching entry with
@@ -386,7 +398,7 @@ def resolve_exec_decision(
     v1 NEVER force-executes: ``enforce`` carries no provenance check and
     degrades to ``recommend`` so it stays overridable by a USER deny.
     """
-    if not ctx.gate_enabled:
+    if not ctx.gate_enabled and exec_type != EXEC_TYPE_EXTENSIONS:
         return ExecDecision(True, LAYER_GATE_DISABLED, TRUST_DEPLOYED)
 
     name = _strip_version(package_key)
@@ -535,6 +547,8 @@ def scan_package_executables(
       ``dependencies.mcp`` and ``dependencies.lsp`` -- so we parse those.
     - ``.apm/extensions/<name>/extension.mjs`` -- canvas extension bundles
       (mirrors :meth:`CanvasIntegrator.find_canvas_bundles`)
+    - Explicit native manifests/designated directories -- native extension bundles
+      (mirrors :func:`find_extension_bundles`)
 
     Returns an :class:`ExecutableDeclaration` (may have zero counts if
     the package declares no executables).
@@ -616,6 +630,13 @@ def scan_package_executables(
     canvas_dirs = sorted(canvas_dirs)
     canvas_details = [d.name for d in canvas_dirs]
 
+    # Native factories have independent permission; canvas approval never grants it.
+    from ..integration.extension_discovery import find_extension_bundles
+
+    extension_details = [
+        bundle.name for bundle in find_extension_bundles(install_path, validate_entries=False)
+    ]
+
     return ExecutableDeclaration(
         package_key=key,
         package_name=package_name,
@@ -631,6 +652,8 @@ def scan_package_executables(
         lsp_details=lsp_details,
         bin_details=bin_details,
         canvas_details=canvas_details,
+        extension_count=len(extension_details),
+        extension_details=extension_details,
     )
 
 
@@ -768,7 +791,8 @@ def parse_allow_executables(data: dict[str, Any]) -> dict[str, dict[str, bool]] 
     if not isinstance(raw, dict):
         raise ValueError(
             "allowExecutables must be a mapping of "
-            "package keys to {hooks: bool, mcp: bool, lsp: bool, bin: bool, canvas: bool}"
+            "package keys to {hooks: bool, mcp: bool, lsp: bool, bin: bool, "
+            "canvas: bool, extensions: bool}"
         )
 
     result: dict[str, dict[str, bool]] = {}
@@ -871,10 +895,11 @@ def exec_status_for_declaration(
     * else any declared type not allowed -> ``gated_pending_approval``
     * else (all declared types allowed)  -> ``deployed``
 
-    Returns ``None`` when the package declares no executables (the audit then
-    treats it as trusted) or when the gate is disabled.
+    Returns ``None`` when the package declares no executables, or when only
+    legacy executable types are present and their gate is disabled. Native
+    extensions always require an explicit approval decision.
     """
-    if not exec_types or not ctx.gate_enabled:
+    if not exec_types or (not ctx.gate_enabled and EXEC_TYPE_EXTENSIONS not in exec_types):
         return None
 
     worst = TRUST_DEPLOYED
@@ -1162,7 +1187,7 @@ def _parse_grant_block(
     if not isinstance(raw, dict):
         raise ValueError(
             f"{where} must be a mapping of package keys to "
-            "{hooks: bool, mcp: bool, lsp: bool, bin: bool, canvas: bool}"
+            "{hooks: bool, mcp: bool, lsp: bool, bin: bool, canvas: bool, extensions: bool}"
         )
     result: dict[str, dict[str, bool]] = {}
     for pkg_key, entry in raw.items():

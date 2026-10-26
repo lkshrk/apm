@@ -167,6 +167,16 @@ def unpack_bundle(
             if dep_files:
                 dep_file_map[dep_key] = dep_files
 
+        # This deprecated copy-only path has no executable admission context.
+        # Native code must go through the normal content-bound trust gate.
+        from ..integration.extension_discovery import is_native_extension_path
+
+        if any(is_native_extension_path(path) for path in unique_files):
+            raise ValueError(
+                "Native extension bundles require executable approval. "
+                "Use 'apm install <bundle> --target omp' instead of 'apm unpack'."
+            )
+
         # Security + feature gate: canvas extensions are executable Node
         # bundles (``extension.mjs``).  ``apm unpack`` (deprecated) copies
         # deployed files verbatim WITHOUT routing through ``CanvasIntegrator``.

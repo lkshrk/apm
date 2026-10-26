@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apm-cli"
-version = "0.35.0+omni.2"
+version = "0.35.0+omni.3"
 description = "MCP configuration tool"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -71,6 +71,7 @@ include = ["apm_cli*"]
 # Delivery no longer depends on this (ensure_child_tls_bootstrap generates the
 # .pth inline), but packaging it keeps the source tree and wheel in sync.
 "apm_cli.core._child_tls" = ["*.pth"]
+"apm_cli.integration" = ["omp_hook_runtime.ts"]
 
 [tool.ruff]
 line-length = 100
