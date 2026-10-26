@@ -93,6 +93,7 @@ class SafeMCPInstaller:
         runtime_vars: dict[str, str] = None,  # noqa: RUF013
         replace_existing: bool = False,
         managed_fields: set[str] | None = None,
+        managed_env_keys: set[str] | None = None,
     ) -> InstallationSummary:
         """Install MCP servers with conflict detection.
 
@@ -131,6 +132,10 @@ class SafeMCPInstaller:
                     kwargs["server_name"] = server_ref
                 if self.runtime in {"claude", "omp"} and replace_existing and managed_fields:
                     kwargs["managed_fields"] = managed_fields
+                if self.runtime == "codex" and replace_existing and managed_env_keys is not None:
+                    kwargs["managed_env_keys"] = managed_env_keys
+                    if managed_fields:
+                        kwargs["managed_fields"] = managed_fields
 
                 result = self.adapter.configure_mcp_server(server_ref, **kwargs)
 
