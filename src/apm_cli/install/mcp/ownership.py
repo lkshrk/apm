@@ -38,6 +38,7 @@ def compare_native_mcp_connection(
     managed: bool,
     existing_configs: Mapping[str, Any] | None = None,
     managed_fields: set[str] | None = None,
+    managed_env_keys: set[str] | None = None,
     native_hash: str | None = None,
     registry_request: bool = False,
     env_overrides: dict | None = None,
@@ -69,6 +70,8 @@ def compare_native_mcp_connection(
     comparison = native
     matches_baseline = False
     baseline_owned_auth_fields: set[str] = set()
+    baseline_codex_local_fields: set[str] = set()
+    baseline_codex_env_keys: set[str] = set()
     if managed and isinstance(stored_config, dict):
         try:
             dependency = MCPDependency.from_dict(stored_config)
@@ -84,6 +87,14 @@ def compare_native_mcp_connection(
                 matches_baseline = client.matches_managed_server_config(comparison, expected)
                 if matches_baseline and managed_fields is not None:
                     managed_fields.update(expected)
+                if client.target_name == "codex" and not registry_request:
+                    expected_env = expected.get("env")
+                    baseline_codex_local_fields = client._LOCAL_SERVER_FIELDS.intersection(expected)
+                    baseline_codex_env_keys = (
+                        set(expected_env) if isinstance(expected_env, dict) else set()
+                    )
+                    if matches_baseline and managed_env_keys is not None:
+                        managed_env_keys.update(baseline_codex_env_keys)
             elif native_hash is not None and isinstance(native, dict):
                 comparable = (
                     client.managed_server_config(
@@ -98,6 +109,25 @@ def compare_native_mcp_connection(
         except (TypeError, ValueError):
             logger.debug("Unusable MCP baseline for %s on %s", name, client.target_name)
     if requested is not None:
+        if client.target_name == "codex" and not registry_request and isinstance(native, dict):
+            requested_env = requested.get("env")
+            native_env = native.get("env")
+            removed_local = any(
+                key in native and key not in requested for key in baseline_codex_local_fields
+            )
+            removed_env = isinstance(native_env, dict) and any(
+                env_key in native_env
+                and not (isinstance(requested_env, dict) and env_key in requested_env)
+                for env_key in baseline_codex_env_keys
+            )
+            if removed_local or removed_env:
+                # Projection would treat previously owned preferences as local and
+                # skip the removal; route it to the writer only for a verified baseline.
+                return (
+                    NativeMcpConnectionState.UPDATE_MANAGED
+                    if matches_baseline
+                    else NativeMcpConnectionState.CONFLICT
+                )
         if (
             client.target_name == "omp"
             and isinstance(native, dict)

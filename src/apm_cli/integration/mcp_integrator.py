@@ -1278,6 +1278,7 @@ class MCPIntegrator:
         replace_existing: bool = False,
         installed_servers: builtins.set[str] | None = None,
         managed_fields: builtins.set[str] | None = None,
+        managed_env_keys: builtins.set[str] | None = None,
         written_native_hashes: builtins.dict[str, str] | None = None,
     ) -> bool:
         """Install MCP dependencies for a specific runtime.
@@ -1303,6 +1304,7 @@ class MCPIntegrator:
                         user_scope=user_scope,
                         replace_existing=replace_existing,
                         managed_fields=managed_fields,
+                        managed_env_keys=managed_env_keys,
                     )
                     if result["failed"]:
                         logger.error(f"  Failed to install {dep}")

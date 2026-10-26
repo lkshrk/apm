@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.2] - 2026-10-26
+
+### Fixed
+
+- Verified self-defined Codex updates preserve undeclared native tool settings, startup/tool timeouts and environment keys without weakening declared connection ownership. Registry connections remain strict and unmanaged Codex entries are not automatically adopted.
+
 ## [0.35.0+omni.1] - 2026-10-26
 
 ### Added

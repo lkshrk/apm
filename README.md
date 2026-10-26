@@ -16,7 +16,7 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 ## Omni fork: omp MCP support
 
 This fork is based on the upstream **v0.35.0 release** and reports
-`0.35.0+omni.1`. Omni pins an immutable commit of `lkshrk/apm`; the upstream
+`0.35.0+omni.2`. Omni pins an immutable commit of `lkshrk/apm`; the upstream
 installers below do not include these additions.
 
 Select `omp` explicitly in `targets:`. Skills use the shared `.agents/skills`
@@ -47,6 +47,13 @@ APM preserves unrelated native entries, envelope fields, omp's
 connections require explicit resolution. Removal requires verified ownership
 and an unchanged managed connection. Keep the generated `mcp.json` out of
 dotfiles; track the manifest and helper source instead.
+
+For verified APM-owned self-defined Codex servers, updates preserve undeclared
+native `tools`, startup/tool timeouts, and additional environment keys.
+Declared connection fields and environment values remain protected; removing
+a previously declared field removes it rather than turning it into a local
+preference. Registry connections retain strict native-config verification.
+Unmanaged Codex connections are not automatically adopted.
 
 ## Why APM
 

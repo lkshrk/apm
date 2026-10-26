@@ -210,20 +210,59 @@ class CodexClientAdapter(MCPClientAdapter):
             self._write_config(config)
         return migrated
 
+    # Native Codex tuning that APM does not render from a self-defined declaration.
+    # These are retained only when a verified declaration baseline omits them.
+    _LOCAL_SERVER_FIELDS = frozenset({"tools", "startup_timeout_sec", "tool_timeout_sec"})
+
+    def managed_server_config(self, native: dict, *, baseline: dict | None = None) -> dict:
+        """Return connection data, excluding undeclared local preferences when baselined.
+
+        Without *baseline* this is the exact native entry (registry behavior).
+        With a self-defined baseline, only ``tools``/timeouts and ``env`` keys that
+        the baseline did not declare are local; all other fields remain managed.
+        """
+        comparable = dict(native)
+        if baseline is None:
+            return comparable
+        for key in self._LOCAL_SERVER_FIELDS - set(baseline):
+            comparable.pop(key, None)
+        env = comparable.get("env")
+        if isinstance(env, dict):
+            if "env" in baseline:
+                declared = baseline["env"] if isinstance(baseline["env"], dict) else {}
+                comparable["env"] = {name: value for name, value in env.items() if name in declared}
+            else:
+                comparable.pop("env")
+        for key in ("args", "env"):
+            if key not in comparable and baseline.get(key) in ([], {}):
+                comparable[key] = baseline[key]
+        return comparable
+
     def matches_managed_server_config(self, native: object, expected: dict) -> bool:
-        """Accept the historical empty-ID spelling without accepting foreign identity."""
+        """Match a self-defined baseline while retaining strict connection ownership."""
         if not isinstance(native, dict) or self.get_registry_id(native):
             return False
-        comparable = dict(native)
+        comparable = self.managed_server_config(native, baseline=expected)
         if comparable.get("id") == "":
             comparable.pop("id")
         return comparable == expected
 
-    def update_config(self, config_updates):
+    def update_config(
+        self,
+        config_updates,
+        *,
+        managed_fields: set[str] | None = None,
+        managed_env_keys: set[str] | None = None,
+    ):
         """Update the Codex CLI MCP configuration.
 
         Args:
             config_updates (dict): Configuration updates to apply.
+            managed_fields: Previously rendered top-level fields for a verified
+                self-defined entry; declared fields removed by this update are not retained.
+            managed_env_keys: Previously declared env keys for a verified self-defined
+                entry. Supplying it (even empty) enables preservation of undeclared
+                local preferences; registry updates leave it unset and replace entries.
         """
         current_config = self.get_current_config()
         if current_config is None:
@@ -235,8 +274,33 @@ class CodexClientAdapter(MCPClientAdapter):
         elif isinstance(current_config["mcp_servers"], InlineTable):
             current_config["mcp_servers"] = self._expand_inline_table(current_config["mcp_servers"])
 
+        updates = config_updates
+        if managed_env_keys is not None:
+            servers = current_config["mcp_servers"]
+            updates = {}
+            for name, config in config_updates.items():
+                previous = servers.get(name)
+                merged = dict(config)
+                if isinstance(previous, dict):
+                    for key in self._LOCAL_SERVER_FIELDS:
+                        if (
+                            key in previous
+                            and key not in config
+                            and key not in (managed_fields or ())
+                        ):
+                            merged[key] = previous[key]
+                    previous_env = previous.get("env")
+                    if isinstance(previous_env, dict):
+                        env = dict(config.get("env") or {})
+                        for env_name, value in previous_env.items():
+                            if env_name not in env and env_name not in managed_env_keys:
+                                env[env_name] = value
+                        if env:
+                            merged["env"] = env
+                updates[name] = merged
+
         # Apply updates to mcp_servers section
-        current_config["mcp_servers"].update(config_updates)
+        current_config["mcp_servers"].update(updates)
 
         self._write_config(current_config)
         return True
@@ -278,6 +342,8 @@ class CodexClientAdapter(MCPClientAdapter):
         env_overrides=None,
         server_info_cache=None,
         runtime_vars=None,
+        managed_fields=None,
+        managed_env_keys=None,
     ):
         """Configure an MCP server in Codex CLI configuration.
 
@@ -323,7 +389,11 @@ class CodexClientAdapter(MCPClientAdapter):
             from apm_cli.install.mcp.ownership import mcp_native_hash
 
             fingerprint = mcp_native_hash(self.managed_server_config(server_config))
-            if not self.update_config({config_key: server_config}):
+            if not self.update_config(
+                {config_key: server_config},
+                managed_fields=managed_fields,
+                managed_env_keys=managed_env_keys,
+            ):
                 return False
             self.written_mcp_hashes[server_url] = fingerprint
 
