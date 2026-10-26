@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.1] - 2026-10-26
+
+### Added
+
+- Explicit `omp` target with shared skills and native project/user MCP configuration, preserving local controls and unrelated connections.
+- Per-server MCP `targets` selections across installation, ownership, frozen replay, audit and removal.
+- Manifest-declared JSON header helpers rendered as omp runtime commands without executing helpers or persisting credentials during deployment.
+
 ## [0.35.0] - 2026-10-22
 
 ### Added

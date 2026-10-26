@@ -322,7 +322,11 @@ def run_mcp_install(  # noqa: PLR0913
                 retired_targets = {
                     previous_target: {mcp_name}
                     for previous_target, server_names in old_target_servers.items()
-                    if mcp_name in server_names and previous_target not in requested_target_servers
+                    if mcp_name in server_names
+                    and (
+                        previous_target not in requested_target_servers
+                        or not dep.targets_runtime(previous_target)
+                    )
                 }
                 if retired_targets and conflict is None:
                     # Cleanup can fail after a destination write. Keep both deployments

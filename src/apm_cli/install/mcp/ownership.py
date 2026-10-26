@@ -68,9 +68,11 @@ def compare_native_mcp_connection(
         )
     comparison = native
     matches_baseline = False
+    baseline_owned_auth_fields: set[str] = set()
     if managed and isinstance(stored_config, dict):
         try:
             dependency = MCPDependency.from_dict(stored_config)
+            baseline_owned_auth_fields = {"auth", "oauth"}.intersection(dependency.extra or {})
             if dependency.is_self_defined:
                 expected = client.render_server_config(
                     MCPIntegrator._build_self_defined_info(dependency)
@@ -83,18 +85,36 @@ def compare_native_mcp_connection(
                 if matches_baseline and managed_fields is not None:
                     managed_fields.update(expected)
             elif native_hash is not None and isinstance(native, dict):
-                comparable = client.managed_server_config(native)
+                comparable = (
+                    client.managed_server_config(
+                        native, declared_fields=set(dependency.extra or {})
+                    )
+                    if client.target_name == "omp"
+                    else client.managed_server_config(native)
+                )
                 matches_baseline = mcp_native_hash(comparable) == native_hash
                 if matches_baseline and managed_fields is not None:
                     managed_fields.update(comparable)
         except (TypeError, ValueError):
             logger.debug("Unusable MCP baseline for %s on %s", name, client.target_name)
     if requested is not None:
+        if (
+            client.target_name == "omp"
+            and isinstance(native, dict)
+            and any(key in native and key not in requested for key in baseline_owned_auth_fields)
+        ):
+            # Runtime auth/OAuth is ignored only when it was never APM-owned.
+            # An explicit removal must reach the writer with old managed fields.
+            return (
+                NativeMcpConnectionState.UPDATE_MANAGED
+                if matches_baseline
+                else NativeMcpConnectionState.CONFLICT
+            )
         requested_native = comparison if matches_baseline else native
         matches_request = (
             isinstance(requested_native, dict)
             and client.managed_server_config(requested_native) == requested
-            if registry_request
+            if registry_request and client.target_name != "omp"
             else client.matches_managed_server_config(requested_native, requested)
         )
         if matches_request:
@@ -242,6 +262,8 @@ def adopt_legacy_mcp_target_servers(
             continue
 
         for name, dependency in baselines.items():
+            if not dependency.targets_runtime(runtime):
+                continue
             try:
                 expected = client.render_server_config(
                     MCPIntegrator._build_self_defined_info(dependency)

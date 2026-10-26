@@ -1541,10 +1541,29 @@ def _cleanup_stale_mcp(
         )
         owned_servers = {server for servers in target_servers.values() for server in servers}
         retained_unowned = stale_servers - owned_servers
-    contracted_target_servers = {
-        runtime: sorted(servers.intersection(new_mcp_servers))
+    declarations = {dep.name: dep for dep in view.dependencies}
+    retired_targets = {
+        runtime: {
+            name
+            for name in servers & new_mcp_servers
+            if not declarations[name].targets_runtime(runtime)
+        }
         for runtime, servers in target_servers.items()
-        if servers.intersection(new_mcp_servers)
+    }
+    retired_names = {name for names in retired_targets.values() for name in names}
+    if retired_names:
+        _remove_stale_mcp_from_recorded_targets(
+            retired_names,
+            lockfile,
+            project_root=project_root,
+            user_scope=user_scope,
+            scope=scope,
+            target_servers=retired_targets,
+        )
+    contracted_target_servers = {
+        runtime: sorted(servers.intersection(new_mcp_servers) - retired_targets[runtime])
+        for runtime, servers in target_servers.items()
+        if servers.intersection(new_mcp_servers) - retired_targets[runtime]
     }
     surviving_mcp_servers = new_mcp_servers | retained_unowned
     if persist:

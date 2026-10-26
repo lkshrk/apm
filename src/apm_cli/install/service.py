@@ -91,12 +91,24 @@ class InstallService:
                     f"  - MCP server {name!a} cannot reproduce its locked config "
                     "from the available source declarations"
                 )
+            for dep in current_mcp.dependencies:
+                for target, names in mcp_ownership.items():
+                    if dep.name in names and not dep.targets_runtime(target):
+                        reasons.append(
+                            f"  - MCP server {dep.name!a} has ownership for excluded target {target!a}"
+                        )
         for service, names, targets, recorded in (
             ("MCP", mcp_servers, mcp_targets, mcp_ownership),
             ("LSP", lsp_servers, lsp_targets, lockfile.lsp_target_servers),
         ):
             for target in targets:
                 for name in sorted(names - set(recorded.get(target, ()))):
+                    if service == "MCP" and current_mcp is not None:
+                        declaration = next(
+                            (dep for dep in current_mcp.dependencies if dep.name == name), None
+                        )
+                        if declaration is not None and not declaration.targets_runtime(target):
+                            continue
                     reasons.append(
                         f"  - {service} server {name!a} target {target!a} "
                         "ownership is not recorded in apm.lock.yaml"

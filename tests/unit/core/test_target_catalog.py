@@ -57,7 +57,7 @@ def test_current_target_sets_and_aliases_are_characterized() -> None:
         == EXPERIMENTAL_TARGETS
     )
     assert (
-        frozenset({"agent-skills", "antigravity", "grok-bot", "grok-cloud", "hermes"})
+        frozenset({"agent-skills", "antigravity", "grok-bot", "grok-cloud", "hermes", "omp"})
         == EXPLICIT_ONLY_TARGETS
     )
     assert frozenset({"intellij"}) == MCP_ONLY_TARGETS
@@ -88,6 +88,7 @@ def test_current_target_sets_and_aliases_are_characterized() -> None:
                 "hermes",
                 "intellij",
                 "kiro",
+                "omp",
                 "openclaw",
                 "opencode",
                 "vscode",
@@ -252,6 +253,12 @@ def test_current_native_profiles_are_characterized() -> None:
                 "hooks": ("hooks", ".json", "kiro_hooks", None, False),
             },
             "agents",
+            None,
+        ),
+        "omp": (
+            ".agents",
+            {"skills": ("skills", "/SKILL.md", "skill_standard", None, False)},
+            None,
             None,
         ),
         "openclaw": (

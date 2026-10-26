@@ -25,7 +25,7 @@ import warnings
 from collections.abc import Iterator
 from functools import cached_property
 from pathlib import Path
-from typing import Literal, Union
+from typing import Literal, Union, cast
 
 import click
 
@@ -73,6 +73,7 @@ TargetType = Literal[
     "grok-build",
     "hermes",
     "kiro",
+    "omp",
     "opencode",
     "vscode",
     "windsurf",
@@ -117,6 +118,7 @@ UserTargetType = Literal[
     "grok-build",
     "hermes",
     "kiro",
+    "omp",
     "opencode",
     "vscode",
     "windsurf",
@@ -171,8 +173,8 @@ def detect_target(  # noqa: PLR0911
             return "grok-build", "explicit --target flag"
         elif explicit_target == "agent-skills":
             return "agent-skills", "explicit --target flag"
-        elif explicit_target == "hermes":
-            return "hermes", "explicit --target flag"
+        elif explicit_target in ("hermes", "omp"):
+            return cast(TargetType, explicit_target), "explicit --target flag"
         elif explicit_target == "all":
             return "all", "explicit --target flag"
 
@@ -202,8 +204,8 @@ def detect_target(  # noqa: PLR0911
             return "grok-build", "apm.yml target"
         elif config_target == "agent-skills":
             return "agent-skills", "apm.yml target"
-        elif config_target == "hermes":
-            return "hermes", "apm.yml target"
+        elif config_target in ("hermes", "omp"):
+            return cast(TargetType, config_target), "apm.yml target"
         elif config_target == "all":
             return "all", "apm.yml target"
 
@@ -425,6 +427,7 @@ def get_target_description(target: UserTargetType) -> str:
         "grok-build": "AGENTS.md + .grok/rules/ + .grok/agents/ + .grok/commands/ + .grok/skills/",
         "hermes": "AGENTS.md + .agents/skills/ (project) or $HERMES_HOME/skills/ + $HERMES_HOME/config.yaml MCP (explicit --target only)",
         "kiro": "AGENTS.md + .kiro/steering/ + .kiro/skills/ + .kiro/hooks/ + .kiro/settings/mcp.json",
+        "omp": ".agents/skills/ only (project) or ~/.agents/skills/ (--global) + omp native MCP config (explicit --target only)",
         "openclaw": ".agents/skills/ (project) or ~/.openclaw/skills/ (--global) -- experimental",
         "opencode": "AGENTS.md + .opencode/agents/ + .opencode/commands/ + .opencode/skills/",
         "vscode": "AGENTS.md + .github/copilot-instructions.md + .github/prompts/ + .github/agents/",

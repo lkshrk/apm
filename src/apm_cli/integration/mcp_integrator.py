@@ -490,6 +490,7 @@ class MCPIntegrator:
             info["_apm_tools_override"] = dep.tools
 
         dep.apply_opencode_enabled(info)
+        dep.apply_header_helper(info)
 
         # Pass through harness-specific extra keys for adapters to merge
         if dep.extra:
@@ -510,6 +511,7 @@ class MCPIntegrator:
             return
 
         dep.apply_opencode_enabled(info)
+        dep.apply_header_helper(info)
 
         # Transport overlay: select matching transport from available options
         if dep.transport:
@@ -795,6 +797,29 @@ class MCPIntegrator:
         project_root_path = Path(project_root) if project_root is not None else Path.cwd()
 
         # Per-runtime cleanup -- each helper reads, diffs, writes, and logs.
+        if "omp" in target_runtimes:
+            client = ClientFactory.create_client(
+                "omp",
+                project_root=project_root_path,
+                user_scope=scope is InstallScope.USER or (scope is None and user_scope),
+            )
+            config_path = Path(client.get_config_path())
+            if not _reject_symlink_config(
+                config_path, "omp MCP config", logger, fail_on_write_error=fail_on_write_error
+            ):
+                verified_keys = require_removable_mcp_connections(
+                    client, stale_names, stored_configs or {}, (native_hashes or {}).get("omp")
+                )
+                _clean_json_mcp_config(
+                    config_path,
+                    verified_keys,
+                    logger,
+                    "omp MCP config",
+                    servers_key=client.mcp_servers_key,
+                    trailing_newline=True,
+                    fail_on_write_error=fail_on_write_error,
+                )
+
         if "vscode" in target_runtimes:
             _clean_json_mcp_config(
                 project_root_path / ".vscode" / "mcp.json",

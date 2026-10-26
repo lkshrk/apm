@@ -11,6 +11,7 @@ from .adapters.client.gemini import GeminiClientAdapter
 from .adapters.client.hermes import HermesClientAdapter
 from .adapters.client.intellij import IntelliJClientAdapter
 from .adapters.client.kiro import KiroClientAdapter
+from .adapters.client.omp import OmpClientAdapter
 from .adapters.client.opencode import OpenCodeClientAdapter
 from .adapters.client.vscode import VSCodeClientAdapter
 from .adapters.client.windsurf import WindsurfClientAdapter
@@ -35,6 +36,7 @@ _MCP_CLIENT_REGISTRY: dict[str, type] = {
     "windsurf": WindsurfClientAdapter,
     "claude": ClaudeClientAdapter,
     "hermes": HermesClientAdapter,
+    "omp": OmpClientAdapter,
 }
 
 

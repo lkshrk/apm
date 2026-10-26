@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 # IntelliJ owns a fail-closed atomic user-config contract. Other adapters retain
 # their existing best-effort behavior when a composed target set includes an
 # unavailable optional runtime.
-_STRICT_CONFIG_FAILURE_RUNTIMES = frozenset({"intellij"})
+_STRICT_CONFIG_FAILURE_RUNTIMES = frozenset({"intellij", "omp"})
 
 
 class _PrevalidatedRegistryServers(dict[str, dict]):
@@ -206,7 +206,7 @@ def _install_registry_group(  # noqa: PLR0913
     protected_clients = {
         rt: ClientFactory.create_client(rt, project_root=project_root, user_scope=user_scope)
         for rt in target_runtimes
-        if rt in {"claude", "codex"}
+        if rt in {"claude", "codex", "omp"}
     }
     registry_server_cache: dict[str, dict] = prevalidated_servers or {}
 
@@ -328,6 +328,9 @@ def _install_registry_group(  # noqa: PLR0913
                 successful_runtimes: list[str] = []
                 failed_runtimes: list[str] = []
                 for rt in target_runtimes:
+                    declaration = group_dep_map.get(dep)
+                    if declaration is not None and not declaration.targets_runtime(rt):
+                        continue
                     installed_servers: set[str] = set()
                     written_hashes: dict[str, str] = {}
                     managed_fields: set[str] = set()
@@ -365,6 +368,16 @@ def _install_registry_group(  # noqa: PLR0913
                             NativeMcpConnectionState.MATCHING_MANAGED,
                             NativeMcpConnectionState.MATCHING_FOREIGN,
                         }:
+                            if rt == "omp":
+                                _adopt_matching_omp(
+                                    client,
+                                    dep,
+                                    managed_target_servers,
+                                    native_hashes,
+                                    declared_fields=set(declaration.extra or {})
+                                    if declaration
+                                    else set(),
+                                )
                             logger.verbose_detail(f"{dep} already matches {rt}; no write")
                             continue
                         replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
@@ -469,6 +482,29 @@ def _validate_target_configs(
     _raise_strict_config_failures(unsafe_runtimes, console=console, logger=logger)
 
 
+def _adopt_matching_omp(
+    client, name, managed_target_servers, native_hashes, *, declared_fields: set[str]
+) -> None:
+    """Record an equivalent omp connection without rewriting local preferences."""
+    from apm_cli.core.conflict_detector import MCPConflictDetector
+    from apm_cli.install.mcp.ownership import mcp_native_hash
+
+    native = MCPConflictDetector(client).get_existing_server_configs()[
+        client._determine_config_key(name, None)
+    ]
+    _record_managed_server(
+        managed_target_servers,
+        "omp",
+        name,
+        native_hashes=native_hashes,
+        written_hashes={
+            name: mcp_native_hash(
+                client.managed_server_config(native, declared_fields=declared_fields)
+            )
+        },
+    )
+
+
 def _record_managed_server(
     managed_target_servers: dict[str, set[str]] | None,
     runtime: str,
@@ -478,7 +514,7 @@ def _record_managed_server(
     written_hashes: dict[str, str] | None = None,
     written_connections: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Record a server only after APM successfully writes its target config."""
+    """Record a successful native write or a verified-equivalent omp adoption."""
     if managed_target_servers is not None:
         managed_target_servers.setdefault(runtime, set()).add(server_name)
     if native_hashes is not None and written_hashes and server_name in written_hashes:
@@ -1085,7 +1121,7 @@ def _install_self_defined_deps(
         project_root=project_root,
         user_scope=user_scope,
     )
-    if {"claude", "codex"}.intersection(target_runtimes):
+    if {"claude", "codex", "omp"}.intersection(target_runtimes):
         # Native content must be checked even when every requested name exists.
         self_defined_to_install = list(self_defined_names)
     already_configured_candidates_sd = [
@@ -1150,13 +1186,15 @@ def _install_self_defined_deps(
         successful_runtimes: list[str] = []
         failed_runtimes: list[str] = []
         for rt in target_runtimes:
+            if not dep.targets_runtime(rt):
+                continue
             installed_servers: set[str] = set()
             managed_fields: set[str] = set()
             written_hashes: dict[str, str] = {}
             replace_existing = is_update and (
                 managed_target_servers is None or dep.name in managed_target_servers.get(rt, set())
             )
-            if rt in {"claude", "codex"}:
+            if rt in {"claude", "codex", "omp"}:
                 if rt not in protected_clients:
                     protected_clients[rt] = ClientFactory.create_client(
                         rt, project_root=project_root, user_scope=user_scope
@@ -1190,6 +1228,14 @@ def _install_self_defined_deps(
                     NativeMcpConnectionState.MATCHING_MANAGED,
                     NativeMcpConnectionState.MATCHING_FOREIGN,
                 }:
+                    if rt == "omp":
+                        _adopt_matching_omp(
+                            client,
+                            dep.name,
+                            managed_target_servers,
+                            native_hashes,
+                            declared_fields=set(dep.extra or {}),
+                        )
                     logger.verbose_detail(f"{dep.name} already matches {rt}; no write")
                     continue
                 replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
@@ -1333,6 +1379,10 @@ def run_mcp_install(  # noqa: PLR0913
     if not mcp_deps:
         logger.warning("No MCP dependencies found in apm.yml")
         return 0
+    if all(not isinstance(dep, str) and dep.targets == [] for dep in mcp_deps):
+        if managed_target_servers is not None:
+            managed_target_servers.clear()
+        return 0
 
     from apm_cli.core.scope import InstallScope
 
@@ -1403,6 +1453,12 @@ def run_mcp_install(  # noqa: PLR0913
             )
         return 0
 
+    target_runtimes = [
+        target
+        for target in target_runtimes
+        if any(isinstance(dep, str) or dep.targets_runtime(target) for dep in mcp_deps)
+    ]
+
     _validate_target_configs(
         target_runtimes,
         project_root=project_root,
@@ -1429,18 +1485,31 @@ def run_mcp_install(  # noqa: PLR0913
 
     if managed_target_servers is not None:
         active_targets = set(target_runtimes)
-        current_names = {
-            dep.name if hasattr(dep, "name") else dep
-            for dep in mcp_deps
-            if isinstance(dep, str) or hasattr(dep, "name")
+        current_names_by_target = {
+            target: {
+                dep if isinstance(dep, str) else dep.name
+                for dep in mcp_deps
+                if isinstance(dep, str) or dep.targets_runtime(target)
+            }
+            for target in target_runtimes
         }
         for target in list(managed_target_servers):
             if target not in active_targets:
                 del managed_target_servers[target]
             else:
-                managed_target_servers[target].intersection_update(current_names)
+                managed_target_servers[target].intersection_update(current_names_by_target[target])
         for target in target_runtimes:
             managed_target_servers.setdefault(target, set())
+
+    registry_deps = [
+        dep
+        for dep in registry_deps
+        if any(isinstance(dep, str) or dep.targets_runtime(rt) for rt in target_runtimes)
+    ]
+    registry_dep_names = [dep if isinstance(dep, str) else dep.name for dep in registry_deps]
+    self_defined_deps = [
+        dep for dep in self_defined_deps if any(dep.targets_runtime(rt) for rt in target_runtimes)
+    ]
 
     if "codex" in target_runtimes and managed_target_servers is not None:
         from apm_cli.adapters.client.codex import CodexClientAdapter

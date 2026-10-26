@@ -302,7 +302,7 @@ class MCPClientAdapter(ABC):
         extra = server_info.get("_extra")
         if extra and isinstance(extra, dict):
             for k, v in extra.items():
-                if k in _EXTRA_DENYLIST:
+                if k in _EXTRA_DENYLIST or k == "headersHelperKeys":
                     continue
                 if k not in config:
                     config[k] = v

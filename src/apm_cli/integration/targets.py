@@ -891,6 +891,16 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         user_supported=True,
         user_root_dir=".grok",
     ),
+    "omp": TargetProfile(
+        capability=TARGET_CAPABILITIES["omp"],
+        root_dir=".agents",
+        primitives={"skills": PrimitiveMapping("skills", "/SKILL.md", "skill_standard")},
+        auto_create=True,
+        detect_by_dir=False,
+        user_supported=True,
+        user_root_dir=".agents",
+        generated_files=(),
+    ),
     # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
     # the agentskills.io SKILL.md format and the AGENTS.md context-file
     # standard, both already emitted by APM, so skills + instructions reuse

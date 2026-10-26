@@ -13,6 +13,41 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 > **Portable by manifest. Secure by default. Governed by policy.**
 > One file describes every agent's context; one command reproduces it everywhere; one policy controls what an org will allow.
 
+## Omni fork: omp MCP support
+
+This fork is based on the upstream **v0.35.0 release** and reports
+`0.35.0+omni.1`. Omni pins an immutable commit of `lkshrk/apm`; the upstream
+installers below do not include these additions.
+
+Select `omp` explicitly in `targets:`. Skills use the shared `.agents/skills`
+directory. MCP uses `.omp/mcp.json` in projects and `~/.omp/agent/mcp.json`
+globally. A nonempty `PI_CODING_AGENT_DIR` overrides the user directory;
+relative values resolve against the process working directory, without tilde
+expansion. Named omp profiles are not selected automatically.
+
+Each `dependencies.mcp` object can declare `targets: [claude, codex, omp]`.
+Omitting it keeps the existing all-active-target behavior; an empty list
+selects no targets. The selection is intersected with the manifest/CLI targets
+and governs install, lock ownership, frozen replay, audit, and stale removal.
+
+For remote servers, declare `extra.headersHelper` (or
+`extra.http_headers_helper`) and `extra.headersHelperKeys: [Authorization]`
+to use a JSON-map-producing helper. omp receives a runtime `!command` header
+expression using `jq -er`; APM never runs the helper or stores its output.
+The helper and `jq` must be available when omp connects. Header-key metadata
+is not written to other clients. For omp env/header values, literal command
+expressions, bare environment-variable identifiers, and default/extended
+`${...}` substitutions are rejected rather than changing their meaning.
+Use explicit `${NAME}` runtime references; only a declared header helper
+introduces a shell command.
+
+APM preserves unrelated native entries, envelope fields, omp's
+`disabledServers`/`enabledServers`, and existing per-server `instructions` and
+`enabled` options. Equivalent entries can be adopted; different unmanaged
+connections require explicit resolution. Removal requires verified ownership
+and an unchanged managed connection. Keep the generated `mcp.json` out of
+dotfiles; track the manifest and helper source instead.
+
 ## Why APM
 
 AI coding agents need context to be useful — standards, prompts, skills, plugins — but today every developer sets this up manually. Nothing is portable nor reproducible. There's no manifest for it.
