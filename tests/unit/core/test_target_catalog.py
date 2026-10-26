@@ -256,8 +256,12 @@ def test_current_native_profiles_are_characterized() -> None:
             None,
         ),
         "omp": (
-            ".agents",
-            {"skills": ("skills", "/SKILL.md", "skill_standard", None, False)},
+            ".omp",
+            {
+                "skills": ("skills", "/SKILL.md", "skill_standard", ".agents", False),
+                "extensions": ("extensions", "", "omp_extension", None, False),
+                "hooks": ("apm-hooks", ".json", "omp_hooks", None, False),
+            },
             None,
             None,
         ),

@@ -151,6 +151,7 @@ def finalize_native_plugin(
     from apm_cli.security.executables import (
         EXEC_TYPE_BIN,
         EXEC_TYPE_CANVAS,
+        EXEC_TYPE_EXTENSIONS,
         EXEC_TYPE_HOOKS,
         EXEC_TYPE_LSP,
         EXEC_TYPE_MCP,
@@ -183,6 +184,8 @@ def finalize_native_plugin(
     present_types = (
         set(ir_exec_types) | set(on_disk_types) | set(plugin_root_exec_types(install_path))
     )
+    # Copilot does not activate omp/pi native factories from its registered root.
+    present_types.discard(EXEC_TYPE_EXTENSIONS)
 
     approvals = {
         EXEC_TYPE_MCP: mcp_approved,

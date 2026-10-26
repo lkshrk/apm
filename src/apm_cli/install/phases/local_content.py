@@ -156,6 +156,21 @@ def read_local_package_source(dep_ref: DependencyReference, base_dir: Path) -> L
                 or has_marketplace_deployable_manifest(dep_ref)
             ):
                 return LocalPackageSource(local)
+            from apm_cli.models.format_detection import PackageFormatRegistry
+            from apm_cli.models.validation import validate_apm_package
+
+            try:
+                detected = PackageFormatRegistry().detect(local)
+            except ValueError as exc:
+                raise LocalPackageError(f"Invalid local package artifacts: {exc}") from exc
+            if detected.native_extensions is not None or detected.hook_json is not None:
+                validation = validate_apm_package(local, source_path=local, read_only=True)
+                if validation.is_valid:
+                    return LocalPackageSource(local)
+                raise LocalPackageError(
+                    f"Local package is not a valid APM package: {dep_ref.local_path}. "
+                    + "; ".join(validation.errors)
+                )
             raise LocalPackageError(
                 "Local package is not a valid APM package "
                 f"(no apm.yml, SKILL.md, or plugin.json): {dep_ref.local_path}. "

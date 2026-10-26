@@ -23,6 +23,7 @@ class HookSourceSelection:
 
     descriptor_files: dict[str, frozenset[Path]]
     bundle_files: dict[str, frozenset[Path]]
+    is_first_party: bool = False
 
     def descriptors_for(self, target_name: str) -> list[Path]:
         """Return target-routed descriptors in stable path order."""
@@ -164,6 +165,7 @@ def select_hook_sources(
     filter_hook_files: Callable[..., list[Path]],
     iter_bundle_files: Callable[..., list[Path]],
     merge_target_names: Iterable[str],
+    is_first_party: bool = False,
 ) -> HookSourceSelection:
     """Select descriptors and bundle assets for every supported target."""
     all_descriptors = set(hook_files)
@@ -171,6 +173,21 @@ def select_hook_sources(
     bundles_by_target: dict[str, frozenset[Path]] = {}
     parsed_hooks: dict[Path, dict | None] = {}
     supported_targets = {"copilot", "kiro", *merge_target_names}
+    generated_roots: set[Path] = set()
+    if is_first_party:
+        from apm_cli.integration.targets import KNOWN_TARGETS
+
+        generated_roots = {
+            (package_path / root).resolve()
+            for target in KNOWN_TARGETS.values()
+            for root in (
+                target.root_dir,
+                *(mapping.deploy_root for mapping in target.primitives.values()),
+            )
+            if root and root != ".apm"
+        }
+        generated_roots.update((package_path / root).resolve() for root in ("apm_modules", ".pi"))
+        generated_roots.discard(package_path.resolve())
 
     for target_name in dict.fromkeys(target_names):
         if target_name not in supported_targets:
@@ -182,8 +199,20 @@ def select_hook_sources(
             package_identity=package_identity,
             warned_packages=warned_packages,
         )
+        if target_name == "omp":
+            from apm_cli.integration.extension_discovery import find_extension_bundles
+            from apm_cli.integration.hook_file_routing import _hook_file_allowed_targets
+
+            if find_extension_bundles(package_path, is_first_party=is_first_party):
+                if any(_hook_file_allowed_targets(path) for path in descriptors):
+                    raise ValueError(
+                        "omp hooks explicitly selected alongside native extensions; "
+                        "route portable hooks to other targets to prevent duplicate activation"
+                    )
+                descriptors = []
         descriptors_by_target[target_name] = frozenset(descriptors)
         source_roots: set[Path] = set()
+        root_references: set[Path] = set()
         for hook_file in descriptors:
             if hook_file not in parsed_hooks:
                 parsed_hooks[hook_file] = parse_hook_json(hook_file)
@@ -195,9 +224,16 @@ def select_hook_sources(
                 package_path,
                 hook_file.parent,
             ):
-                source_roots.add(_hook_source_root(package_path, hook_file.parent, source_file))
+                source_root = _hook_source_root(package_path, hook_file.parent, source_file)
+                if is_first_party and (
+                    source_root.resolve() == package_path.resolve()
+                    or any(source_root.resolve().is_relative_to(root) for root in generated_roots)
+                ):
+                    root_references.add(source_file)
+                else:
+                    source_roots.add(source_root)
 
-        bundle_files: set[Path] = set()
+        bundle_files: set[Path] = set(root_references)
         for source_root in sorted(source_roots):
             bundle_files.update(
                 iter_bundle_files(
@@ -207,5 +243,9 @@ def select_hook_sources(
                 )
             )
         bundles_by_target[target_name] = frozenset(bundle_files)
+        if target_name == "omp" and descriptors and not is_first_party:
+            from apm_cli.integration.omp_hook_contract import omp_package_files
 
-    return HookSourceSelection(descriptors_by_target, bundles_by_target)
+            bundles_by_target[target_name] = omp_package_files(package_path)
+
+    return HookSourceSelection(descriptors_by_target, bundles_by_target, is_first_party)

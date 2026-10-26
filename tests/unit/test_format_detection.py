@@ -534,3 +534,53 @@ class TestNormalizationPlanner:
         )
         pkg_type, _ = NormalizationPlanner().plan(report)
         assert pkg_type == PackageType.SKILL_BUNDLE
+
+
+class TestNativeExtensionDetection:
+    @pytest.mark.parametrize("namespace", ["omp", "pi"])
+    def test_explicit_manifest_recognized(self, tmp_path: Path, namespace: str) -> None:
+        import json
+
+        (tmp_path / "package.json").write_text(
+            json.dumps({namespace: {"extensions": ["entry.ts"]}})
+        )
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        report = PackageFormatRegistry().detect(tmp_path)
+        assert report.native_extensions is not None
+        assert report.native_extensions.has_manifest
+        assert NormalizationPlanner().plan(report) == (PackageType.EXTENSION_PACKAGE, None)
+
+    @pytest.mark.parametrize("directory", [".omp/extensions", ".pi/extensions", ".apm/extensions"])
+    def test_designated_directory_recognized(self, tmp_path: Path, directory: str) -> None:
+        root = tmp_path / directory
+        root.mkdir(parents=True)
+        (root / "entry.js").write_text("export default function () {}")
+        report = PackageFormatRegistry().detect(tmp_path)
+        assert report.native_extensions is not None
+        assert not report.native_extensions.has_manifest
+        assert NormalizationPlanner().plan(report)[0] is PackageType.EXTENSION_PACKAGE
+
+    def test_arbitrary_javascript_is_not_native(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text('{"name":"ordinary-library"}')
+        (tmp_path / "index.js").write_text("export default function () {}")
+        report = PackageFormatRegistry().detect(tmp_path)
+        assert report.native_extensions is None
+        assert NormalizationPlanner().plan(report)[0] is PackageType.INVALID
+
+    def test_mixed_skill_keeps_its_format_and_extension_evidence(self, tmp_path: Path) -> None:
+        (tmp_path / "SKILL.md").write_text("# Skill")
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["entry.ts"]}}')
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        report = PackageFormatRegistry().detect(tmp_path)
+        assert report.native_extensions is not None
+        assert report.skill_md is not None
+        assert NormalizationPlanner().plan(report)[0] is PackageType.CLAUDE_SKILL
+
+    def test_unbuilt_manifest_is_recognized_before_target_preflight(self, tmp_path: Path) -> None:
+        (tmp_path / "package.json").write_text(
+            '{"omp":{"extensions":["missing.ts"]},"pi":{"extensions":["entry.ts"]}}'
+        )
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        report = PackageFormatRegistry().detect(tmp_path)
+        assert report.native_extensions is not None
+        assert NormalizationPlanner().plan(report)[0] is PackageType.EXTENSION_PACKAGE

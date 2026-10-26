@@ -103,11 +103,13 @@ class CachedMaterializationPathReader:
         self._delegate.invalidate(*paths)
 
 
-def build_materialization_path(
-    dependency: DependencyReference,
-    apm_modules_dir: Path,
-) -> Path:
-    """Build the source-cased path for one dependency below ``apm_modules``."""
+def materialization_relative_path(dependency: DependencyReference) -> PurePosixPath:
+    """Return one dependency's path below ``apm_modules`` from its identity alone.
+
+    Pure: validates path segments lexically and never touches the filesystem, so
+    ownership and marker derivation cannot follow untrusted source paths.
+    Containment against a real directory is :func:`build_materialization_path`'s job.
+    """
     dependency = dependency.ownership_reference
     if dependency.is_marketplace:
         raise ValueError(
@@ -117,7 +119,58 @@ def build_materialization_path(
 
     alias = parse_alias_override(dependency.alias)
     if alias is not None:
-        result = apm_modules_dir / alias
+        return PurePosixPath(alias)
+
+    if dependency.is_local and dependency.local_path:
+        pkg_dir_name = Path(dependency.local_path).name
+        validate_path_segments(
+            pkg_dir_name,
+            context="local package path",
+            reject_empty=True,
+        )
+        if dependency.declaring_parent:
+            identity = dependency.anchored_local_path or dependency.local_path
+            parent_slot = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+            return PurePosixPath("_local", parent_slot, pkg_dir_name)
+        return PurePosixPath("_local", pkg_dir_name)
+
+    repo_parts = dependency.repo_url.split("/")
+    validate_path_segments(dependency.repo_url, context="repo_url")
+    if dependency.virtual_path:
+        validate_path_segments(dependency.virtual_path, context="virtual_path")
+
+    result: PurePosixPath | None = None
+    if dependency.is_virtual:
+        if dependency.is_virtual_subdirectory():
+            if dependency.is_azure_devops() and len(repo_parts) >= 3:
+                result = PurePosixPath(*repo_parts[:3], dependency.virtual_path)
+            elif len(repo_parts) >= 2:
+                result = PurePosixPath(*repo_parts, dependency.virtual_path)
+        else:
+            package_name = dependency.get_virtual_package_name()
+            if dependency.is_azure_devops() and len(repo_parts) >= 3:
+                result = PurePosixPath(repo_parts[0], repo_parts[1], package_name)
+            elif len(repo_parts) >= 2:
+                result = PurePosixPath(repo_parts[0], package_name)
+    elif dependency.is_azure_devops() and len(repo_parts) >= 3:
+        result = PurePosixPath(*repo_parts[:3])
+    elif len(repo_parts) >= 2:
+        result = PurePosixPath(*repo_parts)
+
+    return result if result is not None else PurePosixPath(*repo_parts)
+
+
+def build_materialization_path(
+    dependency: DependencyReference,
+    apm_modules_dir: Path,
+) -> Path:
+    """Build the source-cased path for one dependency below ``apm_modules``."""
+    dependency = dependency.ownership_reference
+    relative = materialization_relative_path(dependency)
+    result = apm_modules_dir.joinpath(*relative.parts)
+
+    alias = parse_alias_override(dependency.alias)
+    if alias is not None:
         try:
             resolved = ensure_path_within(result, apm_modules_dir)
         except PathTraversalError as exc:
@@ -133,55 +186,6 @@ def build_materialization_path(
             )
         return result
 
-    if dependency.is_local and dependency.local_path:
-        pkg_dir_name = Path(dependency.local_path).name
-        validate_path_segments(
-            pkg_dir_name,
-            context="local package path",
-            reject_empty=True,
-        )
-        if dependency.declaring_parent:
-            identity = dependency.anchored_local_path or dependency.local_path
-            parent_slot = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
-            result = apm_modules_dir / "_local" / parent_slot / pkg_dir_name
-        else:
-            result = apm_modules_dir / "_local" / pkg_dir_name
-        ensure_path_within(result, apm_modules_dir)
-        return result
-
-    repo_parts = dependency.repo_url.split("/")
-    validate_path_segments(dependency.repo_url, context="repo_url")
-    if dependency.virtual_path:
-        validate_path_segments(dependency.virtual_path, context="virtual_path")
-
-    result: Path | None = None
-    if dependency.is_virtual:
-        if dependency.is_virtual_subdirectory():
-            if dependency.is_azure_devops() and len(repo_parts) >= 3:
-                result = apm_modules_dir.joinpath(
-                    repo_parts[0],
-                    repo_parts[1],
-                    repo_parts[2],
-                    dependency.virtual_path,
-                )
-            elif len(repo_parts) >= 2:
-                result = apm_modules_dir.joinpath(
-                    *repo_parts,
-                    dependency.virtual_path,
-                )
-        else:
-            package_name = dependency.get_virtual_package_name()
-            if dependency.is_azure_devops() and len(repo_parts) >= 3:
-                result = apm_modules_dir / repo_parts[0] / repo_parts[1] / package_name
-            elif len(repo_parts) >= 2:
-                result = apm_modules_dir / repo_parts[0] / package_name
-    elif dependency.is_azure_devops() and len(repo_parts) >= 3:
-        result = apm_modules_dir / repo_parts[0] / repo_parts[1] / repo_parts[2]
-    elif len(repo_parts) >= 2:
-        result = apm_modules_dir.joinpath(*repo_parts)
-
-    if result is None:
-        result = apm_modules_dir.joinpath(*repo_parts)
     ensure_path_within(result, apm_modules_dir)
     return result
 

@@ -19,6 +19,7 @@ import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from stat import S_ISREG
 from typing import Literal
 
 import tomllib
@@ -29,7 +30,10 @@ from ..integration.hook_integrator import native_hook_config
 from ..integration.hook_native_formats import HookContentEntry, inspect_native_hooks
 from ..integration.targets import TargetProfile
 from ..security.content_scanner import ContentScanner, ScanFinding
+from ..utils.content_hash import decode_text_content
 from .primitive_discovery import (
+    PROMPT_DOCUMENT_SUFFIXES,
+    RAW_ASSET_KINDS,
     PrimitiveSurface,
     iter_surface_files,
     primitive_surfaces,
@@ -158,6 +162,14 @@ def _content_entries(path: Path, surface: PrimitiveSurface) -> tuple[HookContent
     """Extract documented prompt-bearing content, not arbitrary string values."""
     if surface.kind == "executable":
         return (HookContentEntry(""),)
+    if surface.kind in RAW_ASSET_KINDS:
+        # Executable bundle resources and generated metadata are not prompt
+        # documents: any readable UTF-8 text is scanned whole, whatever its
+        # suffix; binary content is not text. Read failures stay incomplete.
+        if not S_ISREG(path.lstat().st_mode):
+            raise OSError("not a regular file")
+        text = decode_text_content(path.read_bytes())
+        return (HookContentEntry("") if text is None else HookContentEntry("", prompt=text),)
     text = path.read_text(encoding="utf-8")
     if surface.kind == "hooks":
         config = native_hook_config(surface.target)
@@ -178,7 +190,7 @@ def _content_entries(path: Path, surface: PrimitiveSurface) -> tuple[HookContent
             else HookContentEntry(f"/{field}", error="missing or non-string native prompt field")
             for field in surface.prompt_fields
         )
-    if path.suffix in {".md", ".mdc"}:
+    if path.suffix in PROMPT_DOCUMENT_SUFFIXES:
         return (HookContentEntry("", prompt=text),)
     return (HookContentEntry("", error="unsupported recognized primitive format"),)
 
@@ -247,6 +259,7 @@ def _scan_primitive(
                     not surface.shared
                     and not entry.pointer
                     and status == "checked"
+                    and surface.kind not in RAW_ASSET_KINDS
                     and not surface.external
                     and not surface.user_scope
                 ),
@@ -421,7 +434,9 @@ def _scan_claimed_files(
                 abs_path,
                 "*.md" if is_directory else None,
                 "recorded",
-                "document" if abs_path.suffix in {".md", ".mdc"} or is_directory else "executable",
+                "document"
+                if abs_path.suffix in PROMPT_DOCUMENT_SUFFIXES or is_directory
+                else "executable",
                 "recorded",
                 user_scope=user_scope,
             )

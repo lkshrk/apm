@@ -120,6 +120,14 @@ class AgentPluginFormatEvidence:
     supported: bool
 
 
+@dataclass(frozen=True)
+class NativeExtensionFormatEvidence:
+    """Native extension package intent, independent of selected-target preflight."""
+
+    bundle_names: tuple[str, ...]
+    has_manifest: bool
+
+
 # ---------------------------------------------------------------------------
 # DetectionReport -- aggregated output of PackageFormatRegistry
 # ---------------------------------------------------------------------------
@@ -130,7 +138,7 @@ class DetectionReport:
     """Aggregated result of running all ``FormatDetector`` instances.
 
     Each field holds the per-format evidence produced by its detector, or
-    ``None`` when that detector found no signals for its format.  All four
+    ``None`` when that detector found no signals for its format. All
     detectors run independently, so the report can capture mixed packages
     (e.g. a Claude plugin that also ships hooks).
 
@@ -144,6 +152,7 @@ class DetectionReport:
     hook_json: HookJsonFormatEvidence | None = None
     agent_plugin: AgentPluginFormatEvidence | None = None
     claude_plugin: ClaudePluginFormatEvidence | None = None
+    native_extensions: NativeExtensionFormatEvidence | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +176,7 @@ class FormatDetector(Protocol):
         | HookJsonFormatEvidence
         | AgentPluginFormatEvidence
         | ClaudePluginFormatEvidence
+        | NativeExtensionFormatEvidence
         | None
     ):
         """Inspect ``package_path`` and return per-format evidence, or ``None``."""
@@ -320,6 +330,24 @@ class AgentPluginDetector:
         )
 
 
+class NativeExtensionDetector:
+    """Detect only explicit native manifests or designated extension directories."""
+
+    def detect(self, package_path: Path) -> NativeExtensionFormatEvidence | None:
+        from ..integration.extension_discovery import (
+            find_extension_bundles,
+            has_native_extension_manifest,
+        )
+
+        bundles = find_extension_bundles(package_path, validate_entries=False)
+        if not bundles:
+            return None
+        return NativeExtensionFormatEvidence(
+            bundle_names=tuple(bundle.name for bundle in bundles),
+            has_manifest=has_native_extension_manifest(package_path),
+        )
+
+
 # ---------------------------------------------------------------------------
 # PackageFormatRegistry
 # ---------------------------------------------------------------------------
@@ -332,7 +360,8 @@ _DEFAULT_DETECTORS: tuple[
     | SkillMdDetector
     | HookJsonDetector
     | AgentPluginDetector
-    | ClaudePluginDetector,
+    | ClaudePluginDetector
+    | NativeExtensionDetector,
     ...,
 ] = (
     AgentPluginDetector(),
@@ -340,6 +369,7 @@ _DEFAULT_DETECTORS: tuple[
     SkillMdDetector(),
     ApmYmlDetector(),
     HookJsonDetector(),
+    NativeExtensionDetector(),
 )
 
 
@@ -359,7 +389,8 @@ class PackageFormatRegistry:
                 | SkillMdDetector
                 | HookJsonDetector
                 | AgentPluginDetector
-                | ClaudePluginDetector,
+                | ClaudePluginDetector
+                | NativeExtensionDetector,
                 ...,
             ]
             | None
@@ -379,6 +410,7 @@ class PackageFormatRegistry:
         hook_json_ev: HookJsonFormatEvidence | None = None
         agent_plugin_ev: AgentPluginFormatEvidence | None = None
         claude_plugin_ev: ClaudePluginFormatEvidence | None = None
+        native_extensions_ev: NativeExtensionFormatEvidence | None = None
 
         for detector in self._detectors:
             if isinstance(detector, AgentPluginDetector) and agent_plugin_detection is not None:
@@ -395,6 +427,8 @@ class PackageFormatRegistry:
                 agent_plugin_ev = result
             elif isinstance(result, ClaudePluginFormatEvidence):
                 claude_plugin_ev = result
+            elif isinstance(result, NativeExtensionFormatEvidence):
+                native_extensions_ev = result
 
         return DetectionReport(
             apm_yml=apm_yml_ev,
@@ -402,6 +436,7 @@ class PackageFormatRegistry:
             hook_json=hook_json_ev,
             agent_plugin=agent_plugin_ev,
             claude_plugin=claude_plugin_ev,
+            native_extensions=native_extensions_ev,
         )
 
 
@@ -429,7 +464,8 @@ class NormalizationPlanner:
     5. ``CLAUDE_SKILL`` -- root ``SKILL.md`` only (no ``apm.yml``).
     6. ``SKILL_BUNDLE`` -- nested ``skills/<name>/SKILL.md`` found.
     7. ``HOOK_PACKAGE`` -- hooks JSON found, nothing else.
-    8. ``INVALID`` -- no recognisable signals.
+    8. ``EXTENSION_PACKAGE`` -- explicit native extensions, nothing else.
+    9. ``INVALID`` -- no recognisable signals.
 
     Future: :meth:`plan_normalizers` will return an ordered list of
     normalizer callables so mixed packages can run multiple passes.
@@ -450,7 +486,9 @@ class NormalizationPlanner:
         hj = report.hook_json
         has_root_skill_md = sm is not None and sm.skill_md_path is not None
         has_nested_skills = sm is not None and bool(sm.nested_skill_dirs)
-        has_eligible_apm_yml = ay is not None and (ay.has_apm_dir or ay.declares_dependencies)
+        has_eligible_apm_yml = ay is not None and (
+            ay.has_apm_dir or ay.declares_dependencies or report.native_extensions is not None
+        )
 
         # An eligible APM manifest expresses package intent more specifically
         # than co-located plugin publishing surfaces.
@@ -463,33 +501,29 @@ class NormalizationPlanner:
 
         # Agent plugin manifest present -> AGENT_PLUGIN or INVALID.
         if ap is not None:
-            if ap.supported:
-                return PackageType.AGENT_PLUGIN, ap.plugin_json_path
-            return PackageType.INVALID, ap.plugin_json_path
+            package_type = PackageType.AGENT_PLUGIN if ap.supported else PackageType.INVALID
+            return package_type, ap.plugin_json_path
 
         # Claude plugin manifest present -> MARKETPLACE_PLUGIN
         if cp is not None:
             return PackageType.MARKETPLACE_PLUGIN, cp.plugin_json_path
 
-        # Root SKILL.md + apm.yml -> HYBRID
-        if ay is not None and has_root_skill_md:
-            return PackageType.HYBRID, None
-
-        # Root SKILL.md only (no apm.yml) -> CLAUDE_SKILL
+        # Root SKILL.md: with apm.yml -> HYBRID, without -> CLAUDE_SKILL
         if has_root_skill_md:
-            return PackageType.CLAUDE_SKILL, None
+            return (PackageType.HYBRID if ay is not None else PackageType.CLAUDE_SKILL), None
 
         # Nested skills/<name>/SKILL.md -> SKILL_BUNDLE (apm.yml optional)
         if has_nested_skills:
             return PackageType.SKILL_BUNDLE, None
 
-        # Metadata-only apm.yml without another package signal is invalid.
-        if ay is not None:
-            return PackageType.INVALID, None
+        if report.native_extensions is not None:
+            native_type = (
+                PackageType.HOOK_PACKAGE if hj is not None else PackageType.EXTENSION_PACKAGE
+            )
+            return native_type, None
 
-        # hooks/*.json only -> HOOK_PACKAGE
-        if hj is not None:
+        # hooks/*.json only -> HOOK_PACKAGE; metadata-only apm.yml without
+        # another package signal, or nothing recognisable -> INVALID.
+        if ay is None and hj is not None:
             return PackageType.HOOK_PACKAGE, None
-
-        # Nothing recognisable -> INVALID
         return PackageType.INVALID, None

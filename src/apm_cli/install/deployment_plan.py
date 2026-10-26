@@ -25,7 +25,14 @@ class PackageDeploymentPlan:
     """Authorized package selection shared by batch preflight and deployment."""
 
     target_selection: EffectivePackageTargets
-    approvals: tuple[bool, bool, bool, bool, bool] = (False, False, False, False, False)
+    approvals: tuple[bool, bool, bool, bool, bool, bool] = (
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+    )
     skip_bin: bool = False
     bin_skip_reason: str | None = None
     codex_native: CodexNativePlugin | None = None
@@ -68,8 +75,10 @@ def prepare_package_deployment(  # noqa: PLR0913
     log_package_target_restriction(logger, selection)
     if not selection.targets:
         return PackageDeploymentPlan(selection)
-    approvals = check_executable_approval(package_name, package_info, allow_executables, ctx=ctx)
-    hooks, bin_approved, mcp, canvas, lsp = approvals
+    approvals = check_executable_approval(
+        package_name, package_info, allow_executables, ctx=ctx, is_first_party=is_first_party
+    )
+    hooks, bin_approved, mcp, canvas, lsp, extensions = approvals
     skip_bin, reason = resolve_bin_skip(
         bin_approved, trust_bin, non_interactive=not sys.stdout.isatty()
     )
@@ -87,6 +96,7 @@ def prepare_package_deployment(  # noqa: PLR0913
             "bin": bin_approved and not skip_bin,
             "canvas": canvas,
             "lsp": lsp,
+            "extensions": extensions,
         },
         ctx=ctx,
         read_only=read_only,
@@ -98,6 +108,8 @@ def prepare_package_deployment(  # noqa: PLR0913
         skill_subset=skill_subset,
         hooks_approved=hooks,
         canvas_approved=canvas or is_first_party,
+        extensions_approved=extensions,
+        is_first_party=is_first_party,
         skip_bin=skip_bin,
         diagnostics=diagnostics,
         package_name=package_name,

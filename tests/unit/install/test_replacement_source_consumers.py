@@ -411,7 +411,7 @@ def test_replacement_does_not_inherit_upstream_executable_approval(
         resolve_package_key(upstream, "upstream"): {"hooks": True, "bin": True, "mcp": True}
     }
     assert check_executable_approval("upstream", upstream, approval)[:3] == (True,) * 3
-    assert check_executable_approval("mixedorg/mixedrepo", package, approval) == (False,) * 5
+    assert check_executable_approval("mixedorg/mixedrepo", package, approval) == (False,) * 6
 
 
 @pytest.mark.parametrize(

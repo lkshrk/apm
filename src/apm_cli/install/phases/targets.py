@@ -484,6 +484,7 @@ def run(ctx: InstallContext) -> None:
     from apm_cli.integration.canvas_integrator import CanvasIntegrator
     from apm_cli.integration.command_integrator import CommandIntegrator
     from apm_cli.integration.copilot_cowork_paths import CoworkResolutionError
+    from apm_cli.integration.extension_integrator import ExtensionIntegrator
     from apm_cli.integration.hook_integrator import HookIntegrator
     from apm_cli.integration.instruction_integrator import InstructionIntegrator
     from apm_cli.integration.skill_integrator import SkillIntegrator
@@ -590,6 +591,7 @@ def run(ctx: InstallContext) -> None:
         "hook": HookIntegrator(),
         "instruction": InstructionIntegrator(),
         "canvas": CanvasIntegrator(),
+        "extensions": ExtensionIntegrator(),
     }
 
 

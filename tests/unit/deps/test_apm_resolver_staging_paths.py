@@ -130,3 +130,52 @@ def test_windows_root_substitution_preserves_literal_argument_suffixes() -> None
     }
     assert PureWindowsPath(rebased["args"][0]) == published / "start.mjs"
     assert manifest["command"] == f"{_ROOT}/server"
+
+
+def test_native_extension_download_publishes_metadata_without_synthetic_manifest(
+    tmp_path: Path,
+) -> None:
+    modules = tmp_path / "apm_modules"
+    modules.mkdir()
+    staging = ResolutionStagingSession(modules)
+    ref = DependencyReference(repo_url="acme/native", reference="main")
+
+    def download_callback(dependency, apm_modules_dir, parent_chain="", parent_pkg=None):
+        replacement = staging.prepare_replacement(dependency.get_install_path(apm_modules_dir))
+        replacement.mkdir(parents=True, exist_ok=True)
+        (replacement / "package.json").write_text(
+            '{"name":"native","version":"2.0.0","omp":{"extensions":["entry.ts"]}}'
+        )
+        (replacement / "entry.ts").write_text("export default function () {}")
+        (replacement / "resource.txt").write_text("resource")
+        return replacement
+
+    resolver = APMDependencyResolver(
+        apm_modules_dir=modules,
+        download_callback=download_callback,
+        activation_callback=staging.publish_replacement,
+        max_parallel=1,
+    )
+    package = resolver._try_load_dependency_package(ref)
+    published = ref.get_install_path(modules).resolve()
+    assert package is not None
+    assert package.name == "native"
+    assert package.version == "2.0.0"
+    assert package.package_path == published
+    assert (published / "resource.txt").read_text() == "resource"
+    assert not (published / "apm.yml").exists()
+
+
+def test_native_extension_update_reenters_staged_admission(tmp_path: Path) -> None:
+    from apm_cli.deps.lockfile import LockedDependency
+    from apm_cli.drift import should_force_ref_recheck
+
+    (tmp_path / "package.json").write_text('{"omp":{"extensions":["entry.ts"]}}')
+    (tmp_path / "entry.ts").write_text("export default function () {}")
+    ref = DependencyReference(repo_url="acme/native", reference="main")
+    locked = LockedDependency(repo_url="acme/native", resolved_ref="main", resolved_commit="a" * 40)
+    assert should_force_ref_recheck(ref, locked, update_refs=True, package_path=tmp_path)
+    assert not should_force_ref_recheck(ref, locked, update_refs=False, package_path=tmp_path)
+    assert not should_force_ref_recheck(
+        ref, locked, update_refs=True, package_path=tmp_path, update_keys={"other/package"}
+    )

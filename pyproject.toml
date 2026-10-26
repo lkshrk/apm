@@ -74,6 +74,7 @@ include = ["apm_cli*"]
 # Delivery no longer depends on this (ensure_child_tls_bootstrap generates the
 # .pth inline), but packaging it keeps the source tree and wheel in sync.
 "apm_cli.core._child_tls" = ["*.pth"]
+"apm_cli.integration" = ["omp_hook_runtime.ts"]
 
 [tool.uv]
 # filelock >=4.2.1 (the first release with the GHSA-v4x8-3wr5-3wq8 family of

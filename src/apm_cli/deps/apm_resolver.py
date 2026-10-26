@@ -1419,6 +1419,7 @@ class APMDependencyResolver:
             PackageType.MARKETPLACE_PLUGIN,
             PackageType.SKILL_BUNDLE,
             PackageType.HOOK_PACKAGE,
+            PackageType.EXTENSION_PACKAGE,
         ):
             validation = validate_apm_package(
                 install_path,

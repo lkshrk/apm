@@ -436,3 +436,153 @@ class TestProjectFileScan:
 
         assert findings == {}
         assert scanned == 1
+
+
+def test_native_extension_surface_includes_hidden_and_vendored_resources(tmp_path: Path) -> None:
+    from apm_cli.security.primitive_discovery import PrimitiveSurface, iter_surface_files
+
+    root = tmp_path / ".omp" / "extensions"
+    relative_paths = [
+        "native/index.ts",
+        "native/.omp/extensions/entry.ts",
+        "native/node_modules/library/index.js",
+        "native/assets/template.txt",
+    ]
+    for relative in [*relative_paths, "native/.git/config"]:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("resource")
+    surface = PrimitiveSurface(tmp_path, root, "*", "omp", "extensions", "omp_extension")
+    assert {path.relative_to(root).as_posix() for path in iter_surface_files(surface)} == set(
+        relative_paths
+    )
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        ".omp/extensions/native/index.ts",
+        ".omp/agent/extensions/native/package.json",
+        ".pi/extensions/native/index.js",
+        "nested/.omp/extensions/native/resource.txt",
+    ],
+)
+def test_native_extension_paths_do_not_inherit_canvas_flag(relative: str) -> None:
+    from apm_cli.integration.canvas_integrator import is_canvas_bundle_path
+
+    assert not is_canvas_bundle_path(relative)
+    assert is_canvas_bundle_path(".github/extensions/widget/extension.mjs")
+    assert is_canvas_bundle_path("extensions/widget/extension.mjs")
+
+
+def test_canvas_resource_cannot_change_outer_bundle_permission() -> None:
+    from apm_cli.integration.canvas_integrator import is_canvas_bundle_path
+
+    assert is_canvas_bundle_path(".github/extensions/widget/.omp/extensions/resource.js")
+    assert not is_canvas_bundle_path(".omp/extensions/widget/.github/extensions/resource.js")
+
+
+_BIDI = "\u202e"
+_BUNDLE = ".omp/extensions/native"
+
+
+def _write_native_bundle(root: Path) -> dict[str, bytes | str]:
+    files: dict[str, bytes | str] = {
+        f"{_BUNDLE}/package.json": '{"name": "native"}',
+        f"{_BUNDLE}/src/index.ts": f"export default () => '{_BIDI}'",
+        f"{_BUNDLE}/README.md": f"notes {_BIDI}",
+        f"{_BUNDLE}/LICENSE": "plain text without a suffix",
+        f"{_BUNDLE}/assets/logo.png": b"\x89PNG\r\n\x1a\n\x00\x00",
+        f"{_BUNDLE}/assets/latin1.dat": b"caf\xe9",
+    }
+    for relative, payload in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(payload, bytes):
+            path.write_bytes(payload)
+        else:
+            path.write_text(payload, encoding="utf-8")
+    return files
+
+
+@pytest.mark.parametrize("tracked", [False, True])
+def test_native_extension_assets_are_raw_scanned_inventory(tmp_path: Path, tracked: bool) -> None:
+    from apm_cli.deps.lockfile import LockFile
+    from apm_cli.integration.targets import KNOWN_TARGETS
+    from apm_cli.security.file_scanner import scan_project_result
+
+    files = _write_native_bundle(tmp_path)
+    lock = LockFile(local_deployed_files=list(files)) if tracked else LockFile()
+    result = scan_project_result(tmp_path, lockfile=lock, targets=(KNOWN_TARGETS["omp"],))
+
+    inventory = {entry.file: entry for entry in result.inventory}
+    assert set(inventory) == set(files)
+    assert result.incomplete == ()
+    assert {entry.tracked for entry in inventory.values()} == {tracked}
+    assert {entry.kind for entry in inventory.values()} == {"extensions"}
+    assert {name: entry.status for name, entry in inventory.items()} == {
+        f"{_BUNDLE}/package.json": "checked",
+        f"{_BUNDLE}/src/index.ts": "checked",
+        f"{_BUNDLE}/README.md": "checked",
+        f"{_BUNDLE}/LICENSE": "checked",
+        f"{_BUNDLE}/assets/logo.png": "not-applicable",
+        f"{_BUNDLE}/assets/latin1.dat": "not-applicable",
+    }
+    assert set(result.findings_by_file) == {f"{_BUNDLE}/src/index.ts", f"{_BUNDLE}/README.md"}
+    # Whole-file rewriting would invalidate the receipt and ledger hashes.
+    assert not any(entry.strippable for entry in inventory.values())
+    assert result.protected_files == set(files)
+
+
+def test_native_extension_read_errors_are_incomplete(tmp_path: Path) -> None:
+    import os
+
+    from apm_cli.integration.targets import KNOWN_TARGETS
+    from apm_cli.security.file_scanner import scan_project_result
+
+    fifo = tmp_path / _BUNDLE / "pipe"
+    fifo.parent.mkdir(parents=True)
+    os.mkfifo(fifo)
+    result = scan_project_result(tmp_path, targets=(KNOWN_TARGETS["omp"],))
+
+    assert [(entry.file, entry.status) for entry in result.inventory] == [
+        (f"{_BUNDLE}/pipe", "incomplete")
+    ]
+
+
+def test_generated_runtime_metadata_is_raw_asset_not_markdown(tmp_path: Path) -> None:
+    from apm_cli.integration.targets import KNOWN_TARGETS
+    from apm_cli.security.file_scanner import scan_project_result
+    from apm_cli.security.primitive_discovery import primitive_surfaces
+
+    surfaces = {
+        surface.path.name: surface
+        for surface in primitive_surfaces(
+            tmp_path, (KNOWN_TARGETS["omp"], KNOWN_TARGETS["copilot"])
+        )
+    }
+    assert surfaces["apm-hooks-runtime.json"].kind == "metadata"
+    assert surfaces["copilot-instructions.md"].kind == "context"
+
+    runtime = tmp_path / ".omp" / "apm-hooks-runtime.json"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text(f'{{"scope": "{_BIDI}"}}', encoding="utf-8")
+    result = scan_project_result(tmp_path, targets=(KNOWN_TARGETS["omp"],))
+
+    assert set(result.findings_by_file) == {".omp/apm-hooks-runtime.json"}
+    assert result.incomplete == ()
+    assert result.protected_files == {".omp/apm-hooks-runtime.json"}
+
+
+def test_prompt_documents_keep_strict_markdown_contract(tmp_path: Path) -> None:
+    from apm_cli.integration.targets import KNOWN_TARGETS
+    from apm_cli.security.file_scanner import scan_project_result
+
+    skill = tmp_path / ".agents" / "skills" / "manual" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(b"caf\xe9")
+    result = scan_project_result(tmp_path, targets=(KNOWN_TARGETS["omp"],))
+
+    assert [(entry.file, entry.status) for entry in result.inventory] == [
+        (".agents/skills/manual/SKILL.md", "incomplete")
+    ]

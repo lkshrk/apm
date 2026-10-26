@@ -199,6 +199,22 @@ def test_agent_bundle_rejects_nonportable_components_before_output_commit(
     assert not build.exists()
 
 
+def test_agent_bundle_rejects_native_extension_source_before_output_commit(
+    tmp_path: Path,
+) -> None:
+    project = _write_agent_project(tmp_path / "project")
+    native = project / ".apm" / "extensions" / "index.ts"
+    native.parent.mkdir(parents=True)
+    native.write_text("export default api => {};\n", encoding="utf-8")
+    build = tmp_path / "build"
+
+    with pytest.raises(ValueError) as exc_info:
+        export_agent_plugin_bundle(project, build)
+
+    assert "extensions" in str(exc_info.value)
+    assert not build.exists()
+
+
 def test_agent_bundle_rejects_dependency_nonportable_component(tmp_path: Path) -> None:
     project = _write_agent_project(tmp_path / "project")
     deployed_agent = project / ".github" / "agents" / "dependency.agent.md"

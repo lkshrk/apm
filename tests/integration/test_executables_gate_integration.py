@@ -376,7 +376,7 @@ class TestCheckExecutableApprovalIntegration:
 
     def test_local_always_approved(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "_local", "")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "_local", pkg_info, {"deny-all": {}}
         )
         assert hooks_ok is True
@@ -384,7 +384,7 @@ class TestCheckExecutableApprovalIntegration:
 
     def test_none_allow_executables_means_all_approved(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "any-pkg", "1.0")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "any-pkg", pkg_info, None
         )
         assert hooks_ok is True
@@ -392,7 +392,7 @@ class TestCheckExecutableApprovalIntegration:
 
     def test_empty_allow_executables_blocks_all(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, {}
         )
         assert hooks_ok is False
@@ -401,7 +401,7 @@ class TestCheckExecutableApprovalIntegration:
     def test_approved_package_passes(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -410,7 +410,7 @@ class TestCheckExecutableApprovalIntegration:
     def test_partial_approval(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"hooks": True, "bin": False}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -420,7 +420,7 @@ class TestCheckExecutableApprovalIntegration:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"lsp": True}}
 
-        _hooks_ok, _bin_ok, _mcp_ok, _canvas_ok, lsp_ok = check_executable_approval(
+        _hooks_ok, _bin_ok, _mcp_ok, _canvas_ok, lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
 
@@ -433,7 +433,7 @@ class TestCheckExecutableApprovalIntegration:
         pkg_info.dependency_ref = dep_ref
 
         allow = {"github:owner/repo#v1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -452,7 +452,7 @@ class TestCheckExecutableApprovalIntegration:
 
         # A package-controlled manifest name is not an authorization identity.
         allow = {"pkg#1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow, ctx=ctx
         )
         assert hooks_ok is False

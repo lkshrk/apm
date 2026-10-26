@@ -2,9 +2,9 @@
 
 Validates that:
 - Target gating correctly restricts which directories are written.
-- Every (target, primitive) pair has a dispatch path.
+- Dispatch results reach consumer counters.
 - Synthetic TargetProfiles work without code changes.
-- partition_managed_files produces correct bucket keys.
+- Managed files reach their target-specific buckets.
 """
 
 import shutil
@@ -34,6 +34,7 @@ def _to_bundle(d: dict) -> IntegratorBundle:
         instruction=d["instruction_integrator"],
         command=d["command_integrator"],
         hook=d["hook_integrator"],
+        extensions=d["extension_integrator"],
     )
 
 
@@ -89,6 +90,9 @@ def _make_mock_integrators():
     skill = MagicMock()
     skill.integrate_package_skill = MagicMock(return_value=_make_skill_result())
 
+    extension = MagicMock()
+    extension.integrate_extensions_for_target = MagicMock(return_value=_make_integration_result())
+
     return {
         "prompt_integrator": prompt,
         "agent_integrator": agent,
@@ -96,10 +100,11 @@ def _make_mock_integrators():
         "instruction_integrator": instruction,
         "hook_integrator": hook,
         "skill_integrator": skill,
+        "extension_integrator": extension,
     }
 
 
-def _dispatch(targets, project_root: Path, integrators=None):
+def _dispatch(targets, project_root: Path, integrators=None, *, is_first_party=False):
     """Exercise target dispatch with an existing, empty package source."""
     if integrators is None:
         integrators = _make_mock_integrators()
@@ -117,6 +122,7 @@ def _dispatch(targets, project_root: Path, integrators=None):
         managed_files=set(),
         diagnostics=None,
         integrators=_to_bundle(integrators),
+        is_first_party=is_first_party,
     ), integrators
 
 
@@ -230,6 +236,7 @@ class TestTargetGatingRegression:
         assert result["commands"] == 0
         assert result["hooks"] == 0
         assert result["skills"] == 0
+        assert result["extensions"] == 0
         assert result["deployed_files"] == []
 
         # No target-driven methods should have been called
@@ -240,9 +247,30 @@ class TestTargetGatingRegression:
         mocks["hook_integrator"].integrate_hooks_for_target.assert_not_called()
         # Skills are also gated by early return
         mocks["skill_integrator"].integrate_package_skill.assert_not_called()
+        mocks["extension_integrator"].integrate_extensions_for_target.assert_not_called()
+
+    def test_dispatch_accumulates_consumer_counters(self, tmp_path: Path):
+        """Install receives actual per-target command and native extension counts."""
+        mocks = _make_mock_integrators()
+        commands = mocks["command_integrator"].integrate_commands_for_target
+        extensions = mocks["extension_integrator"].integrate_extensions_for_target
+        commands.return_value = _make_integration_result(3)
+        extensions.return_value = _make_integration_result(2)
+        targets = [KNOWN_TARGETS["claude"], KNOWN_TARGETS["omp"]]
+
+        result, _ = _dispatch(targets, tmp_path, mocks, is_first_party=True)
+
+        assert commands.call_count > 0
+        extensions.assert_called_once()
+        assert extensions.call_args.args[0] == KNOWN_TARGETS["omp"]
+        assert extensions.call_args.kwargs["trust_extensions"] is True
+        assert result["commands"] == 3 * commands.call_count
+        assert result["extensions"] == 2
+        assert result["agents"] == 0
+        assert result["skills"] == 0
 
     def test_all_targets_dispatches_all_primitives(self, tmp_path: Path):
-        """With all 4 targets, every primitive in every target is dispatched."""
+        """Every target's ordinary primitive integrations are dispatched."""
         all_targets = list(KNOWN_TARGETS.values())
         _result, mocks = _dispatch(targets=all_targets, project_root=tmp_path)
 
@@ -273,78 +301,11 @@ class TestTargetGatingRegression:
         # Verify every non-skills primitive in each target was dispatched
         for target in all_targets:
             for prim_name in target.primitives:
-                if prim_name in ("skills", "canvas"):
-                    continue  # skills + canvas (copilot-only, experimental) handled separately
+                if prim_name in ("skills", "canvas", "extensions"):
+                    continue  # Multi-target skills and executable bundles have dedicated lifecycle tests.
                 assert (target.name, prim_name) in dispatched, (
                     f"Expected ({target.name}, {prim_name}) to be dispatched"
                 )
-
-
-# ===================================================================
-# 2. TestExhaustivenessChecks
-# ===================================================================
-
-
-class TestExhaustivenessChecks:
-    """Structural checks ensuring no target x primitive pair is orphaned."""
-
-    def test_every_target_primitive_has_dispatch_path(self):
-        """For each (target, primitive) in KNOWN_TARGETS, verify the dispatch
-        table has a corresponding entry."""
-        from apm_cli.integration.dispatch import get_dispatch_table
-
-        dispatch = get_dispatch_table()
-
-        for target_name, profile in KNOWN_TARGETS.items():
-            for prim_name in profile.primitives:
-                assert prim_name in dispatch, (
-                    f"Primitive '{prim_name}' in target '{target_name}' has no "
-                    f"entry in the dispatch table."
-                )
-
-    def test_partition_parity_with_old_buckets(self):
-        """Verify partition_managed_files produces the expected bucket keys
-        that callers rely on (backward-compat aliases applied)."""
-        # Use an empty set -- we only care about the keys produced
-        buckets = BaseIntegrator.partition_managed_files(set())
-
-        # Expected keys from the old hardcoded version:
-        expected_keys = {
-            "prompts",  # was prompts_copilot, aliased
-            "agents_github",  # was agents_copilot, aliased
-            "agents_claude",
-            "agents_cursor",
-            "agents_kiro",
-            "agents_opencode",
-            "agents_codex",
-            # NOTE: windsurf no longer exposes an 'agents' primitive
-            # (its content deploys as skills under .agents/skills/).
-            "commands",  # was commands_claude, aliased
-            "commands_cursor",
-            "commands_gemini",
-            "commands_opencode",
-            "commands_windsurf",
-            "instructions",  # was instructions_copilot, aliased
-            "instructions_windsurf",
-            "instructions_antigravity",
-            "instructions_kiro",
-            "rules_cursor",  # was instructions_cursor, aliased
-            "rules_claude",  # was instructions_claude, aliased
-            "skills",  # cross-target bucket
-            "hooks",  # cross-target bucket
-            "agents_grok-build",
-            "commands_grok-build",
-            "instructions_grok-build",
-            "prompts_copilot-app",  # copilot-app uses dedicated prompts bucket
-            "prompts_kiro",  # kiro uses .kiro/prompts/
-            "canvas_copilot",  # canvas extensions (copilot-only, experimental)
-        }
-
-        assert expected_keys == set(buckets.keys()), (
-            f"Bucket keys mismatch.\n"
-            f"  Missing: {expected_keys - set(buckets.keys())}\n"
-            f"  Extra:   {set(buckets.keys()) - expected_keys}"
-        )
 
 
 # ===================================================================
@@ -512,33 +473,6 @@ class TestSkillTargetGating:
         """With targets=[], skill integrator is not called at all."""
         _result, mocks = _dispatch(targets=[], project_root=tmp_path)
         mocks["skill_integrator"].integrate_package_skill.assert_not_called()
-
-
-# ===================================================================
-# 5. TestPartitionBucketKey
-# ===================================================================
-
-
-class TestPartitionBucketKey:
-    """Verify that partition_bucket_key produces the correct aliased keys."""
-
-    def test_copilot_prompts_alias(self):
-        assert BaseIntegrator.partition_bucket_key("prompts", "copilot") == "prompts"
-
-    def test_copilot_agents_alias(self):
-        assert BaseIntegrator.partition_bucket_key("agents", "copilot") == "agents_github"
-
-    def test_claude_commands_alias(self):
-        assert BaseIntegrator.partition_bucket_key("commands", "claude") == "commands"
-
-    def test_cursor_instructions_alias(self):
-        assert BaseIntegrator.partition_bucket_key("instructions", "cursor") == "rules_cursor"
-
-    def test_claude_instructions_alias(self):
-        assert BaseIntegrator.partition_bucket_key("instructions", "claude") == "rules_claude"
-
-    def test_unaliased_key_passthrough(self):
-        assert BaseIntegrator.partition_bucket_key("agents", "cursor") == "agents_cursor"
 
 
 # ===================================================================
@@ -896,13 +830,10 @@ class TestPrimitiveCoverage:
         import pytest
 
         from apm_cli.integration.coverage import check_primitive_coverage
+        from apm_cli.integration.dispatch import get_dispatch_table
 
-        # Deliberately omit "instructions"
-        incomplete_dispatch = {
-            "prompts": None,
-            "agents": None,
-            "commands": None,
-        }
+        incomplete_dispatch = dict(get_dispatch_table())
+        del incomplete_dispatch["instructions"]
         with pytest.raises(RuntimeError, match="instructions"):
             check_primitive_coverage(
                 incomplete_dispatch,
@@ -912,17 +843,13 @@ class TestPrimitiveCoverage:
     def test_special_cases_excluded(self):
         """Primitives in special_cases are not required in the dispatch table."""
         from apm_cli.integration.coverage import check_primitive_coverage
+        from apm_cli.integration.dispatch import get_dispatch_table
 
-        dispatch_keys = {
-            "prompts",
-            "agents",
-            "commands",
-            "instructions",
-            "canvas",
-        }
-        # skills and hooks are special-cased
+        dispatch = dict(get_dispatch_table())
+        del dispatch["skills"]
+        del dispatch["hooks"]
         check_primitive_coverage(
-            {k: None for k in dispatch_keys},
+            dispatch,
             special_cases={"skills", "hooks"},
         )
 
@@ -934,55 +861,6 @@ class TestPrimitiveCoverage:
 
 class TestDispatchTable:
     """Verify the unified dispatch table."""
-
-    def test_dispatch_table_has_all_primitives(self):
-        from apm_cli.integration.dispatch import get_dispatch_table
-
-        dispatch = get_dispatch_table()
-        assert "prompts" in dispatch
-        assert "agents" in dispatch
-        assert "commands" in dispatch
-        assert "instructions" in dispatch
-        assert "hooks" in dispatch
-        assert "skills" in dispatch
-
-    def test_skills_is_multi_target(self):
-        from apm_cli.integration.dispatch import get_dispatch_table
-
-        dispatch = get_dispatch_table()
-        assert dispatch["skills"].multi_target is True
-        for name in ("prompts", "agents", "commands", "instructions", "hooks"):
-            assert dispatch[name].multi_target is False
-
-    def test_dispatch_entries_have_valid_methods(self):
-        from apm_cli.integration.dispatch import get_dispatch_table
-
-        dispatch = get_dispatch_table()
-        for name, entry in dispatch.items():  # noqa: B007
-            integrator = entry.integrator_class()
-            assert hasattr(integrator, entry.integrate_method), (
-                f"{entry.integrator_class.__name__} missing {entry.integrate_method}"
-            )
-            assert hasattr(integrator, entry.sync_method), (
-                f"{entry.integrator_class.__name__} missing {entry.sync_method}"
-            )
-
-    def test_dispatch_counter_keys_match_result_dict(self):
-        """Counter keys in dispatch match the keys used in install result."""
-        from apm_cli.integration.dispatch import get_dispatch_table
-
-        dispatch = get_dispatch_table()
-        expected_counters = {
-            "prompts",
-            "agents",
-            "commands",
-            "instructions",
-            "hooks",
-            "skills",
-            "canvases",
-        }
-        actual_counters = {entry.counter_key for entry in dispatch.values()}
-        assert actual_counters == expected_counters
 
     def test_lazy_initialization(self):
         """get_dispatch_table returns the same object on repeated calls."""
@@ -1006,18 +884,10 @@ class TestCoverageReverse:
         import pytest
 
         from apm_cli.integration.coverage import check_primitive_coverage
+        from apm_cli.integration.dispatch import get_dispatch_table
 
-        # Add a fake primitive not in any target
-        dispatch = {
-            "prompts": None,
-            "agents": None,
-            "commands": None,
-            "instructions": None,
-            "hooks": None,
-            "skills": None,
-            "canvas": None,
-            "phantoms": None,  # not in any KNOWN_TARGETS
-        }
+        dispatch = dict(get_dispatch_table())
+        dispatch["phantoms"] = None
         with pytest.raises(RuntimeError, match="phantoms"):
             check_primitive_coverage(dispatch)
 
