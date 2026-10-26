@@ -247,6 +247,15 @@ class CodexClientAdapter(MCPClientAdapter):
             comparable.pop("id")
         return comparable == expected
 
+    def matches_unmanaged_server_config(self, native: object, expected: dict) -> bool:
+        """Compare foreign entries exactly, allowing only the historical empty ID."""
+        if not isinstance(native, dict) or self.get_registry_id(native):
+            return False
+        comparable = dict(native)
+        if comparable.get("id") == "":
+            comparable.pop("id")
+        return comparable == expected
+
     def update_config(
         self,
         config_updates,

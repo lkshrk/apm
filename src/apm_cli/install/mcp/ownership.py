@@ -141,12 +141,17 @@ def compare_native_mcp_connection(
                 else NativeMcpConnectionState.CONFLICT
             )
         requested_native = comparison if matches_baseline else native
-        matches_request = (
-            isinstance(requested_native, dict)
-            and client.managed_server_config(requested_native) == requested
-            if registry_request and client.target_name != "omp"
-            else client.matches_managed_server_config(requested_native, requested)
-        )
+        if client.target_name == "codex" and not registry_request and not matches_baseline:
+            # Local preferences are tolerated only against a verified owned baseline.
+            # A foreign entry must not silently satisfy a different declaration.
+            matches_request = client.matches_unmanaged_server_config(requested_native, requested)
+        else:
+            matches_request = (
+                isinstance(requested_native, dict)
+                and client.managed_server_config(requested_native) == requested
+                if registry_request and client.target_name != "omp"
+                else client.matches_managed_server_config(requested_native, requested)
+            )
         if matches_request:
             return (
                 NativeMcpConnectionState.MATCHING_MANAGED

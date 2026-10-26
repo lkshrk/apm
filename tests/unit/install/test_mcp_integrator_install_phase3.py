@@ -25,6 +25,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolated_project_root(tmp_path, monkeypatch) -> None:
+    """``run_mcp_install`` defaults its project root to the cwd; never write into the checkout."""
+    monkeypatch.chdir(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
