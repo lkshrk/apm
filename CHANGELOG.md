@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.5] - 2026-10-27
+
+### Fixed
+
+- `apm approve` grants now reach `apm install`. The install gate identifies a git dependency as `github.com/Owner/Repo`, while `apm approve` records the lockfile identity `owner/repo`; the two never matched, so an approved native extension stayed `gated_pending_approval`. The lockfile identity now counts as a candidate approval key.
+- A grant recorded with `apm approve --user` approves native extensions even when the project declares no `executables` block. The gate is off then and the install passed no allow-map, so the grant was only visible to `apm approve --list`.
+
 ## [0.35.0+omni.4] - 2026-10-26
 
 ### Fixed
