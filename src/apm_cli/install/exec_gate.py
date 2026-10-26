@@ -56,11 +56,7 @@ def check_executable_approval(
     # identity. Package manifest metadata is display-only and must not become
     # an alternate security principal.
     pkg_key = resolve_package_key(package_info, package_name)
-    candidate_keys = [pkg_key]
-
-    name_blind = pkg_key.split("#", 1)[0]
-    if name_blind not in candidate_keys:
-        candidate_keys.append(name_blind)
+    candidate_keys = approval_candidate_keys(package_info, package_name)
 
     hooks_ok = any(
         is_package_approved(allow_executables, k, EXEC_TYPE_HOOKS) for k in candidate_keys
@@ -74,6 +70,17 @@ def check_executable_approval(
     extensions_ok = any(
         is_package_approved(allow_executables, k, EXEC_TYPE_EXTENSIONS) for k in candidate_keys
     )
+    trust_ctx = getattr(ctx, "exec_trust_ctx", None) if ctx is not None else None
+    if not extensions_ok and trust_ctx is not None:
+        # With no executables block the gate is off and the install passes no allow-map, so a grant recorded in
+        # ~/.apm/config.json by ``apm approve --user`` would never reach this lookup. Native extensions always
+        # need a decision, so resolve it through the same ladder ``apm approve --list`` reports.
+        from apm_cli.security.executables import resolve_exec_decision
+
+        extensions_ok = any(
+            resolve_exec_decision(trust_ctx, k, EXEC_TYPE_EXTENSIONS).allowed
+            for k in candidate_keys
+        )
     if is_local or legacy_unrestricted:
         # Preserve legacy local primitive trust, but native code requires the
         # resolver's first-party decision rather than a spoofable display name.
@@ -113,6 +120,27 @@ def check_executable_approval(
                 ctx.package_exec_status[package_name] = status
 
     return hooks_ok, bin_ok, mcp_ok, canvas_ok, lsp_ok, extensions_ok
+
+
+def approval_candidate_keys(package_info: Any, package_name: str) -> list[str]:
+    """Return every identity a grant for this package may be recorded under.
+
+    The gate sees the dependency reference as written (``github.com/Owner/Repo``), while ``apm approve`` records
+    the lockfile identity (lowercase, host-less ``owner/repo``). Both name the same resolver-owned dependency, so
+    both count; manifest metadata still never does.
+    """
+    pkg_key = resolve_package_key(package_info, package_name)
+    keys = [pkg_key]
+    name_blind = pkg_key.split("#", 1)[0]
+    if name_blind not in keys:
+        keys.append(name_blind)
+    dep_ref = getattr(package_info, "dependency_ref", None)
+    unique_key = getattr(dep_ref, "get_unique_key", None)
+    if callable(unique_key):
+        identity = unique_key()
+        if identity and identity not in keys:
+            keys.append(identity)
+    return keys
 
 
 def resolve_package_key(package_info: Any, package_name: str) -> str:
