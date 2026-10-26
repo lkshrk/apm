@@ -217,6 +217,12 @@ TARGET_CAPABILITIES: Mapping[str, TargetCapability] = _build_target_catalog(
             compile_family="agents",
         ),
         _capability(
+            "omp",
+            "omp native MCP and shared .agents skills configuration",
+            explicit_only=True,
+            primitive_profile="omp",
+        ),
+        _capability(
             "openclaw",
             "OpenClaw native skills configuration",
             experimental_flag="openclaw",

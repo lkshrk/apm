@@ -146,7 +146,13 @@ def run_owned_mcp_integration(
     retain_deferred_mcp_claims(managed_targets, previous_targets, new_names)
     stale = old_owned - new_names
     for target, names in list(managed_targets.items()):
+        declarations = {dep.name: dep for dep in dependencies}
         stale_for_target = (stale if target in selected_targets else old_owned) & names
+        stale_for_target |= {
+            name
+            for name in previous_targets.get(target, set()) & old_owned
+            if name in declarations and not declarations[name].targets_runtime(target)
+        }
         if stale_for_target and conflict is None:
             _OwnedMCPIntegrator.remove_stale(
                 stale_for_target,
@@ -407,11 +413,18 @@ def run_mcp_integration(  # noqa: PLR0913
             )
             raise conflict
 
-        for removed_target in sorted(
-            builtins.set(old_mcp_target_servers) - builtins.set(managed_target_servers)
-        ):
+        declarations = {dep.name: dep for dep in mcp_deps}
+        for removed_target, owned_names in sorted(old_mcp_target_servers.items()):
+            retired_names = {
+                name
+                for name in owned_names
+                if removed_target not in managed_target_servers
+                or (name in declarations and not declarations[name].targets_runtime(removed_target))
+            }
+            if not retired_names:
+                continue
             MCPIntegrator.remove_stale(
-                builtins.set(old_mcp_target_servers[removed_target]),
+                retired_names,
                 runtime=removed_target,
                 project_root=project_root,
                 user_scope=user_scope,

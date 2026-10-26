@@ -26,6 +26,7 @@ _KNOWN_DICT_KEYS = frozenset(
         "url",
         "command",
         "cwd",
+        "targets",
         "extra",  # explicit extra block is also a known key
         # OpenCode-specific passthrough value. Keep explicit null distinct from omission.
         "enabled",
@@ -117,6 +118,17 @@ class ManifestHeaderValue(str):
     """Header value authored in a manifest, not supplied by registry JSON."""
 
 
+@dataclass(frozen=True)
+class ManifestHeaderHelper:
+    """Runtime helper intent which registry JSON cannot manufacture."""
+
+    command: str
+    keys: tuple[str, ...]
+
+
+HEADER_HELPER_KEY = "_apm_header_helper"
+
+
 @dataclass
 class MCPDependency:
     """Represents an MCP server dependency with optional overlay configuration.
@@ -141,6 +153,7 @@ class MCPDependency:
     url: str | None = None  # Required for self-defined http/sse transports
     command: str | None = None  # Required for self-defined stdio transports
     cwd: str | None = None  # Working directory for stdio transports
+    targets: list[str] | None = None  # None selects all active MCP runtimes.
     # OpenCode-only value forwarded unchanged; other target adapters ignore it.
     enabled: Any = _ENABLED_UNSET
     extra: dict[str, Any] | None = None  # Harness-specific passthrough keys (e.g. oauth)
@@ -205,6 +218,8 @@ class MCPDependency:
             )
 
         transport = d.get("transport") or d.get("type")  # legacy 'type' -> 'transport'
+        if "targets" in d and not isinstance(d["targets"], list):
+            raise ValueError("MCP dependency 'targets' must be a list of MCP target names")
 
         instance = cls(
             name=d["name"],
@@ -219,6 +234,7 @@ class MCPDependency:
             url=d.get("url"),
             command=d.get("command"),
             cwd=d.get("cwd"),
+            targets=d.get("targets"),
             enabled=d.get("enabled", _ENABLED_UNSET),
             extra=extra,
         )
@@ -251,6 +267,25 @@ class MCPDependency:
         if self.has_enabled:
             server_info[OPENCODE_ENABLED_KEY] = OpenCodeEnabled(self.enabled)
 
+    def targets_runtime(self, runtime: str) -> bool:
+        """Whether an active runtime is selected by this declaration."""
+        from apm_cli.core.target_catalog import normalize_target_name
+
+        return self.targets is None or normalize_target_name(runtime) in self.targets
+
+    def apply_header_helper(self, server_info: dict) -> None:
+        """Replace untrusted registry metadata with declared runtime-only intent."""
+        server_info.pop(HEADER_HELPER_KEY, None)
+        # Collection gates self-defined servers, but registry declarations bypass
+        # that trust gate and must not introduce executable helper intent.
+        if self.is_registry_resolved and self.resolved_by is not None:
+            return
+        extra = self.extra or {}
+        keys = extra.get("headersHelperKeys")
+        command = extra.get("headersHelper") or extra.get("http_headers_helper")
+        if keys is not None and command:
+            server_info[HEADER_HELPER_KEY] = ManifestHeaderHelper(command, tuple(keys))
+
     def to_dict(self) -> dict:
         """Serialize non-None fields, preserving an explicitly supplied enabled value.
 
@@ -270,6 +305,7 @@ class MCPDependency:
             "url",
             "command",
             "cwd",
+            "targets",
         ):
             value = getattr(self, field_name)
             if value is not None or (field_name == "registry" and value is False):
@@ -333,6 +369,40 @@ class MCPDependency:
         run only when ``strict=True``.
         """
         # ---- Universal hardening (always) ----
+        if self.targets is not None:
+            from apm_cli.core.target_catalog import normalize_target_name
+            from apm_cli.factory import ClientFactory
+
+            if not isinstance(self.targets, list) or any(
+                not isinstance(target, str) for target in self.targets
+            ):
+                raise ValueError("MCP dependency 'targets' must be a list of MCP target names")
+            supported = {normalize_target_name(rt) for rt in ClientFactory.supported_clients()}
+            try:
+                canonical = {normalize_target_name(target) for target in self.targets}
+            except KeyError:
+                raise ValueError("MCP dependency 'targets' contains an unknown target") from None
+            if not canonical <= supported:
+                raise ValueError("MCP dependency 'targets' must select MCP-capable targets")
+            self.targets = sorted(canonical)
+        extra = self.extra or {}
+        if "headersHelperKeys" in extra:
+            keys = extra["headersHelperKeys"]
+            if (
+                not isinstance(keys, list)
+                or not keys
+                or any(
+                    not isinstance(key, str)
+                    or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", key) is None
+                    for key in keys
+                )
+            ):
+                raise ValueError("headersHelperKeys must be a nonempty list of HTTP header names")
+            if len({key.casefold() for key in keys}) != len(keys):
+                raise ValueError("headersHelperKeys must not contain duplicate header names")
+            command = extra.get("headersHelper") or extra.get("http_headers_helper")
+            if not isinstance(command, str) or not command.strip() or "\x00" in command:
+                raise ValueError("headersHelperKeys requires a nonempty header helper command")
         if not self.name:
             raise ValueError("MCP dependency 'name' must not be empty")
         if not _NAME_REGEX.match(self.name):
