@@ -1310,6 +1310,7 @@ def _install_self_defined_deps(
                 continue
             installed_servers: set[str] = set()
             managed_fields: set[str] = set()
+            managed_env_keys: set[str] | None = set() if rt == "codex" else None
             written_hashes: dict[str, str] = {}
             replace_existing = is_update and (
                 managed_target_servers is None or dep.name in managed_target_servers.get(rt, set())
@@ -1328,6 +1329,7 @@ def _install_self_defined_deps(
                     managed=managed_target_servers is not None
                     and dep.name in managed_target_servers.get(rt, set()),
                     managed_fields=managed_fields,
+                    managed_env_keys=managed_env_keys,
                     native_hash=(native_hashes or {}).get(rt, {}).get(dep.name),
                 )
                 if (
@@ -1382,6 +1384,7 @@ def _install_self_defined_deps(
                 replace_existing=replace_existing,
                 installed_servers=installed_servers,
                 managed_fields=managed_fields,
+                managed_env_keys=managed_env_keys,
                 written_native_hashes=written_hashes,
             ):
                 successful_runtimes.append(rt)

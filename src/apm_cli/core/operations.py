@@ -49,6 +49,7 @@ def install_package(
     user_scope: bool = False,
     replace_existing: bool = False,
     managed_fields: set[str] | None = None,
+    managed_env_keys: set[str] | None = None,
 ):
     """Install an MCP package for a specific client type.
 
@@ -90,12 +91,14 @@ def install_package(
                 runtime_vars=shared_runtime_vars,
                 replace_existing=replace_existing,
                 managed_fields=managed_fields,
+                managed_env_keys=managed_env_keys,
             )
         else:
             summary = safe_installer.install_servers(
                 [package_name],
                 replace_existing=replace_existing,
                 managed_fields=managed_fields,
+                managed_env_keys=managed_env_keys,
             )
 
         return {
