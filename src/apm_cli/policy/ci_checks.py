@@ -509,6 +509,11 @@ def _check_config_consistency(
         )
 
     details = [f"{problem.package_key}: {problem.message}" for problem in view.problems]
+    declarations = {dep.name: dep for dep in view.dependencies}
+    for target, names in sorted(lock.mcp_target_servers.items()):
+        for name in sorted(names):
+            if name in declarations and not declarations[name].targets_runtime(target):
+                details.append(f"{name}: ownership recorded for excluded target {target}")
 
     # Preserve the established diagnostics while sourcing every partition from
     # the canonical symmetric diff.
