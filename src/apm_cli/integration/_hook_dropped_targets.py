@@ -66,6 +66,11 @@ def reconcile_dropped_targets(
         if scoped is None:
             continue
         target_dir = scoped.deploy_path(project_root)
+        if name == "omp":
+            from apm_cli.integration.omp_hook_integrator import clean_omp_hooks
+
+            clean_omp_hooks(target_dir, stats)
+            continue
         json_path = target_dir / config.config_filename
         sidecar_path = target_dir / _hi._APM_HOOKS_SIDECAR
 

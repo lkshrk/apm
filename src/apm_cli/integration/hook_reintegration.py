@@ -13,13 +13,18 @@ def build_hook_reintegration_source_plan(
     package_info: Any,
     targets: list[Any],
     allow_executables: dict[str, dict[str, bool]] | None,
+    *,
+    is_first_party: bool = False,
 ) -> DeployableSourcePlan:
     """Return a scanned source plan before destructive hook reconciliation."""
-    hooks_approved = check_executable_approval(
-        dep_ref.get_identity(),
-        package_info,
-        allow_executables,
-    )[0]
+    hooks_approved = (
+        is_first_party
+        or check_executable_approval(
+            dep_ref.get_identity(),
+            package_info,
+            allow_executables,
+        )[0]
+    )
     source_plan = DeployableSourcePlan.create(
         package_info,
         targets,
@@ -27,6 +32,7 @@ def build_hook_reintegration_source_plan(
         hooks_approved=hooks_approved,
         canvas_approved=False,
         skip_bin=True,
+        is_first_party=is_first_party,
     )
     verdict = source_plan.scan_security(policy=BLOCK_POLICY)
     if verdict.should_block:

@@ -352,19 +352,14 @@ def _target_command_hook(command: str) -> dict:
 
     ``SessionStart`` and a trivial command survive event normalization across
     every merge harness, so the command string is a reliable per-file marker
-    regardless of a target's casing/matcher conventions. The matcher is the
-    wildcard ``"*"`` rather than an arbitrary word: ``SessionStart`` is not a
-    tool-use event, so Cursor's native contract only has a verified
-    translation for wildcard/empty matchers on non-tool lifecycle events
-    (see ``_cursor_matcher``); a non-wildcard placeholder would be rejected
-    by Cursor's strict preflight while being semantically meaningless for
-    every other harness too, so the wildcard is the correct value here, not
-    a weakening of this test's actual regression (per-target file routing
-    isolation, asserted below).
+    regardless of a target's casing/matcher conventions. Lifecycle bindings
+    omit matcher entirely: omp has no equivalent for session-reason matchers.
+    The regression under test is per-target file routing isolation, not matcher
+    translation.
     """
     return {
         "hooks": {
-            "SessionStart": [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}],
+            "SessionStart": [{"hooks": [{"type": "command", "command": command}]}],
         }
     }
 

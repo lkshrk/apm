@@ -7,6 +7,7 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Any, NoReturn
 
+from apm_cli.models.dependency.materialization import materialization_relative_path
 from apm_cli.utils.path_security import (
     PathTraversalError,
     ensure_path_within,
@@ -154,8 +155,7 @@ def project_apm_owned_hook_entries(
 def dependency_hook_source_marker(dependency_ref) -> str:
     """Project dependency identity into a collision-resistant sidecar marker."""
     if dependency_ref.is_local:
-        modules_root = Path("apm_modules")
-        return dependency_ref.get_install_path(modules_root).relative_to(modules_root).as_posix()
+        return materialization_relative_path(dependency_ref).as_posix()
     return dependency_ref.get_canonical_dependency_string()
 
 

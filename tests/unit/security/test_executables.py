@@ -891,3 +891,98 @@ def test_registrable_exec_statuses_excludes_every_untrusted_value() -> None:
     assert TRUST_GATED not in REGISTRABLE_EXEC_STATUSES
     assert "some-future-status" not in REGISTRABLE_EXEC_STATUSES
     assert frozenset({None, TRUST_ABSENT, TRUST_DEPLOYED}) == REGISTRABLE_EXEC_STATUSES
+
+
+class TestNativeExtensionExecutables:
+    def test_extension_declaration_has_separate_trust_category(self, tmp_path: Path) -> None:
+        from apm_cli.security.executables import EXEC_TYPE_EXTENSIONS
+
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["entry.ts"]}}')
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        declaration = scan_package_executables(tmp_path, "native", "1.0.0")
+        assert declaration.has_executables
+        assert declaration.exec_types == [EXEC_TYPE_EXTENSIONS]
+        assert declaration.extension_count == 1
+        assert declaration.canvas_count == 0
+        assert declaration.extension_details == [tmp_path.name]
+        assert declaration.summary_line() == "1 native extension(s)"
+        canvas_approval = {declaration.package_key: {EXEC_TYPE_CANVAS: True}}
+        assert not _is_fully_approved(canvas_approval, declaration)
+        approval = prompt_executable_approval([declaration], trust_all=True)
+        assert approval == {declaration.package_key: {EXEC_TYPE_EXTENSIONS: True}}
+        assert parse_allow_executables({"allowExecutables": approval}) == approval
+
+    def test_unbuilt_extension_is_declared_without_preflighting_excluded_target(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "apm.yml").write_text("name: mixed\nversion: 1.0.0\ntargets: [claude, codex]\n")
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["missing.js"]}}')
+        declaration = scan_package_executables(tmp_path, "native", "1.0.0")
+        assert declaration.exec_types == ["extensions"]
+
+    def test_canvas_and_native_permissions_are_independent(self, tmp_path: Path) -> None:
+        root = tmp_path / ".apm" / "extensions" / "canvas"
+        root.mkdir(parents=True)
+        (root / "extension.mjs").write_text("export default {}")
+        (root.parent / "native.ts").write_text("export default function () {}")
+        declaration = scan_package_executables(tmp_path, "mixed", "1.0.0")
+        assert declaration.exec_types == ["canvas", "extensions"]
+        assert declaration.canvas_count == declaration.extension_count == 1
+        assert not _is_fully_approved({declaration.package_key: {"extensions": True}}, declaration)
+
+    def test_plain_javascript_never_implies_native_execution(self, tmp_path: Path) -> None:
+        (tmp_path / "index.js").write_text("export default function () {}")
+        assert not scan_package_executables(tmp_path, "plain", "1.0.0").has_executables
+
+    @pytest.mark.parametrize("directory", [".omp/extensions", ".pi/extensions", ".apm/extensions"])
+    def test_unbuilt_nested_manifest_remains_declarative(
+        self, tmp_path: Path, directory: str
+    ) -> None:
+        from apm_cli.models.validation import PackageType, validate_apm_package
+
+        bundle = tmp_path / directory / "nested"
+        bundle.mkdir(parents=True)
+        (bundle / "package.json").write_text('{"omp":{"extensions":["dist/missing.js"]}}')
+        declaration = scan_package_executables(tmp_path, "native", "1.0.0")
+        assert declaration.exec_types == ["extensions"]
+        admission = validate_apm_package(tmp_path, read_only=True)
+        assert admission.is_valid, admission.errors
+        assert admission.package_type is PackageType.EXTENSION_PACKAGE
+
+    def test_native_extension_requires_approval_even_when_legacy_gate_disabled(self) -> None:
+        from dataclasses import replace
+
+        from apm_cli.security.executables import (
+            ExecTrustContext,
+            exec_status_for_declaration,
+            resolve_exec_decision,
+        )
+
+        context = ExecTrustContext(
+            gate_enabled=False,
+            org_deny_all=False,
+            org_deny=frozenset(),
+            org_require=frozenset(),
+            org_recommend=frozenset(),
+            org_enforce=frozenset(),
+            org_bin_deny_all=False,
+            org_bin_deny=frozenset(),
+            project_allow={},
+            project_deny={},
+            user_allow={},
+            user_deny={},
+        )
+        assert resolve_exec_decision(context, "native#1.0.0", "canvas").allowed
+        decision = resolve_exec_decision(context, "native#1.0.0", "extensions")
+        assert not decision.allowed
+        assert decision.trust_state == TRUST_GATED
+        assert exec_status_for_declaration(context, ["native#1.0.0"], ("canvas",)) is None
+        assert (
+            exec_status_for_declaration(context, ["native#1.0.0"], ("extensions",)) == TRUST_GATED
+        )
+        allowed = replace(context, project_allow={"native#1.0.0": {"extensions": True}})
+        assert resolve_exec_decision(allowed, "native#1.0.0", "extensions").allowed
+        assert (
+            exec_status_for_declaration(allowed, ["native#1.0.0"], ("extensions",))
+            == TRUST_DEPLOYED
+        )

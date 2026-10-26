@@ -218,7 +218,7 @@ TARGET_CAPABILITIES: Mapping[str, TargetCapability] = _build_target_catalog(
         ),
         _capability(
             "omp",
-            "omp native MCP and shared .agents skills configuration",
+            "omp native MCP, extensions and hooks with shared .agents skills",
             explicit_only=True,
             primitive_profile="omp",
         ),

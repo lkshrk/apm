@@ -22,6 +22,7 @@ Covers branches not hit by existing test_drift.py / test_drift_perf.py:
 from __future__ import annotations
 
 import json
+from dataclasses import MISSING, fields
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +49,7 @@ from apm_cli.install.drift import (
     render_drift_text,
     run_replay,
 )
+from apm_cli.install.services import IntegratorBundle
 from apm_cli.integration.hook_integrator import HookIntegrator
 
 # ---------------------------------------------------------------------------
@@ -278,10 +280,20 @@ class TestBuildPackageInfo:
 
 
 class TestMakeIntegrators:
-    def test_returns_all_expected_keys(self) -> None:
+    def test_integrators_populate_integrator_bundle(self) -> None:
         integrators = _make_integrators()
-        expected = {"prompt", "agent", "skill", "command", "hook", "instruction"}
-        assert expected == set(integrators.keys())
+        bundle_fields = {f.name: f for f in fields(IntegratorBundle)}
+        required = {
+            name
+            for name, f in bundle_fields.items()
+            if f.default is MISSING and f.default_factory is MISSING
+        }
+
+        assert required <= set(integrators)
+        assert set(integrators) <= set(bundle_fields)
+        bundle = IntegratorBundle(**integrators)
+        for name, integrator in integrators.items():
+            assert getattr(bundle, name) is integrator
 
 
 # ---------------------------------------------------------------------------

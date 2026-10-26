@@ -53,18 +53,21 @@ def known_bundle_deploy_prefixes() -> frozenset[str]:
                 if mapping.deploy_root
             ),
         )
-    )
+    ) | frozenset({".omp/agent/"})
 
 
 def target_bundle_deploy_prefixes(target: TargetProfile) -> frozenset[str]:
     """Return deployment roots owned by one target."""
-    return frozenset(
+    prefixes = frozenset(
         f"{root.strip('/')}/"
         for root in (
             target.root_dir,
             *(mapping.deploy_root for mapping in target.primitives.values() if mapping.deploy_root),
         )
     )
+    if target.name == "omp":
+        return prefixes | frozenset({".omp/", ".omp/agent/"})
+    return prefixes
 
 
 def bundle_slug_validation_error(slug: object) -> str | None:
@@ -95,6 +98,17 @@ def bundle_deploy_relative_path(
 ) -> str | None:
     """Return a bundle path relative to a target-owned deployment root."""
     validate_path_segments(rel_path, context="bundle deploy path")
+    if target is not None:
+        from ..integration.extension_discovery import is_native_extension_path
+
+        native = is_native_extension_path(rel_path)
+        if native and not target.supports("extensions"):
+            return None
+        # Flat extensions/ belongs to the portable plugin canvas layout. Native
+        # payloads retain their namespace so approval and runtime cannot mix.
+        unnamespaced = rel_path.removeprefix(f"{COM_MICROSOFT_APM_NAMESPACE}/")
+        if target.supports("extensions") and unnamespaced.startswith("extensions/"):
+            return None
     deploy_rel = _deploy_relative_candidate(rel_path, allowed_prefixes, known_deploy_prefixes)
     if deploy_rel is None:
         return None
@@ -164,7 +178,8 @@ def _lower_to_target(rel_path: str, target: TargetProfile | None) -> str | None:
     if mapping.format_id in _UNSUPPORTED_PLUGIN_FORMAT_IDS:
         return None
     parts = rel_path.split("/", 1)[1].split("/")
-    parts[-1] = _retarget_basename(parts[-1], mapping, spec.apm_basename_fn)
+    if _primitive_kind not in {"extensions", "canvas"}:
+        parts[-1] = _retarget_basename(parts[-1], mapping, spec.apm_basename_fn)
     lowered_tail = "/".join(parts)
     if not mapping.subdir:
         return lowered_tail

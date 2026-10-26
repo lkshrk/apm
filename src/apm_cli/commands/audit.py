@@ -285,6 +285,7 @@ def _deployed_canvas_bundles(project_root: Path, package_filter: str | None) -> 
     such as ``.copilot/extensions/widget`` (one entry per bundle).
     """
     from ..integration.canvas_integrator import is_canvas_bundle_path
+    from ..integration.extension_discovery import is_native_extension_path
 
     lock = LockFile.read(get_lockfile_path(project_root))
     if lock is None:
@@ -296,7 +297,7 @@ def _deployed_canvas_bundles(project_root: Path, package_filter: str | None) -> 
             continue
         for rel in dep.deployed_files:
             norm = rel.replace("\\", "/").strip("/")
-            if not norm or not is_canvas_bundle_path(norm):
+            if not norm or not is_canvas_bundle_path(norm) or is_native_extension_path(norm):
                 continue
             parts = norm.split("/")
             for idx, seg in enumerate(parts):
@@ -316,6 +317,31 @@ def _render_canvas_note(project_root: Path, package_filter: str | None, logger) 
     )
     for root in bundles:
         logger.info(f"  {root}", symbol="info")
+
+
+def _render_native_extension_note(project_root: Path, package_filter: str | None, logger) -> None:
+    """Report native executable bundles without classifying them as canvases."""
+    from ..integration.extension_discovery import is_native_extension_path
+
+    lock = LockFile.read(get_lockfile_path(project_root))
+    if lock is None:
+        return
+    roots: set[str] = set()
+    for dep_key, dep in lock.dependencies.items():
+        if package_filter and dep_key != package_filter:
+            continue
+        for relative in dep.deployed_files:
+            norm = relative.replace("\\", "/").rstrip("/")
+            if not is_native_extension_path(norm):
+                continue
+            parts = norm.split("/")
+            index = parts.index("extensions")
+            if index + 1 < len(parts):
+                roots.add("/".join(parts[: index + 2]))
+    if roots:
+        logger.info(f"{len(roots)} executable native extension(s) deployed (trust-gated):")
+        for root in sorted(roots):
+            logger.info(f"  {root}", symbol="info")
 
 
 def _render_summary(
@@ -1196,6 +1222,7 @@ def _audit_content_scan(
         _render_owner_violations(owner_violations, logger)
         if not file_path:
             _render_canvas_note(cfg.project_root, package, logger)
+            _render_native_extension_note(cfg.project_root, package, logger)
         if drift_findings:
             from ..install.drift import render_drift_text
 

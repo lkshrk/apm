@@ -266,6 +266,141 @@ def _strip_sha256_prefix(h: str) -> str:
     return h[len("sha256:") :] if h.startswith("sha256:") else h
 
 
+def _extension_cleanup_roots(targets, project_root: Path) -> set[Path]:
+    """Include known native roots and scope-resolved custom agent roots."""
+    from apm_cli.utils.paths import portable_relpath
+
+    roots = {Path(".omp/extensions"), Path(".omp/agent/extensions")}
+    for target in targets or ():
+        mapping = target.primitives.get("extensions")
+        if mapping is not None:
+            roots.add(Path(mapping.deploy_root or target.root_dir) / mapping.subdir)
+    # An absolute PI_CODING_AGENT_DIR inside the deployment root is recorded
+    # relatively in the ledger. Recognize both representations before grouping.
+    roots.update(Path(portable_relpath(project_root / root, project_root)) for root in tuple(roots))
+    return roots
+
+
+def _extension_cleanup_groups(
+    stale_paths: list[str], targets, project_root: Path
+) -> dict[Path, list[str]]:
+    """Group native payload paths even when their receipt is missing or edited."""
+    roots = sorted(
+        _extension_cleanup_roots(targets, project_root),
+        key=lambda root: len(root.parts),
+        reverse=True,
+    )
+    groups: dict[Path, list[str]] = {}
+    for relative in stale_paths:
+        path = Path(relative)
+        for base in roots:
+            try:
+                parts = path.relative_to(base).parts
+            except ValueError:
+                continue
+            # The portable-hook bridge has its own shared ownership lifecycle.
+            if parts and parts[0] not in ("apm-hooks-project", "apm-hooks-user"):
+                groups.setdefault(base / parts[0], []).append(relative)
+                break
+    return groups
+
+
+def _remove_extension_bundle(
+    relative_root: Path,
+    selected: list[str],
+    project_root: Path,
+    *,
+    targets,
+    user_scope: bool,
+    prior_targets,
+    recorded_hashes: dict[str, str],
+    result: CleanupResult,
+    absent_targets: list[Path],
+    diagnostics,
+    dep_key: str,
+    failed_path_retained: bool,
+) -> None:
+    """Verify the entire selected bundle before removing any of its files.
+
+    A receipt alone is not ownership evidence: its previous lockfile hash must
+    match too. This also prevents old source-update rows from removing a newly
+    deployed receipt and payload at the same destination.
+    """
+    from apm_cli.integration.extension_integrator import ExtensionIntegrator
+    from apm_cli.utils.content_hash import compute_file_hash
+
+    root = project_root / relative_root
+    if not all(
+        BaseIntegrator.validate_deploy_path(
+            relative, project_root, targets=targets, user_scope=user_scope
+        )
+        or BaseIntegrator.validate_deploy_path(
+            (project_root / relative).as_posix(),
+            project_root,
+            targets=targets,
+            user_scope=user_scope,
+        )
+        or BaseIntegrator.validate_deploy_path(
+            (project_root / relative).as_posix(),
+            project_root,
+            targets=prior_targets,
+            user_scope=user_scope,
+        )
+        for relative in selected
+    ):
+        result.skipped_unmanaged.extend(selected)
+        return
+    paths = [project_root / relative for relative in selected]
+    if all(not path.exists() and not path.is_symlink() for path in paths):
+        absent_targets.extend(paths)
+        return
+
+    reason = None
+    edited = False
+    for relative, path in zip(selected, paths, strict=True):
+        expected = recorded_hashes.get(relative)
+        if not expected or path.is_symlink() or not path.is_file():
+            reason = "missing ownership evidence or non-file content"
+            break
+        try:
+            actual = compute_file_hash(path)
+        except Exception:
+            reason = "file content could not be verified"
+            edited = True
+            break
+        if _strip_sha256_prefix(actual) != _strip_sha256_prefix(expected):
+            reason = "files or ownership receipt edited since deployment"
+            edited = True
+            break
+    if reason is None and ExtensionIntegrator._owned(root, project_root, set(selected)) is None:
+        reason = "foreign content, modified payload, or only part of the bundle selected"
+    if reason is not None:
+        retained = result.skipped_user_edit if edited else result.skipped_unmanaged
+        retained.extend(selected)
+        diagnostics.warn(
+            f"Skipped removing native extension bundle {relative_root}: {reason}. "
+            "The entire bundle was preserved; inspect it before removing manually.",
+            package=dep_key,
+        )
+        return
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        result.failed.extend(selected)
+        action = (
+            "Paths retained in lockfile; will retry on next 'apm install'."
+            if failed_path_retained
+            else "The owning package is no longer in apm.yml; remove the bundle manually."
+        )
+        diagnostics.warn(
+            f"Could not remove native extension bundle {relative_root}: {exc}. {action}",
+            package=dep_key,
+        )
+        return
+    result.deleted.extend(selected)
+    result.deleted_targets.extend(paths)
+
+
 def remove_stale_deployed_files(
     stale_paths: Iterable[str],
     project_root: Path,
@@ -278,6 +413,7 @@ def remove_stale_deployed_files(
     user_scope: bool = False,
     allow_final_symlink: bool = False,
     receipt_retirements: list[Path] | None = None,
+    prior_lockfile=None,
 ) -> CleanupResult:
     """Remove APM-deployed files that are no longer produced by *dep_key*.
 
@@ -296,8 +432,8 @@ def remove_stale_deployed_files(
             are pushed here.
         recorded_hashes: Mapping from rel-path to ``"sha256:<hex>"`` as
             stored on the previous ``LockedDependency``. ``None`` (or
-            empty) disables the per-file provenance check entirely --
-            preserved for backward compat with pre-hash lockfiles.
+            empty) preserves legacy per-file deletion, but native extension
+            bundles always require every payload and receipt hash.
         failed_path_retained: When ``True`` (default, intra-package
             stale cleanup) the failure diagnostic tells the user APM
             will retry on the next install -- the caller is expected
@@ -311,6 +447,9 @@ def remove_stale_deployed_files(
         receipt_retirements: Optional batch accumulator for confirmed physical
             removals or absence. The caller must retire it through the receipt
             owner in a finally block; omitted callers retire immediately.
+        prior_lockfile: Prior canonical ownership used to recover custom native
+            roots after PI_CODING_AGENT_DIR changes. Root discovery does not
+            bypass the bundle's current receipt, payload, or symlink checks.
 
     Returns:
         :class:`CleanupResult` describing what happened. The caller is
@@ -326,6 +465,12 @@ def remove_stale_deployed_files(
     """
     result = CleanupResult()
     recorded_hashes = recorded_hashes or {}
+    from .extension_roots import recorded_omp_profiles
+
+    prior_targets = recorded_omp_profiles(
+        prior_lockfile, project_root, dependency_keys={dep_key}, user_scope=user_scope
+    )
+    extension_targets = [*(targets or ()), *prior_targets]
 
     # Materialise stale_paths so we can iterate twice: once for the main
     # file-deletion loop and once as a lookup set for the deferred
@@ -340,14 +485,54 @@ def remove_stale_deployed_files(
     _deferred_dirs: list[tuple[str, Path]] = []
     absent_targets: list[Path] = []
 
+    # Native code and its resources are one ownership unit. Never let the
+    # generic per-file loop dismantle a retained or freshly updated bundle.
+    extension_groups = _extension_cleanup_groups(_stale_list, extension_targets, project_root)
+    extension_paths = {path for group in extension_groups.values() for path in group}
+    for relative_root, selected in extension_groups.items():
+        _remove_extension_bundle(
+            relative_root,
+            selected,
+            project_root,
+            targets=targets,
+            user_scope=user_scope,
+            prior_targets=prior_targets,
+            recorded_hashes=recorded_hashes,
+            result=result,
+            absent_targets=absent_targets,
+            diagnostics=diagnostics,
+            dep_key=dep_key,
+            failed_path_retained=failed_path_retained,
+        )
+
     # Lazy-resolve cowork root at most once per invocation (same
     # pattern as sync_remove_files in base_integrator.py -- PR #926 P4).
     _cowork_root_resolved: bool = False
     _cowork_root_cached: Path | None = None
     _cowork_orphans_skipped: int = 0
     _cowork_resolve_errors: int = 0
+    # Shared portable-hook artifacts are reconciled by clean_omp_hooks only
+    # after the merged descriptor has lost its last managed handler.
+    shared_hook_paths = {
+        path
+        for base in _extension_cleanup_roots(extension_targets, project_root)
+        for path in (
+            base / "apm-hooks-project/index.ts",
+            base / "apm-hooks-user/index.ts",
+            base.parent / "apm-hooks-runtime.json",
+        )
+    }
 
     for stale_path in _stale_list:
+        if Path(stale_path) in shared_hook_paths:
+            shared_target = project_root / stale_path
+            if shared_target.exists() or shared_target.is_symlink():
+                result.failed.append(stale_path)
+            else:
+                absent_targets.append(shared_target)
+            continue
+        if stale_path in extension_paths:
+            continue
         # -- Cowork:// paths ---------------------------------------
         # Handled BEFORE validate_deploy_path because that method
         # hard-rejects cowork:// when the OneDrive root is unavailable

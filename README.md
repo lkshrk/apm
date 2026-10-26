@@ -13,10 +13,10 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 > **Portable by manifest. Secure by default. Governed by policy.**
 > One file describes every agent's context; one command reproduces it everywhere; one policy controls what an org will allow.
 
-## Omni fork: omp MCP support
+## Omni fork: omp support
 
 This fork is based on the upstream **v0.35.0 release** and reports
-`0.35.0+omni.2`. Omni pins an immutable commit of `lkshrk/apm`; the upstream
+`0.35.0+omni.3`. Omni pins an immutable commit of `lkshrk/apm`; the upstream
 installers below do not include these additions.
 
 Select `omp` explicitly in `targets:`. Skills use the shared `.agents/skills`
@@ -54,6 +54,36 @@ Declared connection fields and environment values remain protected; removing
 a previously declared field removes it rather than turning it into a local
 preference. Registry connections retain strict native-config verification.
 Unmanaged Codex connections are not automatically adopted.
+
+### Generic extensions and portable hooks
+
+APM deploys native omp extension packages to `.omp/extensions/<bundle>/` in a
+project and `~/.omp/agent/extensions/<bundle>/` globally. Package manifests
+declare `omp.extensions` (preferred) or `pi.extensions`; `.apm/extensions`,
+`.omp/extensions`, and `.pi/extensions` are recognized source directories.
+Declared entries must exist inside the package. APM never runs extension code,
+builds packages, installs npm dependencies, or falls back to arbitrary source
+files. Native extensions require their own explicit `extensions` executable
+approval; `canvas` approval does not authorize them.
+
+Portable command hooks use the existing APM hook contract and deploy one
+APM-owned native bridge plus a merged `hooks.json`. The bridge keeps package
+roots and data directories explicit, preserves unrelated native handlers, and
+is removed only after its last verified owned handler. Supported mappings are
+PreToolUse, PostToolUse, PostToolUseFailure, Stop, initialization-only
+SessionStart, SessionEnd shutdown, PreCompact, and PostCompact. Incompatible
+hooks fail before writes: UserPromptSubmit, permission requests/`ask`,
+subagent-stop, non-tool matchers, async/non-command handlers, unsafe edit/task
+payloads, and Windows command hooks. SessionStart does not synthesize
+resume/clear/compact reasons; `transcript_path` remains omp's native format.
+
+When a package declares a native omp extension, it takes precedence over that
+package's portable omp hooks. If its extension approval is absent, APM parks
+the native code and does not retain portable hooks as a fallback, because they
+would execute updated package source without the new native-code approval.
+
+The generated extension and hook outputs are runtime state. Do not dotfile
+track them or `mcp.json`; track package sources and manifests instead.
 
 ## Why APM
 

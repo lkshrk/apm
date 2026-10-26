@@ -11,6 +11,15 @@ from click.testing import CliRunner
 from apm_cli.policy.discovery import PolicyFetchResult
 
 
+@pytest.fixture(autouse=True)
+def _reset_console_state():
+    """Root CLI machine output must not redirect later tests to stderr."""
+    from apm_cli.utils.console import _reset_console
+
+    yield
+    _reset_console()
+
+
 @pytest.mark.parametrize(
     "args",
     [

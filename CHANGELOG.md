@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.3] - 2026-10-26
+
+### Added
+
+- Generic native omp extension lifecycle with explicit executable approval, source validation, collision protection, frozen/audit/replay coverage, and verified update/removal.
+- Generic portable command-hook bridge for supported omp lifecycle and tool events, with package-root provenance, merged ownership, preflight rejection of incompatible semantics, and scoped project/user bridge isolation.
+
+### Fixed
+
+- Local manifestless extension and hook package admission, user-scope executable approvals, native payload audit coverage, first-party replay ordering, and safe removed-owner cleanup.
+
 ## [0.35.0+omni.2] - 2026-10-26
 
 ### Fixed

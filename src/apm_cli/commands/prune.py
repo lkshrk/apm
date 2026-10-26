@@ -269,6 +269,19 @@ def prune(ctx, dry_run):
         BaseIntegrator.cleanup_empty_parents(deleted_pkg_paths, stop_at=apm_modules_dir)
 
         if lockfile is not None:
+            from ..install.removed_hook_ownership import reconcile_removed_native_hook_owners
+
+            native_hook_stats = reconcile_removed_native_hook_owners(
+                lockfile,
+                set(pruned_keys),
+                project_root,
+            )
+            if native_hook_stats.get("errors", 0):
+                logger.error(
+                    "Native hook cleanup is incomplete; dependency ownership was retained. "
+                    "Repair the reported omp artifacts and retry prune."
+                )
+                sys.exit(1)
             cleanup_claims = {
                 dep_key: (
                     tuple(lockfile.dependencies[dep_key].deployed_files),
@@ -302,6 +315,7 @@ def prune(ctx, dry_run):
                     diagnostics=logger.diagnostics,
                     recorded_hashes=hashes,
                     failed_path_retained=False,
+                    prior_lockfile=lockfile,
                 )
                 deployed_cleaned += len(cleanup.deleted)
                 deleted_targets.extend(cleanup.deleted_targets)

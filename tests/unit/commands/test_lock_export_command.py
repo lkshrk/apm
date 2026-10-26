@@ -15,6 +15,16 @@ from click.testing import CliRunner
 
 from apm_cli.cli import cli
 
+
+@pytest.fixture(autouse=True)
+def _reset_console_state():
+    """Restore process console routing after root CLI structured output."""
+    from apm_cli.utils.console import _reset_console
+
+    yield
+    _reset_console()
+
+
 _LOCKFILE = """\
 lockfile_version: "2"
 generated_at: "2024-01-01T00:00:00+00:00"

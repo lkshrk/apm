@@ -60,9 +60,17 @@ class PackageValidator:
 
         from ..models.validation import PackageType, detect_package_type
 
-        pkg_type, plugin_json_path = detect_package_type(package_path)
-        if pkg_type == PackageType.AGENT_PLUGIN or (
-            pkg_type == PackageType.INVALID and plugin_json_path is not None
+        try:
+            pkg_type, plugin_json_path = detect_package_type(package_path)
+        except (ValueError, OSError) as exc:
+            result.add_error(f"Invalid package artifacts: {exc}")
+            return result
+        from ..models.format_detection import NativeExtensionDetector
+
+        if (
+            pkg_type in (PackageType.AGENT_PLUGIN, PackageType.EXTENSION_PACKAGE)
+            or (pkg_type == PackageType.INVALID and plugin_json_path is not None)
+            or NativeExtensionDetector().detect(package_path) is not None
         ):
             return self.validate_package(package_path)
 

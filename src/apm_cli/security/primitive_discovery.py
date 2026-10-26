@@ -18,6 +18,13 @@ from apm_cli.utils.path_security import (
     has_symlink_component,
 )
 
+# Suffixes of prompt documents whose whole file is prompt text.
+PROMPT_DOCUMENT_SUFFIXES = frozenset({".md", ".mdc"})
+
+# Native executable bundles and generated runtime metadata are resources, not
+# prompt documents: readable text is scanned raw, binary is not applicable.
+RAW_ASSET_KINDS = frozenset({"extensions", "metadata"})
+
 
 @dataclass(frozen=True)
 class PrimitiveSurface:
@@ -93,14 +100,16 @@ def primitive_surfaces(
                 surfaces.append(surface)
         root = target.managed_deploy_root or project_root
         for filename in target.generated_files:
+            generated = target.deploy_path(project_root, filename)
+            document = Path(filename).suffix in PROMPT_DOCUMENT_SUFFIXES
             surfaces.append(
                 PrimitiveSurface(
                     root,
-                    target.deploy_path(project_root, filename),
+                    generated,
                     None,
                     target.name,
-                    "context",
-                    "markdown",
+                    "context" if document else "metadata",
+                    "markdown" if document else "generated",
                     external=root != project_root,
                 )
             )
@@ -179,8 +188,11 @@ def iter_surface_files(surface: PrimitiveSurface) -> Iterator[Path]:
         dirs[:] = [
             name
             for name in dirs
-            if not name.startswith(".")
-            and name not in {"__pycache__", "node_modules"}
+            if (
+                name != ".git"
+                if surface.kind == "extensions"
+                else not name.startswith(".") and name not in {"__pycache__", "node_modules"}
+            )
             and not (current / name).is_symlink()
         ]
         for filename in sorted(files):

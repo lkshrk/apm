@@ -83,6 +83,7 @@ def format_package_type_label(pkg_type: Any) -> str | None:
         PackageType.HYBRID: "Hybrid (apm.yml + SKILL.md)",
         PackageType.APM_PACKAGE: "APM Package (apm.yml)",
         PackageType.HOOK_PACKAGE: "Hook Package (hooks/*.json only)",
+        PackageType.EXTENSION_PACKAGE: "Native Extension Package (omp/pi extensions)",
         PackageType.SKILL_BUNDLE: "Skill Bundle (skills/<name>/SKILL.md)",
     }.get(pkg_type)
 
