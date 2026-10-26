@@ -200,21 +200,87 @@ def test_unverified_baseline_does_not_authorize_env_removal(tmp_path, managed):
         managed_fields=fields,
         managed_env_keys=env_keys,
     )
-    assert state is (
-        NativeMcpConnectionState.CONFLICT if managed else NativeMcpConnectionState.MATCHING_FOREIGN
-    )
+    assert state is NativeMcpConnectionState.CONFLICT
     assert fields == env_keys == set()
     assert path.read_bytes() == before
 
 
 def test_matching_foreign_codex_is_never_auto_adopted(tmp_path):
     dep = dependency()
-    _, path = seed(tmp_path, dep, tools=["read"], env={"LOCAL": "keep"})
+    _, path = seed(tmp_path, dep)
     before = path.read_bytes()
     claims, hashes = {}, {}
     assert install(dep, tmp_path, claims, hashes=hashes) == 0
     assert not claims.get("codex")
     assert not hashes.get("codex")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "local",
+    [
+        {"env": {"PATH": "/unmanaged/bin"}},
+        {"env": {"LD_PRELOAD": "/unmanaged/library.so"}},
+        {"tools": ["read"]},
+        {"startup_timeout_sec": 60},
+        {"tool_timeout_sec": 90},
+    ],
+)
+def test_foreign_codex_preferences_conflict_without_writing_or_claiming(tmp_path, local):
+    dep = dependency()
+    client, path = seed(tmp_path, dep, **local)
+    before = path.read_bytes()
+    assert (
+        compare_native_mcp_connection(
+            client,
+            dep.name,
+            requested_info=MCPIntegrator._build_self_defined_info(dep),
+            stored_config=None,
+            managed=False,
+        )
+        is NativeMcpConnectionState.CONFLICT
+    )
+    claims, hashes = {}, {}
+    with pytest.raises(MCPNativeConflictError):
+        install(dep, tmp_path, claims, hashes=hashes)
+    assert not claims.get("codex")
+    assert not hashes.get("codex")
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("stored", [None, {"command": "different-baseline"}])
+def test_claim_without_verified_baseline_does_not_allow_local_preferences(tmp_path, stored):
+    dep = dependency()
+    client, path = seed(tmp_path, dep, env={"PATH": "/unmanaged/bin"})
+    before = path.read_bytes()
+    stored_config = dependency(**stored).to_dict() if stored is not None else None
+    assert (
+        compare_native_mcp_connection(
+            client,
+            dep.name,
+            requested_info=MCPIntegrator._build_self_defined_info(dep),
+            stored_config=stored_config,
+            managed=True,
+        )
+        is NativeMcpConnectionState.CONFLICT
+    )
+    assert path.read_bytes() == before
+
+
+def test_exact_foreign_codex_match_still_accepts_legacy_empty_id(tmp_path):
+    dep = dependency()
+    client, path = seed(tmp_path, dep, id="")
+    before = path.read_bytes()
+    assert (
+        compare_native_mcp_connection(
+            client,
+            dep.name,
+            requested_info=MCPIntegrator._build_self_defined_info(dep),
+            stored_config=None,
+            managed=False,
+        )
+        is NativeMcpConnectionState.MATCHING_FOREIGN
+    )
     assert path.read_bytes() == before
 
 
