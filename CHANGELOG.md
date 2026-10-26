@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.4] - 2026-10-26
+
+### Fixed
+
+- Unmanaged Codex connections are compared exactly. Local tool, timeout, and extra-environment preferences are preserved only for entries verified as APM-owned, so a foreign entry that differs from the declaration is reported as a conflict instead of "already matching".
+- Unit tests that exercised default-project-root MCP installs no longer write `.codex/` or `.github/mcp.json` into the working checkout.
+
 ## [0.35.0+omni.3] - 2026-10-26
 
 ### Added

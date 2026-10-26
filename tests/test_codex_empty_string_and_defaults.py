@@ -78,9 +78,9 @@ class TestCodexEmptyStringAndDefaults:
             ],
         }
 
-    def test_codex_empty_strings_trigger_defaults(self, github_mcp_server_data):
+    def test_codex_empty_strings_trigger_defaults(self, github_mcp_server_data, tmp_path):
         """Test that Codex adapter treats empty strings as no value and applies defaults."""
-        adapter = CodexClientAdapter()
+        adapter = CodexClientAdapter(project_root=tmp_path)
 
         # User provides some values but leaves essential ones empty
         env_overrides = {
@@ -129,9 +129,9 @@ class TestCodexEmptyStringAndDefaults:
             actual_env_flags = set(env_flags)
             assert expected_env_flags == actual_env_flags
 
-    def test_codex_no_overrides_gets_defaults(self, github_mcp_server_data):
+    def test_codex_no_overrides_gets_defaults(self, github_mcp_server_data, tmp_path):
         """Test that Codex adapter applies defaults when required vars provided but optional ones get defaults."""
-        adapter = CodexClientAdapter()
+        adapter = CodexClientAdapter(project_root=tmp_path)
 
         # Provide the required variable, explicitly set others empty to trigger defaults
         env_overrides_with_empties = {
@@ -164,9 +164,9 @@ class TestCodexEmptyStringAndDefaults:
             assert "GITHUB_HOST" not in env_section
             assert "GITHUB_READ_ONLY" not in env_section
 
-    def test_codex_user_values_override_defaults(self, github_mcp_server_data):
+    def test_codex_user_values_override_defaults(self, github_mcp_server_data, tmp_path):
         """Test that Codex adapter respects user-provided values over defaults."""
-        adapter = CodexClientAdapter()
+        adapter = CodexClientAdapter(project_root=tmp_path)
 
         # Provide non-empty values for variables that have defaults
         env_overrides = {
@@ -192,9 +192,9 @@ class TestCodexEmptyStringAndDefaults:
             assert env_section["GITHUB_TOOLSETS"] == "custom_toolset"  # User value
             assert env_section["GITHUB_DYNAMIC_TOOLSETS"] == "0"  # User value
 
-    def test_whitespace_only_treated_as_empty(self, github_mcp_server_data):
+    def test_whitespace_only_treated_as_empty(self, github_mcp_server_data, tmp_path):
         """Test that whitespace-only strings are treated as empty."""
-        adapter = CodexClientAdapter()
+        adapter = CodexClientAdapter(project_root=tmp_path)
 
         env_overrides = {
             "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_token_123",

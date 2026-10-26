@@ -23,9 +23,9 @@ class TestCodexDockerArgsFix:
     """Test the Docker args duplication fix using real registry data."""
 
     @pytest.fixture
-    def codex_adapter(self):
-        """Create a Codex adapter instance for testing."""
-        return CodexClientAdapter()
+    def codex_adapter(self, tmp_path):
+        """Create a Codex adapter instance rooted in an isolated project directory."""
+        return CodexClientAdapter(project_root=tmp_path)
 
     @pytest.fixture
     def github_mcp_server_data(self):
