@@ -118,6 +118,51 @@ def test_native_approval_is_not_canvas_or_spoofed_local_trust(tmp_path):
     assert check_executable_approval("_local", package, {}, is_first_party=True)[-1] is True
 
 
+class _GitRef:
+    """A git dependency: the gate sees the host-qualified string, the lockfile the lowercase identity."""
+
+    def __str__(self):
+        return "github.com/Owner/Repo"
+
+    def get_unique_key(self):
+        return "owner/repo"
+
+
+def test_grant_recorded_by_apm_approve_reaches_the_install_gate(tmp_path):
+    package = SimpleNamespace(dependency_ref=_GitRef(), install_path=tmp_path)
+    recorded = {"owner/repo#abc1234": {"extensions": True}, "owner/repo": {"extensions": True}}
+    assert check_executable_approval("owner/repo", package, recorded)[-1] is True
+    assert (
+        check_executable_approval("owner/repo", package, {"other/repo": {"extensions": True}})[-1]
+        is False
+    )
+
+
+def test_user_grant_approves_native_extensions_while_the_gate_is_disabled(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from apm_cli.security import executables
+
+    monkeypatch.setattr(executables, "load_user_executables", lambda **_: ({}, {}))
+    trust = executables.build_exec_trust_context(
+        policy=None, project_data={}, migrate_user_legacy=False
+    )
+    assert not trust.gate_enabled
+    package = SimpleNamespace(dependency_ref=_GitRef(), install_path=tmp_path)
+
+    def approved(context):
+        install = SimpleNamespace(
+            blocked_executables=[], exec_trust_ctx=context, package_exec_status={}
+        )
+        return check_executable_approval("owner/repo", package, None, ctx=install)[-1]
+
+    assert approved(trust) is False
+    granted = replace(trust, user_allow={"owner/repo#abc1234": {"extensions": True}})
+    assert approved(granted) is True
+    denied = replace(granted, user_deny={"owner/repo": {"extensions": True}})
+    assert approved(denied) is False
+
+
 @pytest.mark.parametrize("prefix", [".omp/extensions", ".omp/agent/extensions"])
 def test_native_plugin_paths_preserve_identity_and_resource_names(prefix):
     relative = f"{prefix}/native/assets/config.json"
