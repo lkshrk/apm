@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.6] - 2026-10-30
+
+### Added
+
+- `apm outdated --json` prints every checked dependency as one JSON document, `{"dependencies": [...]}`, with the same fields as the table plus `wanted`, `outside_constraint` and `extra_tags`. Stdout carries only the document; a missing lockfile is reported on stderr as `{"error": "no_lockfile"}` with exit 1.
+
 ## [0.35.0+omni.5] - 2026-10-27
 
 ### Fixed

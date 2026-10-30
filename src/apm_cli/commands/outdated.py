@@ -5,12 +5,13 @@ For tag-pinned deps, also shows the latest available semver tag.
 For marketplace-sourced deps, checks available versions in the marketplace.
 """
 
+import json
 import logging
 import os
 import re
 import sys
 from collections.abc import Iterable
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import click
 
@@ -443,7 +444,14 @@ def _check_selected_dep(dep, downloader, verbose, registry_ctx=None):
     default=4,
     help="Max concurrent remote checks (default: 4, 0 = sequential)",
 )
-def outdated(global_, verbose, parallel_checks):
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable JSON to stdout instead of a table.",
+)
+def outdated(global_, verbose, parallel_checks, as_json):
     """Show outdated locked dependencies
 
     Compares each locked dependency against the remote to detect staleness.
@@ -455,12 +463,14 @@ def outdated(global_, verbose, parallel_checks):
         apm outdated --global    # Check user-scope deps
         apm outdated --verbose   # Show available tags
         apm outdated -j 8        # Use 8 parallel checks
+        apm outdated --json      # Machine-readable rows
     """
     from ..core.command_logger import CommandLogger
     from ..core.scope import InstallScope, get_apm_dir
     from ..deps.lockfile import LockFile, resolve_lockfile_path_for_read
 
-    logger = CommandLogger("outdated", verbose=verbose)
+    # JSON mode keeps stdout to the document alone, so the logger stays quiet.
+    logger = CommandLogger("outdated", verbose=verbose and not as_json)
 
     # Resolve scope and lockfile path
     scope = InstallScope.USER if global_ else InstallScope.PROJECT
@@ -470,11 +480,17 @@ def outdated(global_, verbose, parallel_checks):
     lockfile = LockFile.read(lockfile_path)
 
     if lockfile is None:
+        if as_json:
+            click.echo(json.dumps({"error": "no_lockfile"}), err=True)
+            sys.exit(1)
         scope_hint = "~/.apm/" if global_ else "current directory"
         logger.error(f"No lockfile found in {scope_hint}")
         sys.exit(1)
 
     if not lockfile.dependencies:
+        if as_json:
+            _emit_json([])
+            return
         logger.success("No locked dependencies to check")
         return
 
@@ -533,6 +549,9 @@ def outdated(global_, verbose, parallel_checks):
         checkable.append(dep)
 
     if not checkable:
+        if as_json:
+            _emit_json([])
+            return
         logger.success("No remote dependencies to check")
         return
 
@@ -549,6 +568,10 @@ def outdated(global_, verbose, parallel_checks):
     from ..deps.outdated_ref_cache import OutdatedRefCache
 
     downloader = OutdatedRefCache(downloader)
+
+    if as_json:
+        _emit_json(_check_deps_quiet(checkable, downloader, verbose, parallel_checks, registry_ctx))
+        return
 
     # Check deps with progress feedback and optional parallelism
     rows = _check_deps_with_progress(
@@ -670,6 +693,24 @@ def outdated(global_, verbose, parallel_checks):
             "'apm update' stays within that constraint. Select a newer version explicitly "
             "in apm.yml, then run 'apm install' to take an outside-constraint release."
         )
+
+
+def _emit_json(rows):
+    """Print every checked row, in lockfile order, as one JSON document."""
+    click.echo(json.dumps({"dependencies": [asdict(row) for row in rows]}, indent=2))
+
+
+def _check_deps_quiet(checkable, downloader, verbose, parallel_checks, registry_ctx=None):
+    """Check all deps without progress output, for machine-readable modes."""
+    if parallel_checks > 0 and len(checkable) > 1:
+        return _check_parallel_plain(checkable, downloader, verbose, parallel_checks, registry_ctx)
+    rows = []
+    for dep in checkable:
+        try:
+            rows.append(_check_one_dep(dep, downloader, verbose, registry_ctx))
+        except Exception:
+            rows.append(_unknown_row(dep))
+    return rows
 
 
 def _check_deps_with_progress(
