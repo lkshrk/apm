@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0+omni.7] - 2026-10-30
+
+### Fixed
+
+- A deployment receipt survives a remount of its root. btrfs gives a subvolume a new device number at every mount, so after a reboot `apm install -g` and `apm update -g` failed with "installation binding does not match" for a home directory on a subvolume. The binding now requires the root's inode and installation identity, not its device number; a recreated root still gets a new inode and is rejected. microsoft/apm#3421.
+
 ## [0.35.0+omni.6] - 2026-10-30
 
 ### Added

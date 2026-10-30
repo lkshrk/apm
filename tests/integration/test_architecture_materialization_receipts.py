@@ -115,7 +115,7 @@ def test_receipt_guard_accepts_current_owner_routing() -> None:
         ),
         (
             "core/deployment_ledger.py",
-            'data["root_identity"] != self._root_identity()',
+            'not self._same_root(data["root_identity"])',
             "False",
         ),
         (

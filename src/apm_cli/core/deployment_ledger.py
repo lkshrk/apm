@@ -130,6 +130,15 @@ class DeploymentMaterializationSession:
         metadata = self.root.stat()
         return [metadata.st_dev, metadata.st_ino]
 
+    def _same_root(self, stored: object) -> bool:
+        # btrfs gives a subvolume a new st_dev at every mount, so only the inode pins the root.
+        return (
+            isinstance(stored, list)
+            and len(stored) == 2
+            and all(type(value) is int for value in stored)
+            and stored[1] == self._root_identity()[1]
+        )
+
     def _load(self) -> None:
         self._validate_paths()
         self._state_present = self.state_path.exists()
@@ -148,7 +157,7 @@ class DeploymentMaterializationSession:
                 or data["root"] != self.root.as_posix()
                 or data["scope"] != self.scope.value
                 or data["installation"] != installation
-                or data["root_identity"] != self._root_identity()
+                or not self._same_root(data["root_identity"])
             ):
                 raise ValueError("installation binding does not match")
             ledger = DeploymentLedgerCodec.from_rows(data["records"])

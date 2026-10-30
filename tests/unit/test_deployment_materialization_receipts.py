@@ -253,6 +253,42 @@ def test_recreated_checkout_cannot_reuse_old_receipt(
         assert _session(root, lock).baseline(path, [TARGET]) is None
 
 
+def test_remounted_root_keeps_receipt_when_only_device_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, path, lock = _fixture(tmp_path, monkeypatch)
+    recorded = compute_file_hash(path)
+    session = _session(root, lock)
+    session.record({path: recorded}, [TARGET], "pkg")
+    session.flush()
+    data = json.loads(session.state_path.read_text(encoding="utf-8"))
+    device, inode = data["root_identity"]
+    data["root_identity"] = [device + 1, inode]
+    session.state_path.write_text(json.dumps(data), encoding="utf-8")
+
+    remounted = _session(root, lock)
+    assert remounted.baseline(path, [TARGET]) == recorded
+    remounted.record({path: recorded}, [TARGET], "pkg")
+    remounted.flush()
+    rewritten = json.loads(remounted.state_path.read_text(encoding="utf-8"))
+    assert rewritten["root_identity"] == [root.stat().st_dev, root.stat().st_ino]
+
+
+@pytest.mark.parametrize("stored", [[1, 2, 3], ["1", "2"], [True, 1], "1:2", None])
+def test_malformed_root_identity_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stored: object
+) -> None:
+    root, path, lock = _fixture(tmp_path, monkeypatch)
+    session = _session(root, lock)
+    session.record({path: compute_file_hash(path)}, [TARGET], "pkg")
+    session.flush()
+    data = json.loads(session.state_path.read_text(encoding="utf-8"))
+    data["root_identity"] = stored
+    session.state_path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="installation binding does not match"):
+        _session(root, lock)
+
+
 def test_atomic_failure_cannot_publish_new_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

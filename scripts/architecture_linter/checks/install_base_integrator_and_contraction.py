@@ -1278,7 +1278,7 @@ def _materialization_evidence_findings(provider: FactsProvider, rule_id: str) ->
         _DEPLOYMENT_LEDGER: (
             "class DeploymentMaterializationSession:",
             'data["installation"] != installation',
-            'data["root_identity"] != self._root_identity()',
+            'not self._same_root(data["root_identity"])',
             "record.active_owner not in self._valid_owners",
             "self._bindings.get(key) != [record.active_owner, self._claim_signature(value)]",
             "value = deployed_path_entry(path, self.root, targets)",
