@@ -33,6 +33,26 @@ from .engine import (
 )
 
 
+def _reconcile_removed_native_hooks(
+    lockfile, cleanup_keys, deploy_root, user_scope, logger
+) -> None:
+    """Release native hook ownership for removed packages, exiting when cleanup is incomplete."""
+    from ...install.removed_hook_ownership import reconcile_removed_native_hook_owners
+
+    native_hook_stats = reconcile_removed_native_hook_owners(
+        lockfile,
+        cleanup_keys,
+        deploy_root,
+        user_scope=user_scope,
+    )
+    if native_hook_stats.get("errors", 0):
+        logger.error(
+            "Native hook cleanup is incomplete; dependency ownership was retained. "
+            "Repair the reported omp artifacts and retry uninstall."
+        )
+        sys.exit(1)
+
+
 def _report_uninstall_outcome(
     logger: CommandLogger,
     summary_lines: list[str],
@@ -667,20 +687,9 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
                 explicit_target=cleanup_target_names or None,
             )
             cleanup_keys = removed_keys | builtins.set(projected_orphans) | profile_keys
-            from ...install.removed_hook_ownership import reconcile_removed_native_hook_owners
-
-            native_hook_stats = reconcile_removed_native_hook_owners(
-                lockfile,
-                cleanup_keys,
-                deploy_root,
-                user_scope=scope is InstallScope.USER,
+            _reconcile_removed_native_hooks(
+                lockfile, cleanup_keys, deploy_root, scope is InstallScope.USER, logger
             )
-            if native_hook_stats.get("errors", 0):
-                logger.error(
-                    "Native hook cleanup is incomplete; dependency ownership was retained. "
-                    "Repair the reported omp artifacts and retry uninstall."
-                )
-                sys.exit(1)
             retained_cleanup_paths = builtins.set()
             reconcile_target_deployed_files(
                 project_root=deploy_root,
