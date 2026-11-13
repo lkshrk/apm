@@ -15,8 +15,8 @@ GitHub Copilot | Claude Code | Grok Build | Cursor | OpenCode | Codex | Gemini |
 
 ## Omni fork: omp support
 
-This fork is based on the upstream **v0.35.0 release** and reports
-`0.35.0+omni.6`. Omni pins a wheel built from an immutable commit of
+This fork is based on the upstream **v0.35.1 release** and reports
+`0.35.1+omni.1`. Omni pins a wheel built from an immutable commit of
 `lkshrk/apm`; the upstream installers below do not include these additions.
 
 Select `omp` explicitly in `targets:`. Skills use the shared `.agents/skills`

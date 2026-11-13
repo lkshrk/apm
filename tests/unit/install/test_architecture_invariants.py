@@ -50,7 +50,10 @@ KNOWN_LARGE_MODULES = {
     # drift.py crossed 1000 when replay target-root claim scoping (#2655)
     # merged atop main's replay growth. Decomposition tracked as follow-up.
     # Replay builds the project's own package through the install builder (#3151).
-    "drift.py": 1025,
+    # The omni fork adds omp native-extension replay on top.
+    "drift.py": 1040,
+    # The omni fork adds per-server MCP targets and omp ownership reconcile.
+    "manifest_reconcile.py": 1015,
 }
 
 

@@ -165,6 +165,19 @@ def _targets_explicitly_requested(ctx: InstallContext | None) -> bool:
     return getattr(decision, "source", None) == "--target flag"
 
 
+def _previous_managed_file_hashes(ctx: Any) -> dict[str, str] | None:
+    """Deployed file hashes recorded in the install context's previous lockfile, if any."""
+    if ctx is None:
+        return None
+    from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
+    from apm_cli.deps.lockfile import LockFile
+
+    previous_lockfile = getattr(ctx, "existing_lockfile", None)
+    if isinstance(previous_lockfile, LockFile):
+        return DeploymentLedgerCodec.deployed_file_hashes(previous_lockfile)
+    return None
+
+
 def integrate_package_primitives(  # noqa: PLR0913
     package_info: Any,
     project_root: Path,
@@ -244,13 +257,8 @@ def integrate_package_primitives(  # noqa: PLR0913
     }
 
     deployed = result["deployed_files"]
-    if managed_file_hashes is None and ctx is not None:
-        from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
-        from apm_cli.deps.lockfile import LockFile
-
-        previous_lockfile = getattr(ctx, "existing_lockfile", None)
-        if isinstance(previous_lockfile, LockFile):
-            managed_file_hashes = DeploymentLedgerCodec.deployed_file_hashes(previous_lockfile)
+    if managed_file_hashes is None:
+        managed_file_hashes = _previous_managed_file_hashes(ctx)
 
     # Drift replay must prove every write is redirected before target cleanup
     # or any other integration side effect can run.

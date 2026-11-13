@@ -169,7 +169,7 @@ class OmpClientAdapter(CursorClientAdapter):
             config = self.render_server_config(
                 info, env_overrides=env_overrides, runtime_vars=runtime_vars
             )
-            key = self._determine_config_key(server_url, server_name)
+            key = self._determine_config_key(server_url, server_name, info)
             if not self.update_config({key: config}, managed_fields=managed_fields):
                 return False
             from ...install.mcp.ownership import mcp_native_hash
@@ -178,7 +178,7 @@ class OmpClientAdapter(CursorClientAdapter):
                 self.managed_server_config(config, declared_fields=set(config))
             )
             return True
-        except (OSError, TypeError, ValueError):
+        except Exception:
             # Do not print registry/header payloads or exception strings.
             _rich_error("Could not safely configure MCP server for omp")
             return False

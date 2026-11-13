@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1+omni.1] - 2026-11-13
+
+### Changed
+
+- Rebased the omp fork onto upstream v0.35.1. The fork's remount fix for deployment receipts is dropped in favor of upstream's (#3439).
+
 ## [0.35.0+omni.6] - 2026-10-30
 
 ### Added
