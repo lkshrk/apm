@@ -1290,10 +1290,13 @@ class MCPIntegrator:
         managed_fields: builtins.set[str] | None = None,
         managed_env_keys: builtins.set[str] | None = None,
         written_native_hashes: builtins.dict[str, str] | None = None,
+        skipped_servers: builtins.set[str] | None = None,
+        quiet_skip: bool = False,
     ) -> bool:
         """Install MCP dependencies for a specific runtime.
 
         Returns True if all deps were configured successfully, False otherwise.
+        Deps left unchanged because they already exist go to ``skipped_servers``.
         """
         if logger is None:
             logger = NullCommandLogger()
@@ -1315,6 +1318,7 @@ class MCPIntegrator:
                         replace_existing=replace_existing,
                         managed_fields=managed_fields,
                         managed_env_keys=managed_env_keys,
+                        quiet_skip=quiet_skip,
                     )
                     if result["failed"]:
                         logger.error(f"  Failed to install {dep}")
@@ -1323,6 +1327,11 @@ class MCPIntegrator:
                         installed_servers.add(dep)
                         if written_native_hashes is not None:
                             written_native_hashes.update(result.get("native_hashes", {}))
+                    elif result.get("skipped"):
+                        if skipped_servers is not None:
+                            skipped_servers.add(dep)
+                        if quiet_skip:
+                            logger.verbose_detail(f"  {dep} already configured, skipping")
                     if not result["failed"] and logger and runtime == "codex":
                         from apm_cli.factory import ClientFactory
 

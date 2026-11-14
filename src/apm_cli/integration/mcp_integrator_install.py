@@ -270,8 +270,10 @@ def _install_registry_group(  # noqa: PLR0913
         already_configured_servers = [
             dep for dep in already_configured_candidates if dep not in servers_to_update
         ]
+        rechecked_servers: builtins.set[str] = builtins.set()
         if protected_clients:
             # Names/registry IDs cannot prove that a native connection is unchanged.
+            rechecked_servers = builtins.set(valid_servers) - builtins.set(servers_to_install)
             servers_to_install = list(valid_servers)
             already_configured_servers = []
 
@@ -337,13 +339,16 @@ def _install_registry_group(  # noqa: PLR0913
                         f"{dep}: {action_text.lower()} for {', '.join(target_runtimes)}..."
                     )
 
+                quiet_skip = dep in rechecked_servers and not is_update
                 successful_runtimes: list[str] = []
+                written_runtimes: list[str] = []
                 failed_runtimes: list[str] = []
                 for rt in target_runtimes:
                     declaration = group_dep_map.get(dep)
                     if declaration is not None and not declaration.targets_runtime(rt):
                         continue
                     installed_servers: set[str] = set()
+                    skipped_servers: set[str] = set()
                     written_hashes: dict[str, str] = {}
                     managed_fields: set[str] = set()
                     replace_existing = is_update and (
@@ -412,8 +417,12 @@ def _install_registry_group(  # noqa: PLR0913
                         installed_servers=installed_servers,
                         written_native_hashes=written_hashes,
                         managed_fields=managed_fields,
+                        skipped_servers=skipped_servers,
+                        quiet_skip=quiet_skip,
                     ):
                         successful_runtimes.append(rt)
+                        if dep not in skipped_servers:
+                            written_runtimes.append(rt)
                         if dep in installed_servers:
                             _record_managed_server(
                                 managed_target_servers,
@@ -426,12 +435,12 @@ def _install_registry_group(  # noqa: PLR0913
                     else:
                         failed_runtimes.append(rt)
 
-                if successful_runtimes:
+                if written_runtimes:
                     if console:
                         label = "updated" if is_update else "configured"
                         console.print(
                             f"|  [green]{STATUS_SYMBOLS['check']}[/green]  {dep} -> "
-                            f"{', '.join([rt.title() for rt in successful_runtimes])}"
+                            f"{', '.join([rt.title() for rt in written_runtimes])}"
                             f" [dim]({label})[/dim]"
                         )
                     configured_count += 1
@@ -1257,8 +1266,12 @@ def _install_self_defined_deps(
         project_root=project_root,
         user_scope=user_scope,
     )
+    rechecked_self_defined: builtins.set[str] = builtins.set()
     if {"claude", "codex", "omp"}.intersection(target_runtimes):
         # Native content must be checked even when every requested name exists.
+        rechecked_self_defined = builtins.set(self_defined_names) - builtins.set(
+            self_defined_to_install
+        )
         self_defined_to_install = list(self_defined_names)
     already_configured_candidates_sd = [
         name for name in self_defined_names if name not in self_defined_to_install
@@ -1319,12 +1332,15 @@ def _install_self_defined_deps(
                 f"{dep.name}: {action_text.lower()} for {', '.join(target_runtimes)}..."
             )
 
+        quiet_skip = dep.name in rechecked_self_defined and not is_update
         successful_runtimes: list[str] = []
+        written_runtimes: list[str] = []
         failed_runtimes: list[str] = []
         for rt in target_runtimes:
             if not dep.targets_runtime(rt):
                 continue
             installed_servers: set[str] = set()
+            skipped_servers: set[str] = set()
             managed_fields: set[str] = set()
             managed_env_keys: set[str] | None = set() if rt == "codex" else None
             written_hashes: dict[str, str] = {}
@@ -1406,8 +1422,12 @@ def _install_self_defined_deps(
                 managed_fields=managed_fields,
                 managed_env_keys=managed_env_keys,
                 written_native_hashes=written_hashes,
+                skipped_servers=skipped_servers,
+                quiet_skip=quiet_skip,
             ):
                 successful_runtimes.append(rt)
+                if dep.name not in skipped_servers:
+                    written_runtimes.append(rt)
                 if dep.name in installed_servers:
                     _record_managed_server(
                         managed_target_servers,
@@ -1433,12 +1453,12 @@ def _install_self_defined_deps(
             fail_on_write_error=fail_on_write_error,
         )
 
-        if successful_runtimes:
+        if written_runtimes:
             if console:
                 label = "updated" if is_update else "configured"
                 console.print(
                     f"|  [green]{STATUS_SYMBOLS['check']}[/green]  {dep.name} -> "
-                    f"{', '.join([rt.title() for rt in successful_runtimes])}"
+                    f"{', '.join([rt.title() for rt in written_runtimes])}"
                     f" [dim]({label})[/dim]"
                 )
             configured_count += 1

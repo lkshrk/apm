@@ -68,6 +68,7 @@ class SafeMCPInstaller:
         logger=None,
         project_root: Path | str | None = None,
         user_scope: bool = False,
+        quiet_skip: bool = False,
     ):
         """Initialize the safe installer.
 
@@ -76,6 +77,7 @@ class SafeMCPInstaller:
             logger: Optional CommandLogger for structured output.
             project_root: Optional project root for repo-local runtime configs.
             user_scope: Whether runtime config should resolve in user scope.
+            quiet_skip: Leave the "already configured" message to the caller.
         """
         self.runtime = runtime
         self.adapter = ClientFactory.create_client(
@@ -85,6 +87,7 @@ class SafeMCPInstaller:
         )
         self.conflict_detector = MCPConflictDetector(self.adapter)
         self.logger = logger
+        self.quiet_skip = quiet_skip
 
     def install_servers(
         self,
@@ -177,6 +180,8 @@ class SafeMCPInstaller:
 
     def _log_skip(self, server_ref: str):
         """Log when a server is skipped due to existing configuration."""
+        if self.quiet_skip:
+            return
         if self.logger:
             self.logger.warning(f"  {server_ref} already configured, skipping")
         else:
