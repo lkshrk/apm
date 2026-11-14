@@ -257,6 +257,27 @@ def _has_env_placeholder(value):
     return bool(_ENV_PLACEHOLDER_RE.search(value))
 
 
+def _placeholder_names(value) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    return {legacy or brace for legacy, brace in _ENV_PLACEHOLDER_RE.findall(value)}
+
+
+def env_references(server_info: dict) -> set[str]:
+    """Return the environment variable names a server's config refers to."""
+    raw = server_info.get("_raw_stdio") or {}
+    values = [*(raw.get("env") or {}).values(), *(raw.get("args") or [])]
+    for remote in server_info.get("remotes") or []:
+        values.extend(header.get("value") for header in remote.get("headers") or [])
+    names = set().union(*map(_placeholder_names, values))
+    if "_raw_stdio" not in server_info:
+        for package in server_info.get("packages") or []:
+            names.update(
+                var["name"] for var in package.get("environment_variables") or [] if var.get("name")
+            )
+    return names
+
+
 def _stringify_env_literal(value):
     """Return MCP env literal values in the manifest ``map<string, string>`` shape."""
     if isinstance(value, bool):
@@ -320,6 +341,10 @@ class MCPClientAdapter(ABC):
     # adapters resolve to literal values at install time via env_overrides
     # -> os.environ -> optional interactive prompt. See issue #1152.
     _supports_runtime_env_substitution: bool = False
+
+    def writes_env_references(self) -> bool:
+        """Whether this adapter writes env references instead of resolved values."""
+        return self._supports_runtime_env_substitution
 
     def __init__(
         self,

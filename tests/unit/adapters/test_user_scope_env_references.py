@@ -10,8 +10,11 @@ import pytest
 import tomlkit
 
 from apm_cli.adapters.client import codex as codex_module
+from apm_cli.adapters.client.base import env_references
 from apm_cli.adapters.client.claude import ClaudeClientAdapter
 from apm_cli.adapters.client.codex import CodexClientAdapter
+from apm_cli.adapters.client.opencode import OpenCodeClientAdapter
+from apm_cli.core.safe_installer import SafeMCPInstaller
 from apm_cli.integration.mcp_integrator import MCPIntegrator
 from apm_cli.models.dependency.mcp import MCPDependency
 
@@ -329,3 +332,128 @@ def test_codex_user_scope_registry_arg_reference_is_refused(tmp_path, monkeypatc
     assert "example args" in text
     assert "s3cret-value" not in text
     assert _codex_toml_text(tmp_path) == ""
+
+
+@pytest.fixture
+def _user_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    return home
+
+
+def _stdio_info(name, env):
+    dep = MCPDependency.from_dict(
+        {
+            "name": name,
+            "registry": False,
+            "transport": "stdio",
+            "command": "npx",
+            "args": ["-y", "some-server"],
+            "env": env,
+        }
+    )
+    return MCPIntegrator._build_self_defined_info(dep)
+
+
+def _install(tmp_path, runtime, servers):
+    installer = SafeMCPInstaller(runtime, project_root=tmp_path / "project", user_scope=True)
+    cache = {name: _stdio_info(name, env) for name, env in servers.items()}
+    return installer.install_servers(list(servers), server_info_cache=cache)
+
+
+def _install_one(tmp_path, runtime, env):
+    return _install(tmp_path, runtime, {"example": env})
+
+
+def _all_written_text(tmp_path: Path) -> str:
+    return "\n".join(
+        p.read_text(errors="replace") for p in sorted(tmp_path.rglob("*")) if p.is_file()
+    )
+
+
+def _configure_opencode_stdio(tmp_path, env):
+    adapter = OpenCodeClientAdapter(project_root=tmp_path / "project", user_scope=True)
+    info = _stdio_info("example", env)
+    assert adapter.configure_mcp_server("example", server_info_cache={"example": info})
+    path = Path(adapter.get_config_path())
+    assert "s3cret-value" not in path.read_text()
+    return json.loads(path.read_text())["mcp"]["example"]
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["gemini", "hermes", "windsurf"])
+def test_resolving_adapter_refuses_referencing_server(tmp_path, monkeypatch, runtime):
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    summary = _install_one(tmp_path, runtime, env={"GITHUB_PAT": "${GITHUB_PAT}"})
+    assert summary.failed and not summary.installed
+    assert summary.failed[0]["reason"] == f"{runtime} cannot keep secret references at user scope"
+    assert "s3cret-value" not in _all_written_text(tmp_path)
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["gemini", "hermes", "windsurf"])
+def test_resolving_adapter_installs_server_without_references(tmp_path, runtime):
+    summary = _install_one(tmp_path, runtime, env={"MODE": "fast"})
+    assert summary.installed
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["gemini", "hermes", "windsurf", "codex"])
+def test_refused_server_does_not_stop_the_others(tmp_path, monkeypatch, runtime):
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    refused_env = (
+        {"TOKEN": "${GITHUB_PAT}"} if runtime == "codex" else {"GITHUB_PAT": "${GITHUB_PAT}"}
+    )
+    summary = _install(
+        tmp_path,
+        runtime,
+        {"first": {"MODE": "fast"}, "refused": refused_env, "last": {"MODE": "slow"}},
+    )
+    assert summary.installed == ["first", "last"]
+    assert [item["server"] for item in summary.failed] == ["refused"]
+    assert "s3cret-value" not in _all_written_text(tmp_path)
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["claude", "codex", "opencode"])
+def test_reference_writing_adapter_is_not_refused(tmp_path, monkeypatch, runtime):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    summary = _install_one(tmp_path, runtime, env={"GITHUB_PAT": "${GITHUB_PAT}"})
+    assert summary.installed == ["example"]
+    assert "s3cret-value" not in _all_written_text(tmp_path)
+
+
+def test_writes_env_references_per_adapter(tmp_path):
+    root = tmp_path / "project"
+    assert CodexClientAdapter(project_root=root, user_scope=True).writes_env_references()
+    assert ClaudeClientAdapter(project_root=root, user_scope=True).writes_env_references()
+    assert not ClaudeClientAdapter(project_root=root, user_scope=False).writes_env_references()
+
+
+@pytest.mark.usefixtures("_user_home")
+def test_opencode_user_scope_writes_env_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    entry = _configure_opencode_stdio(tmp_path, env={"GITHUB_PAT": "${GITHUB_PAT}"})
+    assert entry["environment"]["GITHUB_PAT"] == "{env:GITHUB_PAT}"
+
+
+def test_env_references_collects_all_sources():
+    info = {
+        "_raw_stdio": {"env": {"A": "${A}"}, "args": ["--t=${B}"]},
+        "remotes": [{"headers": [{"name": "H", "value": "Bearer ${C}"}]}],
+    }
+    assert env_references(info) == {"A", "B", "C"}
+
+
+def test_env_references_includes_registry_env_names_and_ignores_literals():
+    info = {
+        "_raw_stdio": {"env": {"MODE": "fast"}, "args": ["-y", "<D>"]},
+        "remotes": [{"headers": [{"name": "X", "value": "${env:E}"}]}],
+    }
+    assert env_references(info) == {"D", "E"}
+    assert env_references(_codex_registry_info([{"name": "F"}])) == {"F"}
+    assert env_references(_stdio_info("example", {"MODE": "fast"})) == set()

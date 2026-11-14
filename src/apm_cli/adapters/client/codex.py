@@ -66,6 +66,10 @@ class CodexClientAdapter(MCPClientAdapter):
     target_name: str = "codex"
     mcp_servers_key: str = "mcp_servers"
 
+    def writes_env_references(self) -> bool:
+        """Codex forwards references itself and refuses those it cannot express."""
+        return True
+
     def __init__(
         self,
         registry_url=None,
