@@ -14,7 +14,7 @@ from tomlkit.items import InlineTable, Item, String, Table
 from ...registry.client import SimpleRegistryClient
 from ...registry.integration import RegistryIntegration
 from ...utils.atomic_io import atomic_write_text
-from ...utils.console import _rich_success, _rich_warning
+from ...utils.console import _rich_error, _rich_success, _rich_warning
 from ...utils.net import is_loopback_host
 from ...utils.path_security import PathTraversalError
 from ._mcp_runtime_args import process_v01_value_hint_arg
@@ -264,7 +264,7 @@ class CodexClientAdapter(MCPClientAdapter):
         reference, so anything else is a manual edit and stays a conflict.
         """
         names = expected.get("env_vars")
-        if self.user_scope or recorded_write is False:
+        if recorded_write is False:
             return False
         native_env = native.get("env") if isinstance(native, dict) else None
         if not names or not isinstance(native_env, dict) or "env_vars" in native:
@@ -275,7 +275,9 @@ class CodexClientAdapter(MCPClientAdapter):
             if not isinstance(value, str):
                 return False
             if recorded_write is None:
-                if value not in (f"${{{name}}}", os.getenv(name)):
+                # User scope never reads a secret from the environment, even to compare.
+                resolved = None if self.user_scope else os.getenv(name)
+                if value not in (f"${{{name}}}", resolved):
                     return False
                 _log.debug("Codex entry for %s verified without a recorded fingerprint", name)
             legacy_env[name] = value
@@ -507,27 +509,10 @@ class CodexClientAdapter(MCPClientAdapter):
         # secret never lands in config.toml. See issue #3393.
         raw = server_info.get("_raw_stdio")
         if raw:
-            forwarded_env: list[str] = []
-            resolved_env_for_args: dict = {}
-            written_env: dict = {}
-            if raw.get("env"):
-                if self.user_scope:
-                    literal_env = raw["env"]
-                else:
-                    literal_env, forwarded_env = self._split_forwarded_stdio_env(raw["env"])
-                    self._warn_unforwardable_env(literal_env, server_info.get("name", ""))
-                written_env = self._resolve_environment_variables(
-                    literal_env, env_overrides=env_overrides
-                )
-                # Args keep resolving against every declared name; a forwarded
-                # value is read from the environment when it is available, and
-                # never prompts for a value that only the runtime needs.
-                resolved_env_for_args = dict(written_env)
-                for name in forwarded_env:
-                    value = (env_overrides or {}).get(name) or os.getenv(name)
-                    if value:
-                        resolved_env_for_args[name] = value
-                self._warn_input_variables(raw["env"], server_info.get("name", ""), "Codex CLI")
+            env_parts = self._stdio_env_parts(raw, server_info, env_overrides)
+            if env_parts is None:
+                return None
+            written_env, forwarded_env, resolved_env_for_args = env_parts
 
             def _process_stdio_arg(arg):
                 if isinstance(arg, str):
@@ -543,6 +528,8 @@ class CodexClientAdapter(MCPClientAdapter):
                 "args": [_process_stdio_arg(arg) for arg in raw.get("args") or []],
                 "env": written_env,
             }
+            if self.user_scope and not written_env:
+                del stdio_config["env"]
             if raw.get("cwd") is not None:
                 stdio_config["cwd"] = raw["cwd"]
             if forwarded_env:
@@ -610,7 +597,7 @@ class CodexClientAdapter(MCPClientAdapter):
                 if not (h_name and h_value):
                     continue
                 resolved = self._resolve_variable_placeholders(
-                    h_value, env_overrides or {}, runtime_vars or {}
+                    h_value, {} if self.user_scope else env_overrides or {}, runtime_vars or {}
                 )
                 bearer = _CODEX_BEARER_VALUE_RE.fullmatch(resolved)
                 if bearer and h_name.lower() == _CODEX_BEARER_HEADER:
@@ -620,10 +607,21 @@ class CodexClientAdapter(MCPClientAdapter):
                 if env_header:
                     env_http_headers[h_name] = env_header.group(1)
                     continue
-                if _CODEX_UNSUPPORTED_REFERENCE_RE.search(resolved):
+                if _CODEX_UNSUPPORTED_REFERENCE_RE.search(resolved) or (
+                    self.user_scope and _ENV_PLACEHOLDER_RE.search(resolved)
+                ):
                     unsupported_headers.append(h_name)
                     continue
                 http_headers[h_name] = resolved
+            if unsupported_headers and self.user_scope:
+                if not self._rendering_baseline:
+                    _rich_error(
+                        f"Codex cannot keep a secret reference for "
+                        f"{_ascii_names([server_name])} header "
+                        f"{_ascii_names(unsupported_headers)}; use ${{VAR}} or, for "
+                        "Authorization, Bearer ${VAR}"
+                    )
+                return None
             if unsupported_headers:
                 safe_headers = ", ".join(ascii(name)[1:-1] for name in unsupported_headers)
                 safe_server = ascii(server_name)[1:-1]
@@ -677,6 +675,7 @@ class CodexClientAdapter(MCPClientAdapter):
 
                 # Resolve environment variables first
                 resolved_env = self._process_environment_variables(env_vars, env_overrides)
+                forwarded_env = self._forwarded_registry_env(env_vars)
 
                 # Process arguments to extract simple string values
                 processed_runtime_args = self._process_arguments(
@@ -727,7 +726,7 @@ class CodexClientAdapter(MCPClientAdapter):
                     config["args"] = (
                         self._ensure_docker_env_flags(
                             self._ensure_docker_image_arg(runtime_args, package_name),
-                            resolved_env,
+                            {**resolved_env, **dict.fromkeys(forwarded_env, "")},
                         )
                         + processed_package_args
                     )
@@ -745,6 +744,8 @@ class CodexClientAdapter(MCPClientAdapter):
                         processed_package_args,
                         resolved_env,
                     )
+                if forwarded_env:
+                    config["env_vars"] = forwarded_env
 
         self._merge_extra(config, server_info)
         return config
@@ -819,6 +820,48 @@ class CodexClientAdapter(MCPClientAdapter):
 
         return processed
 
+    def _stdio_env_parts(
+        self, raw: dict, server_info: dict, env_overrides: dict | None
+    ) -> tuple[dict, list[str], dict] | None:
+        """Return ``(written_env, forwarded_env, env_for_args)``, or None when refused."""
+        raw_env = raw.get("env")
+        if not raw_env:
+            return {}, [], {}
+        server_name = server_info.get("name", "")
+        literal_env, forwarded_env = self._split_forwarded_stdio_env(raw_env)
+        if self.user_scope:
+            if not self._refuse_unforwardable_env(literal_env, server_name):
+                return None
+            written_env = dict(literal_env)
+            resolved_env_for_args = dict(written_env)
+        else:
+            self._warn_unforwardable_env(literal_env, server_name)
+            written_env = self._resolve_environment_variables(
+                literal_env, env_overrides=env_overrides
+            )
+            # A forwarded value still resolves args when available, but never prompts.
+            resolved_env_for_args = dict(written_env)
+            for name in forwarded_env:
+                value = (env_overrides or {}).get(name) or os.getenv(name)
+                if value:
+                    resolved_env_for_args[name] = value
+        self._warn_input_variables(raw_env, server_name, "Codex CLI")
+        return written_env, forwarded_env, resolved_env_for_args
+
+    def _refuse_unforwardable_env(self, literal_env: dict, server_name: str) -> bool:
+        """At user scope, return False and name the keys whose references Codex cannot keep."""
+        keys = [
+            name
+            for name, value in literal_env.items()
+            if isinstance(value, str) and _ENV_PLACEHOLDER_RE.search(value)
+        ]
+        if keys and not self._rendering_baseline:
+            _rich_error(
+                f"Codex cannot keep a secret reference for {_ascii_names([server_name])} "
+                f"env {_ascii_names(keys)}; use KEY: ${{KEY}}"
+            )
+        return not keys
+
     def _warn_unforwardable_env(self, literal_env: dict, server_name: str) -> None:
         """Name the env keys whose references Codex cannot forward; never print values."""
         if self._rendering_baseline:
@@ -874,7 +917,36 @@ class CodexClientAdapter(MCPClientAdapter):
             dict: Dictionary of resolved environment variable values.
         """
         default_github_env = {"GITHUB_TOOLSETS": "context", "GITHUB_DYNAMIC_TOOLSETS": "1"}
+        if self.user_scope:
+            return {
+                name: self._DEFAULT_GITHUB_ENV[name]
+                for name in self._registry_env_names(env_vars)
+                if name in self._DEFAULT_GITHUB_ENV
+            }
         return self._resolve_env_vars_with_prompting(env_vars, env_overrides, default_github_env)
+
+    @staticmethod
+    def _registry_env_names(env_vars) -> list[str]:
+        return [
+            env_var["name"]
+            for env_var in env_vars or []
+            if isinstance(env_var, dict)
+            and isinstance(env_var.get("name"), str)
+            and env_var["name"]
+        ]
+
+    def _forwarded_registry_env(self, env_vars) -> list[str]:
+        """At user scope, name the registry variables Codex reads from its environment."""
+        if not self.user_scope:
+            return []
+        return [
+            name
+            for name in self._registry_env_names(env_vars)
+            if name not in self._DEFAULT_GITHUB_ENV
+        ]
+
+    def _should_skip_env_prompts(self, env_overrides):
+        return self.user_scope or super()._should_skip_env_prompts(env_overrides)
 
     def _ensure_docker_env_flags(self, base_args, env_vars):
         """Ensure all environment variables are represented as -e flags in Docker args.
