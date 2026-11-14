@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - User-scope installs write secret references instead of resolved values for Claude and Codex, and refuse servers with references on adapters that cannot keep them.
+- At user scope, adapters that resolve values never inject a GitHub token, Claude keeps manifest env literals, and a Codex server refused next to an existing entry fails alone instead of aborting the install.
 
 ## [0.35.1+omni.1] - 2026-11-13
 

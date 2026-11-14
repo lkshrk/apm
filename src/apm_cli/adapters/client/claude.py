@@ -51,6 +51,10 @@ class ClaudeClientAdapter(CopilotClientAdapter):
     def _supports_runtime_env_substitution(self) -> bool:
         return bool(self.user_scope)
 
+    @property
+    def _keeps_manifest_env_literals(self) -> bool:
+        return bool(self.user_scope)
+
     # Skill packages declare self-defined MCP launchers using the cross-tool
     # converged path ``.agents/skills/<name>/...`` (see
     # https://microsoft.github.io/apm/reference/targets-matrix/#skills-convergence).

@@ -392,7 +392,11 @@ def _install_registry_group(  # noqa: PLR0913
                                 )
                             logger.verbose_detail(f"{dep} already matches {rt}; no write")
                             continue
-                        replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
+                        # The adapter names a refusal itself and writes nothing.
+                        replace_existing = state in {
+                            NativeMcpConnectionState.UPDATE_MANAGED,
+                            NativeMcpConnectionState.REFUSED,
+                        }
                     if verbose:
                         logger.verbose_detail(f"Configuring {rt}...")
                     if MCPIntegrator._install_for_runtime(
@@ -1382,7 +1386,11 @@ def _install_self_defined_deps(
                         )
                     logger.verbose_detail(f"{dep.name} already matches {rt}; no write")
                     continue
-                replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
+                # The adapter names a refusal itself and writes nothing.
+                replace_existing = state in {
+                    NativeMcpConnectionState.UPDATE_MANAGED,
+                    NativeMcpConnectionState.REFUSED,
+                }
             if verbose:
                 logger.verbose_detail(f"Configuring {dep.name} for {rt}...")
             if MCPIntegrator._install_for_runtime(

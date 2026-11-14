@@ -840,7 +840,11 @@ class CodexClientAdapter(MCPClientAdapter):
         if self.user_scope:
             if not self._refuse_unforwardable_env(literal_env, server_name):
                 return None
-            written_env = dict(literal_env)
+            written_env = {
+                name: value if isinstance(value, str) else str(value)
+                for name, value in literal_env.items()
+                if value is not None
+            }
             resolved_env_for_args = dict(written_env)
         else:
             self._warn_unforwardable_env(literal_env, server_name)
@@ -861,7 +865,8 @@ class CodexClientAdapter(MCPClientAdapter):
         keys = [
             name
             for name, value in literal_env.items()
-            if isinstance(value, str) and _ENV_PLACEHOLDER_RE.search(value)
+            if isinstance(value, str)
+            and (_ENV_PLACEHOLDER_RE.search(value) or _CODEX_UNSUPPORTED_REFERENCE_RE.search(value))
         ]
         if keys and not self._rendering_baseline:
             hints = ", ".join(f"{name}: ${{{name}}}" for name in _ascii_names(keys).split(", "))

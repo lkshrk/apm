@@ -1722,7 +1722,9 @@ class MCPClientAdapter(ABC):
             and bool(header.get("value"))
             for header in headers
         )
-        if is_github_server and not explicit_authorization:
+        # A resolving adapter at user scope would write the looked-up token itself.
+        never_look_up = self.user_scope and not self._supports_runtime_env_substitution
+        if is_github_server and not explicit_authorization and not never_look_up:
             resolver = AuthResolver(
                 token_manager=token_manager_class(), allow_external_fallback=False
             )
