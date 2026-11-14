@@ -163,6 +163,26 @@ def _announce_registry_endpoint(registry_client: Any, logger: Any) -> None:
     logger.progress(f"Using MCP registry: {safe_url} ({label})", symbol="info")
 
 
+def _collect_shared_variables(
+    operations: Any,
+    servers: list[str],
+    server_info_cache: dict,
+    group_dep_map: dict,
+    user_scope: bool,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Collect registry env and runtime variables; user scope never looks up or prompts."""
+    env_vars: dict[str, str] = {}
+    runtime_vars: dict[str, str] = {}
+    if not user_scope:
+        env_vars = operations.collect_environment_variables(servers, server_info_cache)
+        runtime_vars = operations.collect_runtime_variables(servers, server_info_cache)
+    for server_name in servers:
+        dep = group_dep_map.get(server_name)
+        if dep and dep.env:
+            env_vars.update(dep.env)
+    return env_vars, runtime_vars
+
+
 def _install_registry_group(  # noqa: PLR0913
     operations: Any,
     group_dep_names: list,
@@ -298,16 +318,8 @@ def _install_registry_group(  # noqa: PLR0913
                 if dep:
                     MCPIntegrator._apply_overlay(server_info_cache, dep)
 
-            # Collect env and runtime variables
-            shared_env_vars = operations.collect_environment_variables(
-                servers_to_install, server_info_cache
-            )
-            for server_name in servers_to_install:
-                dep = group_dep_map.get(server_name)
-                if dep and dep.env:
-                    shared_env_vars.update(dep.env)
-            shared_runtime_vars = operations.collect_runtime_variables(
-                servers_to_install, server_info_cache
+            shared_env_vars, shared_runtime_vars = _collect_shared_variables(
+                operations, servers_to_install, server_info_cache, group_dep_map, user_scope
             )
 
             # Install for each target runtime

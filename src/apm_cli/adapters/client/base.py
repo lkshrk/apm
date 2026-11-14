@@ -268,7 +268,11 @@ def env_references(server_info: dict) -> set[str]:
     raw = server_info.get("_raw_stdio") or {}
     values = [*(raw.get("env") or {}).values(), *(raw.get("args") or [])]
     for remote in server_info.get("remotes") or []:
-        values.extend(header.get("value") for header in remote.get("headers") or [])
+        headers = remote.get("headers") or []
+        if isinstance(headers, dict):
+            values.extend(headers.values())
+        else:
+            values.extend(h.get("value") for h in headers if isinstance(h, dict))
     names = set().union(*map(_placeholder_names, values))
     if "_raw_stdio" not in server_info:
         for package in server_info.get("packages") or []:
