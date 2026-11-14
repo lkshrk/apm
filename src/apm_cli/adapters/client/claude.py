@@ -47,11 +47,9 @@ class ClaudeClientAdapter(CopilotClientAdapter):
     target_name: str = "claude"
     mcp_servers_key: str = "mcpServers"
 
-    # Claude Desktop / Code's mcp config does NOT support runtime env-var
-    # substitution -- the value in ``env`` must be a literal string. This
-    # adapter MUST keep the legacy install-time resolution behaviour.
-    # See #1152 supply-chain analysis.
-    _supports_runtime_env_substitution: bool = False
+    @property
+    def _supports_runtime_env_substitution(self) -> bool:
+        return bool(self.user_scope)
 
     # Skill packages declare self-defined MCP launchers using the cross-tool
     # converged path ``.agents/skills/<name>/...`` (see
