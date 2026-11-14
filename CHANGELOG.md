@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.1+omni.2] - 2026-11-14
+
+### Changed
+
+- User-scope installs write secret references instead of resolved values for Claude and Codex, and refuse servers with references on adapters that cannot keep them.
+
 ## [0.35.1+omni.1] - 2026-11-13
 
 ### Changed
