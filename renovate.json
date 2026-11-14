@@ -1,0 +1,33 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "baseBranchPatterns": ["lk"],
+  "forkProcessing": "enabled",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^Makefile$/"],
+      "matchStrings": ["APM_VERSION = (?<currentValue>.*?)\\n"],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "microsoft/apm",
+      "extractVersionTemplate": "^v(?<version>.*)$",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "APM patch releases: automerge once the patches apply and CI is green; a release follows on lk",
+      "matchPackageNames": ["microsoft/apm"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "automergeStrategy": "squash"
+    },
+    {
+      "description": "APM minor/major: rebase the patch branch and review before release",
+      "matchPackageNames": ["microsoft/apm"],
+      "matchUpdateTypes": ["minor", "major"],
+      "automerge": false
+    }
+  ]
+}

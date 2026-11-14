@@ -1,0 +1,67 @@
+name: Build and release
+
+on:
+  push:
+    branches: [lk]
+    paths: ["Makefile", "patches/**", "tests/**", ".github/workflows/build.yaml"]
+  pull_request:
+    branches: [lk]
+    paths: ["Makefile", "patches/**", "tests/**", ".github/workflows/build.yaml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Tags decide the next +lk.N; the previous commit decides whether this push releases.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Version
+        id: version
+        run: |
+          echo "version=$(make -s next-version)" >> "$GITHUB_OUTPUT"
+          release=false
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            release=true
+          elif [[ $GITHUB_EVENT_NAME == push ]] && ! git diff --quiet HEAD~1 HEAD -- Makefile patches; then
+            release=true
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+      - run: make checkouts patches
+      - run: make test
+      - run: make wheel VERSION=${{ steps.version.outputs.version }}
+      - run: make verify
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheel
+          path: dist/
+
+  release:
+    needs: build
+    if: needs.build.outputs.release == 'true' && github.ref == 'refs/heads/lk'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheel
+          path: dist
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          upstream=${VERSION%%+*}
+          gh release create "v$VERSION" dist/*.whl dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --title "APM $VERSION" \
+            --notes "microsoft/apm v$upstream with the patches in [patches/](https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA/patches). $(cat dist/SHA256SUMS)"
