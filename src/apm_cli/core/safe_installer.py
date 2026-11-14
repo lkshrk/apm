@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..adapters.client.base import env_references
 from ..factory import ClientFactory
 from ..utils.console import _rich_error, _rich_success, _rich_warning
 from .conflict_detector import MCPConflictDetector
@@ -120,6 +121,12 @@ class SafeMCPInstaller:
                 continue
 
             try:
+                if self._would_resolve_references(cached_info):
+                    reason = f"{self.runtime} cannot keep secret references at user scope"
+                    summary.add_failed(server_ref, reason)
+                    self._log_error(server_ref, reason)
+                    continue
+
                 # Pass environment overrides, server info cache, and runtime variables if provided
                 kwargs = {}
                 if env_overrides is not None:
@@ -155,6 +162,12 @@ class SafeMCPInstaller:
 
         return summary
 
+    def _would_resolve_references(self, server_info: dict[str, Any] | None) -> bool:
+        """True when a user-scope adapter would write referenced secrets as values."""
+        if not self.adapter.user_scope or self.adapter.writes_env_references():
+            return False
+        return bool(server_info) and bool(env_references(server_info))
+
     def _log_skip(self, server_ref: str):
         """Log when a server is skipped due to existing configuration."""
         if self.logger:
@@ -176,7 +189,7 @@ class SafeMCPInstaller:
         else:
             _rich_warning(f"  x {server_ref} installation failed")
 
-    def _log_error(self, server_ref: str, error: Exception):
+    def _log_error(self, server_ref: str, error: Exception | str):
         """Log error during server installation."""
         if self.logger:
             self.logger.error(f"  x {server_ref}: {error}")
