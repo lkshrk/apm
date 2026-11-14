@@ -528,6 +528,8 @@ class CodexClientAdapter(MCPClientAdapter):
                 "args": [_process_stdio_arg(arg) for arg in raw.get("args") or []],
                 "env": written_env,
             }
+            if self._refuses_arg_references(stdio_config["args"], server_info):
+                return None
             if self.user_scope and not written_env:
                 del stdio_config["env"]
             if raw.get("cwd") is not None:
@@ -746,6 +748,8 @@ class CodexClientAdapter(MCPClientAdapter):
                     )
                 if forwarded_env:
                     config["env_vars"] = forwarded_env
+                if self._refuses_arg_references(config["args"], server_info):
+                    return None
 
         self._merge_extra(config, server_info)
         return config
@@ -856,11 +860,29 @@ class CodexClientAdapter(MCPClientAdapter):
             if isinstance(value, str) and _ENV_PLACEHOLDER_RE.search(value)
         ]
         if keys and not self._rendering_baseline:
+            hints = ", ".join(f"{name}: ${{{name}}}" for name in _ascii_names(keys).split(", "))
             _rich_error(
                 f"Codex cannot keep a secret reference for {_ascii_names([server_name])} "
-                f"env {_ascii_names(keys)}; use KEY: ${{KEY}}"
+                f"env {_ascii_names(keys)}; use {hints}"
             )
         return not keys
+
+    def _refuses_arg_references(self, args: list, server_info: dict) -> bool:
+        """At user scope, refuse args that still hold a reference Codex passes literally."""
+        if not self.user_scope:
+            return False
+        refused = any(
+            isinstance(arg, str)
+            and (_ENV_PLACEHOLDER_RE.search(arg) or _CODEX_UNSUPPORTED_REFERENCE_RE.search(arg))
+            for arg in args
+        )
+        if refused and not self._rendering_baseline:
+            _rich_error(
+                "Codex cannot keep a secret reference for "
+                f"{_ascii_names([server_info.get('name', '')])} args; "
+                "pass the value through env as KEY: ${KEY}"
+            )
+        return refused
 
     def _warn_unforwardable_env(self, literal_env: dict, server_name: str) -> None:
         """Name the env keys whose references Codex cannot forward; never print values."""
