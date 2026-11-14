@@ -21,6 +21,7 @@ class NativeMcpConnectionState(Enum):
     MATCHING_FOREIGN = "matching-foreign"
     UPDATE_MANAGED = "update-managed"
     CONFLICT = "conflict"
+    REFUSED = "refused"
 
 
 def mcp_native_hash(native: dict) -> str:
@@ -76,13 +77,17 @@ def compare_native_mcp_connection(
     native = existing[key]
     requested = None
     if requested_info is not None:
-        requested = (
-            client.render_server_config(
-                requested_info, env_overrides=env_overrides, runtime_vars=runtime_vars
+        try:
+            requested = (
+                client.render_server_config(
+                    requested_info, env_overrides=env_overrides, runtime_vars=runtime_vars
+                )
+                if registry_request
+                else client.render_server_config(requested_info)
             )
-            if registry_request
-            else client.render_server_config(requested_info)
-        )
+        except ValueError:
+            # The adapter refuses this request; its own write path reports why.
+            return NativeMcpConnectionState.REFUSED
     comparison = native
     matches_baseline = False
     baseline_owned_auth_fields: set[str] = set()

@@ -556,3 +556,107 @@ def test_user_scope_registry_install_never_looks_up_or_prompts(tmp_path, monkeyp
     assert managed == {"claude": {"example"}}
     assert _written_entry(tmp_path)["env"]["API_TOKEN"] == "${API_TOKEN}"
     assert "s3cret-value" not in _claude_json_text(tmp_path)
+
+
+_GITHUB_TOKEN_VARS = (
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_APM_PAT",
+    "GITHUB_COPILOT_PAT",
+    "GITHUB_PERSONAL_ACCESS_TOKEN",
+)
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["hermes", "windsurf"])
+def test_resolving_adapter_never_injects_github_token(tmp_path, monkeypatch, runtime):
+    for name in _GITHUB_TOKEN_VARS:
+        monkeypatch.setenv(name, "ghp_fake-s3cret")
+    info = {
+        "name": "github-mcp-server",
+        "remotes": [{"transport_type": "http", "url": "https://api.githubcopilot.com/mcp/"}],
+    }
+    installer = SafeMCPInstaller(runtime, project_root=tmp_path / "project", user_scope=True)
+    summary = installer.install_servers(
+        ["github-mcp-server"], server_info_cache={"github-mcp-server": info}
+    )
+    written = _all_written_text(tmp_path)
+    assert summary.installed == ["github-mcp-server"]
+    assert "api.githubcopilot.com" in written
+    assert "ghp_fake-s3cret" not in written
+
+
+def test_codex_user_scope_stringifies_non_string_env_literals(tmp_path):
+    entry = _configure_codex_stdio(tmp_path, env={"DEBUG": True, "PORT": 8080, "MODE": "fast"})
+    assert entry["env"] == {"DEBUG": "True", "PORT": "8080", "MODE": "fast"}
+
+
+def test_codex_user_scope_shell_default_env_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("V", "s3cret-value")
+    ok, text = _try_configure_codex_stdio(tmp_path, env={"V": "${V:-x}"})
+    assert ok is False
+    assert "s3cret-value" not in text
+    assert "Codex cannot keep a secret reference for example env V" in text
+    assert _codex_toml_text(tmp_path) == ""
+
+
+def test_claude_user_scope_keeps_manifest_literal(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    entry = _configure_claude_stdio(
+        tmp_path, monkeypatch, env={"MODE": "fast", "GITHUB_PAT": "${GITHUB_PAT}"}
+    )
+    assert entry["env"] == {"MODE": "fast", "GITHUB_PAT": "${GITHUB_PAT}"}
+    assert "s3cret-value" not in _claude_json_text(tmp_path)
+
+
+def test_copilot_still_turns_manifest_literal_into_reference(tmp_path):
+    from apm_cli.adapters.client.copilot import CopilotClientAdapter
+
+    adapter = CopilotClientAdapter(project_root=tmp_path, user_scope=True)
+    env = adapter._resolve_environment_variables({"MODE": "fast", "K": "${K}"})
+    assert env == {"MODE": "${MODE}", "K": "${K}"}
+
+
+@pytest.mark.usefixtures("_user_home")
+def test_codex_refused_server_with_existing_entry_does_not_abort_install(tmp_path, monkeypatch):
+    from apm_cli.core.null_logger import NullCommandLogger
+    from apm_cli.integration.mcp_integrator_install import _install_self_defined_deps
+
+    monkeypatch.setenv("OTHER", "s3cret-value")
+    path = tmp_path / "codex" / "config.toml"
+    path.parent.mkdir(parents=True)
+    path.write_text('[mcp_servers.refused]\ncommand = "hand-written"\n')
+    deps = [
+        MCPDependency.from_dict(
+            {"name": name, "registry": False, "transport": "stdio", "command": "npx", "env": env}
+        )
+        for name, env in (("refused", {"TOKEN": "${OTHER}"}), ("last", {"MODE": "fast"}))
+    ]
+    claims: dict[str, set[str]] = {"codex": {"refused"}}
+    errors: list[str] = []
+
+    with mock.patch.object(
+        codex_module, "_rich_error", side_effect=lambda m, **_: errors.append(m)
+    ):
+        configured = _install_self_defined_deps(
+            deps,
+            ["codex"],
+            {},
+            set(),
+            set(),
+            tmp_path / "project",
+            True,
+            False,
+            None,
+            NullCommandLogger(),
+            claims,
+        )
+
+    servers = tomlkit.parse(_codex_toml_text(tmp_path))["mcp_servers"]
+    assert configured == 1
+    assert errors == [
+        "Codex cannot keep a secret reference for refused env TOKEN; use TOKEN: ${TOKEN}"
+    ]
+    assert servers["refused"]["command"] == "hand-written"
+    assert servers["last"]["env"] == {"MODE": "fast"}
+    assert "s3cret-value" not in _codex_toml_text(tmp_path)

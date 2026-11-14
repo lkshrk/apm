@@ -62,6 +62,7 @@ class CopilotClientAdapter(MCPClientAdapter):
     # NOT support runtime substitution -- it MUST keep resolving at install
     # time.
     _supports_runtime_env_substitution: bool = True
+    _keeps_manifest_env_literals: bool = False
 
     # Process-wide aggregation of legacy ``<VAR>`` offenders, keyed by
     # adapter class so subclasses (Cursor, etc.) maintain their own
@@ -745,7 +746,9 @@ class CopilotClientAdapter(MCPClientAdapter):
                     translated[name] = self._translate_env_placeholder_for_runtime(raw_value)
                     for match in _ENV_VAR_RE.finditer(translated[name]):
                         placeholder_keys.append(match.group(1))
-                elif name in default_github_env and raw_value == default_github_env[name]:
+                elif self._keeps_manifest_env_literals or (
+                    name in default_github_env and raw_value == default_github_env[name]
+                ):
                     translated[name] = raw_value
                 else:
                     # Literal value present in apm.yml -- replace with a
