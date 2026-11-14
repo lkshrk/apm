@@ -4,6 +4,7 @@ UPSTREAM = https://github.com/microsoft/apm.git
 PATCH_BRANCH = lk-patches/v$(APM_VERSION)
 
 CHECKOUT = checkouts/apm
+PYTHON = 3.12
 DIST = dist
 # Fixed so zip timestamps, and therefore the wheel digest, don't depend on when it's built.
 export SOURCE_DATE_EPOCH = 1700000000
@@ -22,9 +23,11 @@ checkouts:
 patches:
 	git -C $(CHECKOUT) -c user.name=lk-build -c user.email=lk-build@localhost am --quiet --committer-date-is-author-date $(abspath patches)/*.patch
 
+# Same Python line and command as upstream's release workflow; uv's managed build tracks the latest 3.12.x.
+test: export UV_PYTHON_PREFERENCE = only-managed
 test:
-	cd $(CHECKOUT) && uv sync --frozen --extra dev --quiet
-	cd $(CHECKOUT) && uv run --frozen --extra dev pytest -p no:cacheprovider -q -n auto tests/unit
+	cd $(CHECKOUT) && uv sync --frozen --extra dev --python $(PYTHON) --quiet
+	cd $(CHECKOUT) && uv run --frozen --extra dev --python $(PYTHON) pytest -p no:cacheprovider -q tests/unit tests/test_console.py -n auto --dist worksteal
 
 # VERSION defaults to the next release version; CI passes it explicitly.
 wheel:
