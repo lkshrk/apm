@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Mon, 26 Oct 2026 15:33:24 +0100
-Subject: [PATCH 02/13] Preserve local preferences on owned self-defined Codex
+Subject: [PATCH 02/14] Preserve local preferences on owned self-defined Codex
  connections
 
 (cherry picked from commit d17aa2549b6e7e1f8db6a75d3666cae2b9969e6b)

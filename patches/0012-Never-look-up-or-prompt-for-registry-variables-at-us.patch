@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Sat, 14 Nov 2026 03:35:07 +0100
-Subject: [PATCH 12/13] Never look up or prompt for registry variables at user
+Subject: [PATCH 12/14] Never look up or prompt for registry variables at user
  scope and refuse unverifiable servers
 
 ---

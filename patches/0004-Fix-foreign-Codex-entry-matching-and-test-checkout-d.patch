@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Mon, 26 Oct 2026 22:44:32 +0100
-Subject: [PATCH 04/13] Fix foreign Codex entry matching and test checkout
+Subject: [PATCH 04/14] Fix foreign Codex entry matching and test checkout
  debris
 
 (cherry picked from commit 0c95c7253ed31e1b3ab9cacc2bbbe541fdf93c1f)

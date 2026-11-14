@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Mon, 26 Oct 2026 14:56:06 +0100
-Subject: [PATCH 01/13] Add native omp MCP ownership and per-server targets
+Subject: [PATCH 01/14] Add native omp MCP ownership and per-server targets
 
 (cherry picked from commit 2d77b0a7b83c130d6190444b87622aa816eb44d1)
 ---

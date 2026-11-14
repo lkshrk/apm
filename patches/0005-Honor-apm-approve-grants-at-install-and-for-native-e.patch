@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Tue, 27 Oct 2026 00:22:23 +0100
-Subject: [PATCH 05/13] Honor apm approve grants at install and for native
+Subject: [PATCH 05/14] Honor apm approve grants at install and for native
  extensions without an executables block
 
 The install gate keys a git dependency as github.com/Owner/Repo while

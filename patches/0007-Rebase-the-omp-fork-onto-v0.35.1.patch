@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Fri, 13 Nov 2026 21:07:42 +0100
-Subject: [PATCH 07/13] Rebase the omp fork onto v0.35.1
+Subject: [PATCH 07/14] Rebase the omp fork onto v0.35.1
 
 Upstream v0.35.1 keeps self-defined MCP server names that contain a
 slash as the config key in every target (#3493). The omp adapter now

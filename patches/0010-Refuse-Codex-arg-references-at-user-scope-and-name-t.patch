@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Sat, 14 Nov 2026 03:11:02 +0100
-Subject: [PATCH 10/13] Refuse Codex arg references at user scope and name the
+Subject: [PATCH 10/14] Refuse Codex arg references at user scope and name the
  key in the env hint
 
 ---

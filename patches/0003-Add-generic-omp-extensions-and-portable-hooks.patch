@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: lkshrk <dev@harke.me>
 Date: Mon, 26 Oct 2026 21:01:57 +0100
-Subject: [PATCH 03/13] Add generic omp extensions and portable hooks
+Subject: [PATCH 03/14] Add generic omp extensions and portable hooks
 
 (cherry picked from commit ac55e3e12895b2634fe55a04e6d0b7039b182e8d)
 ---
