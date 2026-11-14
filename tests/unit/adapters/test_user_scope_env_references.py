@@ -233,6 +233,7 @@ def test_codex_user_scope_renamed_reference_is_refused(tmp_path, monkeypatch):
     assert ok is False
     assert "s3cret-value" not in text
     assert "Codex cannot keep a secret reference for example env TOKEN" in text
+    assert "use TOKEN: ${TOKEN}" in text
 
 
 def test_codex_user_scope_composite_env_is_refused(tmp_path, monkeypatch):
@@ -303,3 +304,28 @@ def test_codex_user_scope_docker_registry_env_forwarded_with_flag(tmp_path, monk
     assert entry["env_vars"] == ["API_TOKEN"]
     assert entry["args"][-3:-1] == ["-e", "API_TOKEN"]
     assert "s3cret-value" not in _codex_toml_text(tmp_path)
+
+
+@pytest.mark.parametrize("arg", ["${GITHUB_PAT}", "--token=${env:GITHUB_PAT}", "<GITHUB_PAT>"])
+def test_codex_user_scope_stdio_arg_reference_is_refused(tmp_path, monkeypatch, arg):
+    monkeypatch.setenv("GITHUB_PAT", "s3cret-value")
+    info = _codex_stdio_info({"GITHUB_PAT": "${GITHUB_PAT}"})
+    info["_raw_stdio"]["args"] = ["-y", "some-server", arg]
+    ok, text = _try_configure_codex(tmp_path, info)
+    assert ok is False
+    assert "example args" in text
+    assert "s3cret-value" not in text
+    assert _codex_toml_text(tmp_path) == ""
+
+
+def test_codex_user_scope_registry_arg_reference_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("API_TOKEN", "s3cret-value")
+    info = _codex_registry_info([{"name": "API_TOKEN", "required": True}])
+    info["packages"][0]["package_arguments"] = [
+        {"type": "positional", "value": "--token=<API_TOKEN>"}
+    ]
+    ok, text = _try_configure_codex(tmp_path, info)
+    assert ok is False
+    assert "example args" in text
+    assert "s3cret-value" not in text
+    assert _codex_toml_text(tmp_path) == ""
