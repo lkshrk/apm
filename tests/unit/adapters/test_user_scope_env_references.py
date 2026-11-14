@@ -457,3 +457,102 @@ def test_env_references_includes_registry_env_names_and_ignores_literals():
     assert env_references(info) == {"D", "E"}
     assert env_references(_codex_registry_info([{"name": "F"}])) == {"F"}
     assert env_references(_stdio_info("example", {"MODE": "fast"})) == set()
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [({"X-Mode": "fast"}, set()), ({"X-Key": "${X}"}, {"X"})],
+)
+def test_env_references_accepts_mapping_headers(headers, expected):
+    assert env_references({"remotes": [{"headers": headers}]}) == expected
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["hermes", "windsurf"])
+def test_mapping_header_server_installs_beside_others(tmp_path, runtime):
+    installer = SafeMCPInstaller(runtime, project_root=tmp_path / "project", user_scope=True)
+    remote = {"transport_type": "http", "url": "https://example.test/mcp"}
+    info = {"name": "remote", "remotes": [{**remote, "headers": {"X-Mode": "fast"}}]}
+    cache = {"remote": info, "local": _stdio_info("local", {"MODE": "fast"})}
+    summary = installer.install_servers(["remote", "local"], server_info_cache=cache)
+    assert summary.installed == ["remote", "local"]
+
+
+@pytest.mark.usefixtures("_user_home")
+@pytest.mark.parametrize("runtime", ["gemini", "hermes", "windsurf"])
+def test_resolving_adapter_refuses_server_without_info(tmp_path, runtime):
+    installer = SafeMCPInstaller(runtime, project_root=tmp_path / "project", user_scope=True)
+    cache = {"unknown": None, "local": _stdio_info("local", {"MODE": "fast"})}
+    summary = installer.install_servers(["unknown", "local"], server_info_cache=cache)
+    assert summary.installed == ["local"]
+    assert summary.failed == [
+        {
+            "server": "unknown",
+            "reason": "server info for unknown unavailable; "
+            "cannot verify it has no secret references",
+        }
+    ]
+
+
+def _registry_operations(info):
+    from apm_cli.registry.operations import MCPServerOperations
+
+    operations = MCPServerOperations()
+    operations.validate_servers_exist = mock.Mock(return_value=(["example"], []))
+    operations.check_servers_needing_installation = mock.Mock(return_value=["example"])
+    operations.batch_fetch_server_info = mock.Mock(return_value={"example": info})
+    return operations
+
+
+def test_user_scope_registry_install_never_looks_up_or_prompts(tmp_path, monkeypatch, _user_home):
+    import os
+
+    from apm_cli.integration.mcp_integrator_install import _install_registry_group
+
+    real_getenv = os.getenv
+
+    def guarded_getenv(name, *args):
+        if name in {"API_TOKEN", "ADO_ORG"}:
+            raise AssertionError(f"looked up {name}")
+        return real_getenv(name, *args)
+
+    for var in ("CI", "GITHUB_ACTIONS", "TRAVIS", "JENKINS_URL", "BUILDKITE", "APM_E2E_TESTS"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.setenv("API_TOKEN", "s3cret-value")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("rich.prompt.Prompt.ask", _fail_if_called)
+    monkeypatch.setattr(os, "getenv", guarded_getenv)
+    info = _codex_registry_info([{"name": "API_TOKEN", "required": True}])
+    info["packages"][0]["package_arguments"] = [
+        {
+            "type": "named",
+            "name": "--org",
+            "value": "{ado_org}",
+            "variables": {"ado_org": {"is_required": True, "is_secret": True}},
+        }
+    ]
+    managed: dict[str, set[str]] = {}
+
+    configured = _install_registry_group(
+        operations=_registry_operations(info),
+        group_dep_names=["example"],
+        group_dep_map={},
+        group_deps=["example"],
+        target_runtimes=["claude"],
+        stored_mcp_configs={},
+        servers_to_update=set(),
+        successful_updates=set(),
+        project_root=tmp_path / "project",
+        user_scope=True,
+        verbose=False,
+        console=None,
+        logger=mock.MagicMock(),
+        managed_target_servers=managed,
+    )
+
+    assert configured == 1
+    assert managed == {"claude": {"example"}}
+    assert _written_entry(tmp_path)["env"]["API_TOKEN"] == "${API_TOKEN}"
+    assert "s3cret-value" not in _claude_json_text(tmp_path)

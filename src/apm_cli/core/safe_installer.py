@@ -121,8 +121,8 @@ class SafeMCPInstaller:
                 continue
 
             try:
-                if self._would_resolve_references(cached_info):
-                    reason = f"{self.runtime} cannot keep secret references at user scope"
+                reason = self._user_scope_refusal(server_ref, cached_info)
+                if reason:
                     summary.add_failed(server_ref, reason)
                     self._log_error(server_ref, reason)
                     continue
@@ -162,11 +162,18 @@ class SafeMCPInstaller:
 
         return summary
 
-    def _would_resolve_references(self, server_info: dict[str, Any] | None) -> bool:
-        """True when a user-scope adapter would write referenced secrets as values."""
+    def _user_scope_refusal(self, server_ref: str, server_info: dict[str, Any] | None) -> str:
+        """Why a user-scope adapter that resolves references must not configure this server."""
         if not self.adapter.user_scope or self.adapter.writes_env_references():
-            return False
-        return bool(server_info) and bool(env_references(server_info))
+            return ""
+        if server_info is None:
+            return (
+                f"server info for {server_ref} unavailable; "
+                "cannot verify it has no secret references"
+            )
+        if env_references(server_info):
+            return f"{self.runtime} cannot keep secret references at user scope"
+        return ""
 
     def _log_skip(self, server_ref: str):
         """Log when a server is skipped due to existing configuration."""
