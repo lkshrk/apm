@@ -1,4 +1,4 @@
-APM_VERSION = 0.35.1
+APM_VERSION = 0.36.1
 UPSTREAM = https://github.com/microsoft/apm.git
 # Branch the patch series is authored on (upstream tag + one commit per patch).
 PATCH_BRANCH = lk-patches/v$(APM_VERSION)
