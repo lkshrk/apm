@@ -6,12 +6,12 @@ named in the `Makefile`, applies `patches/`, runs upstream's unit tests, builds 
 
 ## Patches
 
-| Patches | What they do |
+| Patch | What it does |
 |---|---|
-| 0001–0007 | omp as an APM target: native MCP ownership, per-server targets, extensions and portable hooks; Codex entry fixes; `apm approve` grants; `apm outdated --json` |
-| 0008–0013 | At user scope (`apm install -g`), MCP secrets stay environment references: Claude writes `${VAR}`, Codex `env_vars` / `env_http_headers` / `bearer_token_env_var`; nothing is looked up or prompted, and adapters that would resolve a reference refuse the server |
+| 0001 | omp as an APM target: native MCP ownership, extensions and portable hooks; Codex local preferences and entry matching; `apm approve` grants for native extensions; `apm outdated --json` |
+| 0002 | At user scope (`apm install -g`), MCP secrets stay environment references: Claude writes `${VAR}`, Codex `env_vars` / `env_http_headers` / `bearer_token_env_var`; nothing is looked up or prompted, adapters that would resolve a reference refuse the server, and only runtimes that wrote a server report it as configured |
 
-`tests/secret-references.sh` checks the second group against the built wheel: with fake values in the
+`tests/secret-references.sh` checks 0002 against the built wheel: with fake values in the
 environment, no value may land in `~/.claude.json` or `~/.codex/config.toml`. Upstream fails it.
 
 ## Releases
@@ -28,10 +28,10 @@ The series is authored on `lk-patches/v<version>` (upstream tag + one commit per
 
 ```sh
 git fetch upstream --tags
-git switch -c lk-patches/v0.36.0 lk-patches/v0.35.1
-git rebase --onto v0.36.0 v0.35.1        # resolve conflicts, run the tests
+git switch -c lk-patches/v0.38.0 lk-patches/v0.37.0
+git rebase --onto v0.38.0 v0.37.0        # resolve conflicts, run the tests
 git switch lk                            # on the Renovate PR branch
-make refresh-patches APM_VERSION=0.36.0  # re-export patches/ from the new branch
+make refresh-patches APM_VERSION=0.38.0  # re-export patches/ from the new branch
 ```
 
 Commit the refreshed `patches/` to the Renovate PR; CI builds it. Patches never touch the version,
