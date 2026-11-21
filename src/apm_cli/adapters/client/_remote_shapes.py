@@ -269,13 +269,22 @@ REMOTE_SHAPES: Mapping[str, RemoteShape] = MappingProxyType(
                 evidence_url="https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp/extend-copilot-chat-with-mcp",
                 verified=False,
             ),
+            RemoteShape(
+                runtime="omp",
+                label="omp",
+                url_keys={_S: "url", _E: "url"},
+                type_key="type",
+                type_values={_S: "http", _E: "sse"},
+                evidence_url="https://github.com/can1357/oh-my-pi",
+                verified=False,
+            ),
         )
     }
 )
 
 # Rows whose remote keys were not re-verified against current vendor docs.
 UNVERIFIED_REMOTE_SHAPES: frozenset[str] = frozenset(
-    {"cursor", "intellij", "kiro", "opencode", "windsurf"}
+    {"cursor", "intellij", "kiro", "omp", "opencode", "windsurf"}
 )
 
 

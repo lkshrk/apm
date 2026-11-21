@@ -31,6 +31,7 @@ _HOOK_FILE_TARGET_TOKENS: dict[str, set[str]] = {
     "antigravity": {"antigravity"},
     "windsurf": {"windsurf"},
     "kiro": {"kiro"},
+    "omp": {"omp"},
 }
 
 _MIGRATION_DOCS = (

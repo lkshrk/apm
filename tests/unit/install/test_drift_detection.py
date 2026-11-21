@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import MISSING, fields
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -36,12 +37,14 @@ from apm_cli.install.drift import (
     _assert_scratch_bound,
     _build_package_info,
     _inline_diff_for,
+    _make_integrators,
     _normalize_legacy_local_plugin_for_replay,
     _read_apm_yml_target,
     _walk_managed,
     diff_scratch_against_project,
     run_replay,
 )
+from apm_cli.install.services import IntegratorBundle
 from apm_cli.integration.hook_integrator import HookIntegrator
 
 pytestmark = pytest.mark.component
@@ -291,6 +294,23 @@ class TestBuildPackageInfo:
 # ---------------------------------------------------------------------------
 # _make_integrators
 # ---------------------------------------------------------------------------
+
+
+class TestMakeIntegrators:
+    def test_integrators_populate_integrator_bundle(self) -> None:
+        integrators = _make_integrators()
+        bundle_fields = {f.name: f for f in fields(IntegratorBundle)}
+        required = {
+            name
+            for name, f in bundle_fields.items()
+            if f.default is MISSING and f.default_factory is MISSING
+        }
+
+        assert required <= set(integrators)
+        assert set(integrators) <= set(bundle_fields)
+        bundle = IntegratorBundle(**integrators)
+        for name, integrator in integrators.items():
+            assert getattr(bundle, name) is integrator
 
 
 # ---------------------------------------------------------------------------

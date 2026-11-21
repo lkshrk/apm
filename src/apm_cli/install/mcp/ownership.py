@@ -187,6 +187,7 @@ def compare_native_mcp_connection(
     managed: bool,
     existing_configs: Mapping[str, Any] | None = None,
     managed_fields: set[str] | None = None,
+    managed_env_keys: set[str] | None = None,
     native_hash: str | None = None,
     registry_request: bool = False,
     env_overrides: dict | None = None,
@@ -243,6 +244,9 @@ def compare_native_mcp_connection(
     comparison = native
     matches_baseline = False
     retired_shape = False
+    baseline_owned_auth_fields: set[str] = set()
+    baseline_codex_local_fields: set[str] = set()
+    baseline_codex_env_keys: set[str] = set()
     adoptable = (
         not managed
         and requested is not None
@@ -269,6 +273,7 @@ def compare_native_mcp_connection(
     if managed and isinstance(stored_config, dict):
         try:
             dependency = MCPDependency.from_dict(stored_config)
+            baseline_owned_auth_fields = {"auth", "oauth"}.intersection(dependency.extra or {})
             legacy_baseline = requested
             baseline_info = requested_info
             render_env = (
@@ -319,8 +324,22 @@ def compare_native_mcp_connection(
                         comparison = native
                 if matches_baseline and managed_fields is not None:
                     managed_fields.update(expected)
+                if client.target_name == "codex" and not registry_request:
+                    expected_env = expected.get("env")
+                    baseline_codex_local_fields = client._LOCAL_SERVER_FIELDS.intersection(expected)
+                    baseline_codex_env_keys = (
+                        set(expected_env) if isinstance(expected_env, dict) else set()
+                    )
+                    if matches_baseline and managed_env_keys is not None:
+                        managed_env_keys.update(baseline_codex_env_keys)
             elif native_hash is not None and isinstance(native, dict):
-                comparable = client.managed_server_config(native)
+                comparable = (
+                    client.managed_server_config(
+                        native, declared_fields=set(dependency.extra or {})
+                    )
+                    if client.target_name == "omp"
+                    else client.managed_server_config(native)
+                )
                 matches_baseline = mcp_native_hash(comparable) == native_hash
                 if not matches_baseline:
                     # A --frozen heal rewrote the shape but kept the lock receipt.
@@ -385,13 +404,49 @@ def compare_native_mcp_connection(
         if matches_baseline and managed_fields is not None:
             managed_fields.update(comparable)
     if requested is not None:
+        if client.target_name == "codex" and not registry_request and isinstance(native, dict):
+            requested_env = requested.get("env")
+            native_env = native.get("env")
+            removed_local = any(
+                key in native and key not in requested for key in baseline_codex_local_fields
+            )
+            removed_env = isinstance(native_env, dict) and any(
+                env_key in native_env
+                and not (isinstance(requested_env, dict) and env_key in requested_env)
+                for env_key in baseline_codex_env_keys
+            )
+            if removed_local or removed_env:
+                # Projection would treat previously owned preferences as local and
+                # skip the removal; route it to the writer only for a verified baseline.
+                return (
+                    NativeMcpConnectionState.UPDATE_MANAGED
+                    if matches_baseline
+                    else NativeMcpConnectionState.CONFLICT
+                )
+        if (
+            client.target_name == "omp"
+            and isinstance(native, dict)
+            and any(key in native and key not in requested for key in baseline_owned_auth_fields)
+        ):
+            # Runtime auth/OAuth is ignored only when it was never APM-owned.
+            # An explicit removal must reach the writer with old managed fields.
+            return (
+                NativeMcpConnectionState.UPDATE_MANAGED
+                if matches_baseline
+                else NativeMcpConnectionState.CONFLICT
+            )
         requested_native = comparison if matches_baseline else native
-        matches_request = (
-            isinstance(requested_native, dict)
-            and client.json_identical(client.managed_server_config(requested_native), requested)
-            if registry_request
-            else client.matches_managed_server_config(requested_native, requested)
-        )
+        if client.target_name == "codex" and not registry_request and not matches_baseline:
+            # Local preferences are tolerated only against a verified owned baseline.
+            # A foreign entry must not silently satisfy a different declaration.
+            matches_request = client.matches_unmanaged_server_config(requested_native, requested)
+        else:
+            matches_request = (
+                isinstance(requested_native, dict)
+                and client.json_identical(client.managed_server_config(requested_native), requested)
+                if registry_request and client.target_name != "omp"
+                else client.matches_managed_server_config(requested_native, requested)
+            )
         if matches_request:
             return (
                 NativeMcpConnectionState.MATCHING_MANAGED
@@ -834,6 +889,8 @@ def adopt_legacy_mcp_target_servers(
             continue
 
         for name, dependency in baselines.items():
+            if not dependency.targets_runtime(runtime):
+                continue
             try:
                 expected = client.render_server_config(
                     MCPIntegrator._build_self_defined_info(dependency)

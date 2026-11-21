@@ -450,8 +450,8 @@ def should_force_ref_recheck(
     *update_keys* scopes both
     the local recheck and the update rechecks to a targeted run's selected
     subtree. An explicit update also
-    rechecks mutable Git refs, semver ranges and hook-only packages. Hook
-    replacements must pass staged admission before any live content is replaced.
+    rechecks mutable Git refs, semver ranges and executable-only packages.
+    Replacements must pass staged admission before any live content is replaced.
 
     This gate decides ref/content freshness only. Slot ownership is a separate
     staging fact: when several local sources share one ``_local/<name>`` slot,
@@ -483,7 +483,7 @@ def should_force_ref_recheck(
             from apm_cli.models.validation import PackageType, detect_package_type
 
             package_type, _ = detect_package_type(package_path)
-            if package_type is PackageType.HOOK_PACKAGE:
+            if package_type in (PackageType.HOOK_PACKAGE, PackageType.EXTENSION_PACKAGE):
                 return True
         if _refetches_mutable_ref_during_resolution(dep_ref):
             # #3392: a branch (or tag, or default-branch) ref of a plain Git

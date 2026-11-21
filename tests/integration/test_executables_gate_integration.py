@@ -406,7 +406,7 @@ class TestCheckExecutableApprovalIntegration:
 
     def test_local_always_approved(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "_local", "")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "_local", pkg_info, {"deny-all": {}}
         )
         assert hooks_ok is True
@@ -416,19 +416,20 @@ class TestCheckExecutableApprovalIntegration:
         from apm_cli.security.executables import AUTHORIZED_GATE_DISABLED, authorized_exec_map
 
         pkg_info = self._make_pkg_info(tmp_path, "any-pkg", "1.0")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, extensions_ok = check_executable_approval(
             "any-pkg", pkg_info, authorized_exec_map(AUTHORIZED_GATE_DISABLED)
         )
         assert hooks_ok is True
         assert bin_ok is True
+        assert extensions_ok is False
 
     def test_missing_allow_executables_approves_nothing(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "any-pkg", "1.0")
-        assert check_executable_approval("any-pkg", pkg_info, None) == (False,) * 5
+        assert check_executable_approval("any-pkg", pkg_info, None) == (False,) * 6
 
     def test_empty_allow_executables_blocks_all(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, {}
         )
         assert hooks_ok is False
@@ -437,7 +438,7 @@ class TestCheckExecutableApprovalIntegration:
     def test_approved_package_passes(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -446,7 +447,7 @@ class TestCheckExecutableApprovalIntegration:
     def test_partial_approval(self, tmp_path: Path) -> None:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"hooks": True, "bin": False}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -456,7 +457,7 @@ class TestCheckExecutableApprovalIntegration:
         pkg_info = self._make_pkg_info(tmp_path, "pkg", "1.0")
         allow = {"pkg#1.0": {"lsp": True}}
 
-        _hooks_ok, _bin_ok, _mcp_ok, _canvas_ok, lsp_ok = check_executable_approval(
+        _hooks_ok, _bin_ok, _mcp_ok, _canvas_ok, lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
 
@@ -467,7 +468,7 @@ class TestCheckExecutableApprovalIntegration:
         pkg_info.dependency_ref = DependencyReference.parse("owner/repo#v1.0")
 
         allow = {"owner/repo#v1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow
         )
         assert hooks_ok is True
@@ -484,7 +485,7 @@ class TestCheckExecutableApprovalIntegration:
 
         # A package-controlled manifest name is not an authorization identity.
         allow = {"pkg#1.0": {"hooks": True, "bin": True}}
-        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok = check_executable_approval(
+        hooks_ok, bin_ok, _mcp_ok, _canvas_ok, _lsp_ok, _extensions_ok = check_executable_approval(
             "pkg", pkg_info, allow, ctx=ctx
         )
         assert hooks_ok is False

@@ -238,6 +238,7 @@ class InstallContext:
     total_instructions_integrated: int = 0  # integrate
     total_commands_integrated: int = 0  # integrate
     total_hooks_integrated: int = 0  # integrate
+    total_extensions_integrated: int = 0  # integrate
     total_links_resolved: int = 0  # integrate
     direct_dep_failed: bool = False  # integrate -- set when any direct dep fails
     skill_baseline_refused: bool = False  # integrate -- preflight refused before any write

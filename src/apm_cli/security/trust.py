@@ -1172,6 +1172,19 @@ def package_exec_status(
     return package_exec_decision(ctx, package_keys, install_path, exec_types, native=native)[0]
 
 
+def gated_exec_types(
+    ctx: ExecTrustContext | None, exec_types: tuple[str, ...] | list[str]
+) -> tuple[str, ...]:
+    """Return the declared types the gate decides; native extensions are decided even when it is off."""
+    from .executables import EXEC_TYPE_EXTENSIONS
+
+    if ctx is None or not exec_types:
+        return ()
+    if ctx.gate_enabled:
+        return tuple(exec_types)
+    return (EXEC_TYPE_EXTENSIONS,) if EXEC_TYPE_EXTENSIONS in exec_types else ()
+
+
 def package_exec_decision(
     ctx: ExecTrustContext | None,
     package_keys: tuple[str, ...],
@@ -1184,20 +1197,22 @@ def package_exec_decision(
 
     The allowed types are what a gated or denied row records as
     ``exec_allowed_types`` (#3991): the worst case alone cannot show a partial
-    approval. They are empty when the gate is off or every type agrees.
+    approval. They are empty when every type agrees. With the gate off only native
+    extensions are decided; every other declared type counts as allowed.
     """
     from .executables import more_severe_exec_status
 
-    if ctx is None or not exec_types or not ctx.gate_enabled:
+    gated = gated_exec_types(ctx, exec_types)
+    if not gated:
         return None, ()
     status: str | None = None
-    allowed: set[str] = set()
-    verdicts = package_type_verdicts(ctx, package_keys, install_path, exec_types, native=native)
+    allowed: set[str] = set(exec_types).difference(gated)
+    verdicts = package_type_verdicts(ctx, package_keys, install_path, gated, native=native)
     for exec_type, verdict in verdicts.items():
         status = more_severe_exec_status(status, "deployed" if verdict.allowed else verdict.state)
         if verdict.allowed:
             allowed.add(exec_type)
-    partial = allowed and len(allowed) < len(verdicts)
+    partial = allowed and len(allowed) < len(set(exec_types))
     return status, tuple(sorted(allowed)) if partial else ()
 
 
@@ -1211,7 +1226,8 @@ def package_withholding_layers(
 ) -> tuple[str, ...]:
     """Return the deciding layers that withhold this package's executables now.
 
-    Empty when the gate is off or every declared type is allowed. The layers
+    Empty when every gated type is allowed (with the gate off, only native
+    extensions are gated). The layers
     name where the decision came from (org policy, a local deny, or no
     approval), which ``install --frozen`` and ``--dry-run`` report (#4043).
     """
@@ -1229,10 +1245,12 @@ def package_withheld_verdicts(
 ) -> dict[str, TypeVerdict]:
     """Return the verdict of each declared type the gate withholds now, by type.
 
-    Empty when the gate is off or every declared type is allowed; ``--dry-run``
+    Empty when every gated type is allowed (with the gate off, only native
+    extensions are gated); ``--dry-run``
     names each withheld surface with its verdict (#4454).
     """
-    if ctx is None or not exec_types or not ctx.gate_enabled:
+    exec_types = gated_exec_types(ctx, exec_types)
+    if not exec_types:
         return {}
     verdicts = package_type_verdicts(ctx, package_keys, install_path, exec_types, native=native)
     return {exec_type: verdict for exec_type, verdict in verdicts.items() if not verdict.allowed}

@@ -43,7 +43,8 @@ KNOWN_LARGE_MODULES = {
     # every reconciliation deleter and skill path migration. Decomposition
     # tracked as follow-up.
     "pipeline.py": 1005,
-    "manifest_reconcile.py": 1010,
+    # The omni fork adds per-server MCP targets and omp ownership reconcile.
+    "manifest_reconcile.py": 1035,
     # services.py grew past 1000 when exec-gate delegation helpers (main)
     # and canvas integration helpers (canvas PR) merged concurrently.
     # Further growth from target-reconcile warning helper extraction (#2362).
@@ -52,7 +53,8 @@ KNOWN_LARGE_MODULES = {
     # target reconciliation or generic integrator can mutate state.
     # Decomposition tracked as follow-up.
     # Local plugin bundle hooks route through HookIntegrator (#3700).
-    "services.py": 1195,
+    # The omni fork adds native extension integration and bundle gating.
+    "services.py": 1320,
     # drift.py crossed 1000 when replay target-root claim scoping (#2655)
     # merged atop main's replay growth. Decomposition tracked as follow-up.
     # Replay builds the project's own package through the install builder (#3151).
@@ -63,6 +65,10 @@ KNOWN_LARGE_MODULES = {
     "drift.py": 1058,
     # The resolver takes its frozen pin mode from InstallService (#4012).
     "phases/resolve.py": 1001,
+    # The omni fork adds native extension approval and bundle filtering.
+    "exec_gate.py": 1115,
+    # The omni fork adds omp native MCP ownership.
+    "mcp/ownership.py": 1020,
 }
 
 

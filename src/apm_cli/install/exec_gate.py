@@ -38,21 +38,28 @@ def check_executable_approval(
     allow_executables: builtins.dict[str, builtins.dict[str, bool]] | None,
     *,
     ctx: InstallContext | None = None,
-) -> tuple[bool, bool, bool, bool, bool]:
-    """Return hook, bin, MCP, canvas, and LSP approval for a package.
+    is_first_party: bool = False,
+) -> tuple[bool, bool, bool, bool, bool, bool]:
+    """Return hook, bin, MCP, canvas, LSP, and native extension approval.
 
     An adapter over the trust owners: first-party content (``_local``) and a
     map that explicitly authorizes every executable (gate disabled, or audit
-    replay of already-authorized content) approve everything. Any other map
-    -- including ``None`` -- approves only what the executable-trust owner
-    grants and item admission admits.
+    replay of already-authorized content) approve every legacy type. Any other
+    map -- including ``None`` -- approves only what the executable-trust owner
+    grants and item admission admits. Native extensions always need an explicit
+    grant unless the caller identifies real first-party project content.
 
     When *ctx* is provided and a package is blocked, the declaration is
     recorded on ``ctx.blocked_executables`` for the post-loop prompt.
     """
+    if is_first_party:
+        # Root-local authority is explicit. Dependency status scans must not
+        # rediscover ambient target output as project executable declarations.
+        return True, True, True, True, True, True
     from apm_cli.security.executables import (
         EXEC_TYPE_BIN,
         EXEC_TYPE_CANVAS,
+        EXEC_TYPE_EXTENSIONS,
         EXEC_TYPE_HOOKS,
         EXEC_TYPE_LSP,
         EXEC_TYPE_MCP,
@@ -62,17 +69,17 @@ def check_executable_approval(
     )
 
     if package_name == FIRST_PARTY_PACKAGE or exec_map_authorizes_all(allow_executables):
-        return True, True, True, True, True
+        extensions_ok = _blanket_extensions_approval(
+            package_name, package_info, allow_executables, ctx
+        )
+        return True, True, True, True, True, extensions_ok
 
     # Executable authorization is bound to the resolver-owned dependency
     # identity. Package manifest metadata is display-only and must not become
     # an alternate security principal.
     pkg_key = resolve_package_key(package_info, package_name)
-    candidate_keys = [pkg_key]
-
-    name_blind = pkg_key.split("#", 1)[0]
-    if name_blind not in candidate_keys:
-        candidate_keys.append(name_blind)
+    candidate_keys = approval_candidate_keys(package_info, package_name)
+    extensions_ok = native_extensions_approved(allow_executables, candidate_keys, ctx)
 
     from apm_cli.security.trust import hooks_package_admissible
 
@@ -80,11 +87,13 @@ def check_executable_approval(
     # for every executable type, by the trust owner; a split install of the
     # same package uses the per-type and per-item path below.
     if native_install(package_info):
-        return _native_approval(
+        approvals = _native_approval(
             package_name, package_info, allow_executables, tuple(candidate_keys), pkg_key, ctx
         )
+        return (*approvals, approvals[0] and extensions_ok)
 
     approved = package_type_approvals(allow_executables, candidate_keys)
+    approved[EXEC_TYPE_EXTENSIONS] = extensions_ok
     # Pinned hook items admit per file at the source plan (hook_file_admission);
     # a package none of whose hook files matches its pin deploys no hooks.
     approved[EXEC_TYPE_HOOKS] = approved[EXEC_TYPE_HOOKS] or hooks_package_admissible(
@@ -159,7 +168,117 @@ def check_executable_approval(
             if allowed_types:
                 ctx.package_exec_allowed_types[package_name] = allowed_types
 
-    return hooks_ok, bin_ok, mcp_ok, canvas_ok, lsp_ok
+    return hooks_ok, bin_ok, mcp_ok, canvas_ok, lsp_ok, extensions_ok
+
+
+def approval_candidate_keys(package_info: Any, package_name: str) -> list[str]:
+    """Return every identity a grant for this package may be recorded under."""
+    return _candidate_keys(resolve_package_key(package_info, package_name))
+
+
+def native_extensions_approved(
+    allow_executables: Any,
+    candidate_keys: list[str],
+    ctx: InstallContext | None = None,
+) -> bool:
+    """Return whether native extensions hold an explicit grant.
+
+    The gate-disabled map never authorizes native code. Replay and first-party
+    maps do, literal grants do, and otherwise the trust ladder decides, so a
+    user-scope ``apm approve`` grant counts even while the gate is off.
+    """
+    from apm_cli.security.executables import (
+        AUTHORIZED_GATE_DISABLED,
+        EXEC_TYPE_EXTENSIONS,
+        ExecTrustContext,
+        exec_map_authorizes_all,
+        is_package_approved,
+        resolve_exec_decision,
+    )
+
+    if exec_map_authorizes_all(allow_executables):
+        if allow_executables.authorized_by != AUTHORIZED_GATE_DISABLED:
+            return True
+    elif isinstance(allow_executables, builtins.dict) and any(
+        is_package_approved(allow_executables, key, EXEC_TYPE_EXTENSIONS) for key in candidate_keys
+    ):
+        return True
+    trust_ctx = getattr(ctx, "exec_trust_ctx", None) or getattr(
+        allow_executables, "trust_context", None
+    )
+    if not isinstance(trust_ctx, ExecTrustContext):
+        return False
+    return any(
+        resolve_exec_decision(trust_ctx, key, EXEC_TYPE_EXTENSIONS).allowed
+        for key in candidate_keys
+    )
+
+
+def _blanket_extensions_approval(
+    package_name: str, package_info: Any, allow_executables: Any, ctx: InstallContext | None
+) -> bool:
+    """Decide native extensions where legacy types are blanket-approved.
+
+    Identity is resolved only for a package that ships native extensions.
+    """
+    from apm_cli.security.executables import AUTHORIZED_GATE_DISABLED, exec_map_authorizes_all
+
+    if (
+        exec_map_authorizes_all(allow_executables)
+        and allow_executables.authorized_by != AUTHORIZED_GATE_DISABLED
+    ):
+        return True
+    if not _declares_native_extensions(package_info):
+        return False
+    pkg_key = resolve_package_key(package_info, package_name)
+    candidate_keys = approval_candidate_keys(package_info, package_name)
+    if native_extensions_approved(allow_executables, candidate_keys, ctx):
+        return True
+    _record_blocked_extensions(package_name, package_info, pkg_key, candidate_keys, ctx)
+    return False
+
+
+def _declares_native_extensions(package_info: Any) -> bool:
+    """Whether the installed package ships native extension bundles."""
+    install_path = getattr(package_info, "install_path", None)
+    if not isinstance(install_path, (str, Path)):
+        return False
+    from apm_cli.integration.extension_discovery import find_extension_bundles
+
+    return bool(find_extension_bundles(Path(install_path), validate_entries=False))
+
+
+def _record_blocked_extensions(
+    package_name: str,
+    package_info: Any,
+    pkg_key: str,
+    candidate_keys: list[str],
+    ctx: InstallContext | None,
+) -> None:
+    """Park a package whose native extensions await approval and record its status."""
+    if ctx is None:
+        return
+    from dataclasses import replace
+
+    from apm_cli.security.executables import EXEC_TYPE_EXTENSIONS, scan_package_executables
+
+    install = Path(package_info.install_path)
+    declaration = scan_package_executables(install, package_name, "", approval_identity=pkg_key)
+    if EXEC_TYPE_EXTENSIONS not in declaration.exec_types:
+        return
+    ctx.blocked_executables.append(replace(declaration, install_path=str(install)))
+    trust_ctx = getattr(ctx, "exec_trust_ctx", None)
+    if trust_ctx is None:
+        return
+    from apm_cli.security.trust import package_exec_decision
+
+    status, allowed_types = package_exec_decision(
+        trust_ctx, tuple(candidate_keys), install, declaration.exec_types
+    )
+    if status is not None:
+        ctx.package_exec_status[package_name] = status
+    if allowed_types:
+        ctx.package_exec_allowed_types[package_name] = allowed_types
 
 
 def _native_approval(
@@ -963,3 +1082,33 @@ def locked_hook_pin_mismatches(
             )
         )
     return found
+
+
+def log_extensions_skip(
+    package_name: str,
+    package_info: Any,
+    targets,
+    logger,
+    diagnostics,
+    *,
+    is_first_party: bool,
+) -> None:
+    """Explain native precedence only for selected, declared native content."""
+    from apm_cli.integration.extension_discovery import find_extension_bundles
+
+    if any(target.supports("extensions") for target in targets) and find_extension_bundles(
+        Path(package_info.install_path),
+        validate_entries=False,
+        is_first_party=is_first_party,
+    ):
+        message = (
+            f"{package_name}: native extension deployment is gated; explicit "
+            "extensions approval is required (canvas approval does not grant "
+            "native execution). Native precedence means portable omp hooks "
+            "are not selected for this package; they are not a fallback "
+            "while the native replacement awaits approval."
+        )
+        if logger is not None:
+            logger.warning(message)
+        elif diagnostics is not None:
+            diagnostics.warn(message=message, package=package_name)

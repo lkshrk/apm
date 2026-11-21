@@ -50,9 +50,11 @@ _LEGACY_TARGET_PREFIXES = {
     ".gemini/": "gemini",
     ".codex/": "codex",
     ".opencode/": "opencode",
+    ".omp/": "omp",
 }
 _LEGACY_USER_TARGET_PREFIXES = {
     ".copilot/": "copilot",
+    ".omp/agent/": "omp",
 }
 _LOCAL_BUNDLE_OWNER = "local-bundle"
 UNATTRIBUTED_TARGET = "legacy"
@@ -1977,6 +1979,9 @@ class DeploymentLedgerCodec:
     @staticmethod
     def _user_root(target_name: str) -> str | None:
         """Return the absolute user-scope managed root of *target_name*, if any."""
+        # omp rows stay absolute: each recorded PI_CODING_AGENT_DIR is replayed separately.
+        if target_name == "omp":
+            return None
         from apm_cli.integration.targets import KNOWN_TARGETS, scoped_profile_or_none
 
         profile = KNOWN_TARGETS.get(target_name)

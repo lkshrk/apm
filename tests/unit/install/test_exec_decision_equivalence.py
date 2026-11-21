@@ -63,23 +63,29 @@ def _allow_map(allow=None, deny=None, *, policy=None, block=True):
 def test_no_policy_signals_deploy_every_executable(tmp_path: Path) -> None:
     package = _package(tmp_path / "pkg")
     allow_map = _allow_map(block=False)
-    assert check_executable_approval(PKG, package, allow_map) == ALL
+    assert check_executable_approval(PKG, package, allow_map)[:5] == ALL
     assert hook_file_admission(PKG, package, allow_map) is None
-    assert check_executable_approval("_local", package, allow_map) == ALL
+    assert check_executable_approval("_local", package, allow_map)[:5] == ALL
 
 
 def test_org_deny_withholds_every_executable(tmp_path: Path) -> None:
     package = _package(tmp_path / "pkg")
     policy = ApmPolicy(executables=ExecutablesPolicy(deny=(PKG,)))
     allow_map = _allow_map({PKG: {"hooks": True, "bin": True}}, policy=policy)
-    assert check_executable_approval(PKG, package, allow_map) == NONE
+    assert check_executable_approval(PKG, package, allow_map)[:5] == NONE
 
 
 def test_user_deny_beats_a_project_grant(tmp_path: Path) -> None:
     package = _package(tmp_path / "pkg")
     ex.save_user_executables({}, {PKG: {"hooks": True}})
     allow_map = _allow_map({PKG: {"hooks": True, "bin": True}})
-    assert check_executable_approval(PKG, package, allow_map) == (False, True, False, False, False)
+    assert check_executable_approval(PKG, package, allow_map)[:5] == (
+        False,
+        True,
+        False,
+        False,
+        False,
+    )
 
 
 def test_pinned_hooks_admit_per_file(tmp_path: Path) -> None:
@@ -110,9 +116,9 @@ def test_native_plugin_is_admitted_as_one_pinned_unit(
         dependency_ref=None, package=SimpleNamespace(name=PKG, version=""), install_path=root
     )
     pinned = _allow_map({PKG: {"plugin": native_plugin_fingerprint(root)}})
-    assert check_executable_approval(PKG, package, pinned) == ALL
-    assert check_executable_approval(PKG, package, _allow_map({PKG: {"mcp": True}})) == NONE
-    assert check_executable_approval(PKG, package, _allow_map(block=False)) == ALL
+    assert check_executable_approval(PKG, package, pinned)[:5] == ALL
+    assert check_executable_approval(PKG, package, _allow_map({PKG: {"mcp": True}}))[:5] == NONE
+    assert check_executable_approval(PKG, package, _allow_map(block=False))[:5] == ALL
 
 
 @pytest.mark.parametrize(
@@ -146,9 +152,9 @@ def test_audit_replay_keeps_already_authorized_rows(tmp_path: Path) -> None:
     gate = ReplayExecAllowMap(project, lambda: None)
 
     authorized = gate.for_dependency(SimpleNamespace(exec_status="absent"))
-    assert check_executable_approval(PKG, package, authorized) == ALL
+    assert check_executable_approval(PKG, package, authorized)[:5] == ALL
     gated = gate.for_dependency(SimpleNamespace(exec_status="denied"))
-    assert check_executable_approval(PKG, package, gated) == NONE
+    assert check_executable_approval(PKG, package, gated)[:5] == NONE
 
 
 def test_missing_or_omitted_inputs_never_authorize(tmp_path: Path) -> None:
@@ -156,7 +162,7 @@ def test_missing_or_omitted_inputs_never_authorize(tmp_path: Path) -> None:
     from apm_cli.install.local_bundle_paths import bundle_deploy_relative_path
 
     package = _package(tmp_path / "pkg")
-    assert check_executable_approval(PKG, package, None) == NONE
+    assert check_executable_approval(PKG, package, None)[:5] == NONE
     with pytest.raises(TypeError):
         resolve_bin_skip(True, None)  # type: ignore[call-arg]
     with pytest.raises(TypeError):

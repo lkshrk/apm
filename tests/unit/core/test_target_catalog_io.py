@@ -95,7 +95,7 @@ def test_manifest_agents_value_is_not_reported_as_a_flag(tmp_path) -> None:
 _VALID_TARGETS_LINE = (
     "Valid targets: agent-skills, agents (alias of copilot), agy (alias of antigravity), "
     "all, antigravity, claude, codex, copilot, copilot-app, copilot-cowork, cursor, "
-    "gemini, grok-bot, grok-build, grok-cloud, hermes, intellij, kiro, openclaw, "
+    "gemini, grok-bot, grok-build, grok-cloud, hermes, intellij, kiro, omp, openclaw, "
     "opencode, vscode (deprecated alias of copilot), windsurf"
 )
 

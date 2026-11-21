@@ -18,6 +18,15 @@ from apm_cli.deps.lockfile import LOCKFILE_NAME, LockedDependency, LockFile
 pytestmark = pytest.mark.component
 
 
+@pytest.fixture(autouse=True)
+def _reset_console_state():
+    """Keep root CLI JSON routing local to the test that selected it."""
+    from apm_cli.utils.console import _reset_console
+
+    yield
+    _reset_console()
+
+
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()

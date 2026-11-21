@@ -253,6 +253,29 @@ def install_local_bundle(
                 LSPIntegrator.supported_target_runtimes(target_names), bundle=True
             )
 
+        from ..core.deployment_ledger import DeploymentLedgerCodec
+        from ..deps.lockfile import resolve_lockfile_path_for_read
+
+        previous_lockfile = LockFile.read(
+            resolve_lockfile_path_for_read(_bundle_lock_root(global_), read_only=True)
+        )
+        managed_files = (
+            DeploymentLedgerCodec.local_bundle_paths(previous_lockfile)
+            if previous_lockfile is not None
+            else frozenset()
+        )
+        managed_hashes = (
+            {
+                path: digest
+                for path, digest in DeploymentLedgerCodec.deployed_file_hashes(
+                    previous_lockfile
+                ).items()
+                if path in managed_files
+            }
+            if previous_lockfile is not None
+            else {}
+        )
+
         result = integrate_local_bundle(
             bundle_info,
             project_root,
@@ -266,6 +289,8 @@ def install_local_bundle(
             allow_executables=allow_executables,
             approval_key=bundle_approval_key,
             create_config=create_config,
+            managed_files=set(managed_files),
+            managed_file_hashes=managed_hashes,
         )
 
         deployed = result.get("deployed_files", [])

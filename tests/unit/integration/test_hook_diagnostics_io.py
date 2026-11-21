@@ -88,7 +88,7 @@ class TestMultiTargetHookDiagnostics:
         integrator = HookIntegrator()
         copilot = KNOWN_TARGETS["copilot"]
 
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             integrator.integrate_hooks_for_target(copilot, pkg_info, temp_project)
 
         log_text = caplog.text
@@ -109,7 +109,7 @@ class TestMultiTargetHookDiagnostics:
         integrator = HookIntegrator()
         claude = KNOWN_TARGETS["claude"]
 
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             integrator.integrate_hooks_for_target(claude, pkg_info, temp_project)
 
         log_text = caplog.text
@@ -131,7 +131,7 @@ class TestMultiTargetHookDiagnostics:
         copilot = KNOWN_TARGETS["copilot"]
         claude = KNOWN_TARGETS["claude"]
 
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             integrator.integrate_hooks_for_target(copilot, pkg_info, temp_project)
             integrator.integrate_hooks_for_target(claude, pkg_info, temp_project)
 
@@ -189,7 +189,7 @@ class TestMultiTargetHookDiagnostics:
         collision_file = hooks_dir / "diag-pkg-hooks.json"
         collision_file.write_text("{}", encoding="utf-8")
 
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             integrator.integrate_hooks_for_target(
                 copilot, pkg_info, temp_project, managed_files=set()
             )

@@ -37,6 +37,7 @@ class HookSourceSelection:
     bundle_files: dict[str, frozenset[Path]]
     # Target -> package-relative files the retired filename convention hid.
     legacy_routing_conflicts: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    is_first_party: bool = False
 
     def require_configured_routing(self, package_label: str) -> None:
         """Refuse deployment when removing filename routing would widen reach."""
@@ -209,6 +210,7 @@ def select_hook_sources(
     parse_hook_json: Callable[[Path], dict | None],
     iter_bundle_files: Callable[..., list[Path]],
     merge_target_names: Iterable[str],
+    is_first_party: bool = False,
 ) -> HookSourceSelection:
     """Select descriptors and bundle assets for every supported target.
 
@@ -223,18 +225,46 @@ def select_hook_sources(
     bundles_by_target: dict[str, frozenset[Path]] = {}
     parsed_hooks: dict[Path, dict | None] = {}
     supported_targets = {"copilot", "kiro", *merge_target_names}
+    generated_roots: set[Path] = set()
+    if is_first_party:
+        from apm_cli.integration.targets import KNOWN_TARGETS
+
+        generated_roots = {
+            (package_path / root).resolve()
+            for target in KNOWN_TARGETS.values()
+            for root in (
+                target.root_dir,
+                *(mapping.deploy_root for mapping in target.primitives.values()),
+            )
+            if root and root != ".apm"
+        }
+        generated_roots.update((package_path / root).resolve() for root in ("apm_modules", ".pi"))
+        generated_roots.discard(package_path.resolve())
 
     for target_name in dict.fromkeys(target_names):
         if target_name not in supported_targets:
             continue
-        widened = legacy_routing_widening(hook_files, target_name, configured=descriptors)
+        target_descriptors = descriptors
+        if target_name == "omp":
+            from apm_cli.integration.extension_discovery import find_extension_bundles
+            from apm_cli.integration.hook_file_routing import _hook_file_allowed_targets
+
+            if find_extension_bundles(package_path, is_first_party=is_first_party):
+                if any("omp" in (_hook_file_allowed_targets(path) or ()) for path in descriptors):
+                    raise ValueError(
+                        "omp hooks explicitly named alongside native extensions; "
+                        "move portable omp hooks out to prevent duplicate activation"
+                    )
+                target_descriptors = []
+        widened = legacy_routing_widening(hook_files, target_name, configured=target_descriptors)
         if widened:
             conflicts[target_name] = tuple(
                 sorted(portable_relpath(path, package_path) for path in widened)
             )
-        descriptors_by_target[target_name] = frozenset(descriptors)
+        descriptors_by_target[target_name] = frozenset(target_descriptors)
         source_roots: set[Path] = set()
-        for hook_file in descriptors:
+        root_references: set[Path] = set()
+        for hook_file in target_descriptors:
             if hook_file not in parsed_hooks:
                 parsed_hooks[hook_file] = parse_hook_json(hook_file)
             data = parsed_hooks[hook_file]
@@ -245,9 +275,16 @@ def select_hook_sources(
                 package_path,
                 hook_file.parent,
             ):
-                source_roots.add(_hook_source_root(package_path, hook_file.parent, source_file))
+                source_root = _hook_source_root(package_path, hook_file.parent, source_file)
+                if is_first_party and (
+                    source_root.resolve() == package_path.resolve()
+                    or any(source_root.resolve().is_relative_to(root) for root in generated_roots)
+                ):
+                    root_references.add(source_file)
+                else:
+                    source_roots.add(source_root)
 
-        bundle_files: set[Path] = set()
+        bundle_files: set[Path] = set(root_references)
         for source_root in sorted(source_roots):
             bundle_files.update(
                 iter_bundle_files(
@@ -257,5 +294,14 @@ def select_hook_sources(
                 )
             )
         bundles_by_target[target_name] = frozenset(bundle_files)
+        if target_name == "omp" and target_descriptors and not is_first_party:
+            from apm_cli.integration.omp_hook_contract import omp_package_files
 
-    return HookSourceSelection(descriptors_by_target, bundles_by_target, conflicts)
+            bundles_by_target[target_name] = omp_package_files(package_path)
+
+    return HookSourceSelection(
+        descriptors_by_target,
+        bundles_by_target,
+        conflicts,
+        is_first_party=is_first_party,
+    )

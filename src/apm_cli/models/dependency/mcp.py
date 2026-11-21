@@ -141,6 +141,17 @@ class ManifestHeaderValue(str):
     """Header value authored in a manifest, not supplied by registry JSON."""
 
 
+@dataclass(frozen=True)
+class ManifestHeaderHelper:
+    """Runtime helper intent which registry JSON cannot manufacture."""
+
+    command: str
+    keys: tuple[str, ...]
+
+
+HEADER_HELPER_KEY = "_apm_header_helper"
+
+
 @dataclass
 class MCPDependency:
     """Represents an MCP server dependency with optional overlay configuration.
@@ -243,7 +254,7 @@ class MCPDependency:
 
         transport = d.get("transport") or d.get("type")  # legacy 'type' -> 'transport'
         targets_raw = d.get("targets")  # architecture-authority-exempt: dependency-target-subset
-        targets = parse_target_subset(targets_raw) if targets_raw is not None else None
+        targets = parse_target_subset(targets_raw) if "targets" in d else None
 
         instance = cls(
             name=d["name"],
@@ -305,6 +316,25 @@ class MCPDependency:
         server_info.pop(OPENCODE_ENABLED_KEY, None)
         if self.has_enabled:
             server_info[OPENCODE_ENABLED_KEY] = OpenCodeEnabled(self.enabled)
+
+    def targets_runtime(self, runtime: str) -> bool:
+        """Whether an active runtime is selected by this declaration."""
+        from apm_cli.integration.mcp_integrator_install import mcp_dependency_runtimes
+
+        return bool(mcp_dependency_runtimes(self, [runtime]))
+
+    def apply_header_helper(self, server_info: dict) -> None:
+        """Replace untrusted registry metadata with declared runtime-only intent."""
+        server_info.pop(HEADER_HELPER_KEY, None)
+        # Collection gates self-defined servers, but registry declarations bypass
+        # that trust gate and must not introduce executable helper intent.
+        if self.is_registry_resolved and self.resolved_by is not None:
+            return
+        extra = self.extra or {}
+        keys = extra.get("headersHelperKeys")
+        command = extra.get("headersHelper") or extra.get("http_headers_helper")
+        if keys is not None and command:
+            server_info[HEADER_HELPER_KEY] = ManifestHeaderHelper(command, tuple(keys))
 
     def to_dict(self) -> dict:
         """Serialize non-None fields, preserving an explicitly supplied enabled value.
@@ -390,6 +420,33 @@ class MCPDependency:
         run only when ``strict=True``.
         """
         # ---- Universal hardening (always) ----
+        if self.targets is not None:
+            from apm_cli.factory import ClientFactory
+
+            from .subsets import canonical_target_name
+
+            self.targets = parse_target_subset(self.targets)
+            supported = {canonical_target_name(rt) for rt in ClientFactory.supported_clients()}
+            if not set(self.targets) <= supported:
+                raise ValueError("MCP dependency 'targets' must select MCP-capable targets")
+        extra = self.extra or {}
+        if "headersHelperKeys" in extra:
+            keys = extra["headersHelperKeys"]
+            if (
+                not isinstance(keys, list)
+                or not keys
+                or any(
+                    not isinstance(key, str)
+                    or re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", key) is None
+                    for key in keys
+                )
+            ):
+                raise ValueError("headersHelperKeys must be a nonempty list of HTTP header names")
+            if len({key.casefold() for key in keys}) != len(keys):
+                raise ValueError("headersHelperKeys must not contain duplicate header names")
+            command = extra.get("headersHelper") or extra.get("http_headers_helper")
+            if not isinstance(command, str) or not command.strip() or "\x00" in command:
+                raise ValueError("headersHelperKeys requires a nonempty header helper command")
         if not self.name:
             raise ValueError("MCP dependency 'name' must not be empty")
         if not _NAME_REGEX.match(self.name):

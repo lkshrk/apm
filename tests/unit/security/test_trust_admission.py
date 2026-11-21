@@ -823,7 +823,7 @@ def test_unpinned_native_install_follows_the_owner(tmp_path: Path, monkeypatch) 
     info = SimpleNamespace(install_path=plugin, dependency_ref=None, package=None)
     effective = materialize_exec_map(_ctx({PKG: {"hooks": True}}))
     approvals = exec_gate.check_executable_approval(PKG, info, effective)
-    assert approvals == (False,) * 5
+    assert approvals == (False,) * 6
 
 
 def test_malformed_pin_store_never_lets_a_pinned_name_through_unchecked() -> None:

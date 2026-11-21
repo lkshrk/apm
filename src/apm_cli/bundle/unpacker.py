@@ -438,10 +438,13 @@ def _plugin_manifest_paths() -> tuple[str, ...]:
 def executable_content_kind(rel_path: str) -> str | None:
     """Return why a bundle path is executable content, or ``None``."""
     from ..integration.canvas_integrator import is_canvas_bundle_path
+    from ..integration.extension_discovery import is_native_extension_path
 
     parts = [seg for seg in rel_path.replace("\\", "/").split("/") if seg]
     if not parts:
         return None
+    if is_native_extension_path(rel_path):
+        return "native extension"
     if is_canvas_bundle_path(rel_path):
         return "canvas extension"
     name = parts[-1].lower()

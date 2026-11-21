@@ -36,6 +36,7 @@ from ..deps.lockfile import (
 )
 from ..deps.plugin_parser import synthesize_plugin_json_from_apm_yml
 from ..deps.plugin_root_render import contains_plugin_root
+from ..integration.extension_discovery import has_native_extension_sources
 from ..models.apm_package import APMPackage
 from ..utils.archive import (
     projected_archive_path,
@@ -430,6 +431,10 @@ def export_agent_plugin_bundle(
         dropped_surfaces |= own_dropped
         if _apm_hooks_present(own_apm_dir):
             dropped_surfaces.add("hooks")
+        if has_native_extension_sources(project_root):
+            # Native factories are executable runtime sources the portable core
+            # cannot carry; reject them instead of silently omitting them.
+            dropped_surfaces.add("extensions")
         if own_apm_dir.is_dir():
             _warn_skipped_root_components(project_root, logger)
         else:

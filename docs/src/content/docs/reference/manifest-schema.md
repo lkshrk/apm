@@ -169,7 +169,7 @@ actionable nudge (the authoring path only).
 | **Type** | `target`: `string` or `list<string>`; `targets`: `list<string>` (a scalar is accepted as one-item compatibility input) |
 | **Required** | OPTIONAL |
 | **Default** | Auto-detect from filesystem signals (see below). [`apm compile -g`](../cli/compile/#global-compilation) instead writes every supported user-scope target when both fields are omitted. |
-| **Allowed values** | `copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `hermes`, `grok-bot`, `agent-skills` |
+| **Allowed values** | `copilot`, `claude`, `grok-build`, `cursor`, `opencode`, `codex`, `gemini`, `antigravity`, `windsurf`, `kiro`, `hermes`, `grok-bot`, `omp`, `agent-skills` |
 
 Controls which output targets are generated during compilation, installation, and packing. Accepts a single string or a YAML list. Unknown values MUST raise a parse error at load time, naming the offending token.
 
@@ -593,7 +593,7 @@ REQUIRED when the shorthand is ambiguous (e.g. direct nested-group repos with vi
 | `type` | `string` | OPTIONAL (remote Git only) | `gitlab` | Treat a bespoke hostname as self-managed GitLab. |
 | `allow_insecure` | `boolean` | OPTIONAL (remote Git only) | `true` or `false` | Manifest-side approval for an `http://` dependency; the install command still requires its separate insecure-host opt-in. |
 | `skills` | `list<string>` | OPTIONAL | Non-empty skill names or `["*"]` | Installs only the selected skills from a dependency that exposes selectable skills. |
-| `targets` | `list<string>` | OPTIONAL | Target slugs. Stable: `copilot`, `claude`, `grok-build`, `cursor`, `kiro`, `opencode`, `gemini`, `antigravity`, `codex`, `windsurf`, `agent-skills`, `hermes`, `grok-bot`. Experimental: `grok-cloud`, `openclaw`, `copilot-cowork`, `copilot-app`. `vscode` is accepted as a deprecated alias and recorded as `copilot`. | Restricts which install targets receive this dependency's target-scoped primitives. Omitted = all active install targets. Effective reach = install targets INTERSECT this list; `agent-skills` is also accepted by the `grok-bot` target. |
+| `targets` | `list<string>` | OPTIONAL | Target slugs. Stable: `copilot`, `claude`, `grok-build`, `cursor`, `kiro`, `opencode`, `gemini`, `antigravity`, `codex`, `windsurf`, `agent-skills`, `hermes`, `grok-bot`, `omp`. Experimental: `grok-cloud`, `openclaw`, `copilot-cowork`, `copilot-app`. `vscode` is accepted as a deprecated alias and recorded as `copilot`. | Restricts which install targets receive this dependency's target-scoped primitives. Omitted = all active install targets. Effective reach = install targets INTERSECT this list; `agent-skills` is also accepted by the `grok-bot` target. |
 
 Unknown object-form fields are rejected. On a Git object, `version` reports an
 actionable error to use `ref` for a branch, tag, or commit; `version` belongs

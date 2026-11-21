@@ -49,6 +49,7 @@ from apm_cli.integration.hook_command_paths import (
 )
 from apm_cli.integration.hook_command_warnings import warn_unresolved_plugin_root
 from apm_cli.integration.hook_cursor_preflight import preflight_cursor_hooks
+from apm_cli.integration.hook_diagnostics import _emit_hook_event_diagnostics
 from apm_cli.integration.hook_file_routing import hook_package_label
 from apm_cli.integration.hook_native_formats import (
     _legacy_hook_entries,
@@ -83,6 +84,11 @@ from apm_cli.integration.hook_source_selection import (
     resolve_plugin_root_hook_script,
     resolve_relative_hook_script,
     select_hook_sources,
+)
+from apm_cli.integration.omp_hook_integrator import (
+    clean_omp_hooks,
+    integrate_omp_hooks,
+    preflight_omp_hooks,
 )
 from apm_cli.utils.atomic_io import atomic_write_text
 from apm_cli.utils.console import _rich_warning
@@ -224,81 +230,6 @@ _HOOK_EVENT_MAP: dict[str, dict[str, str]] = {
     },
 }
 
-# Expected hook event naming convention per target.
-# Used to warn when a package author deploys events whose casing does not
-# match the target's convention AND no explicit rename mapping exists.
-_HOOK_EVENT_EXPECTED_CASING: dict[str, str] = {
-    "copilot": "camelCase",
-    "vscode": "PascalCase",
-    "claude": "PascalCase",
-    "cursor": "camelCase",
-    "codex": "PascalCase",
-    "gemini": "PascalCase",
-    "antigravity": "PascalCase",
-    "windsurf": "PascalCase",
-    "kiro": "PascalCase",
-}
-
-
-def _detect_event_casing(name: str) -> str | None:
-    """Return 'camelCase', 'PascalCase', or None for an event name string."""
-    if not name or not name[0].isalpha():
-        return None
-    if name[0].islower() and any(c.isupper() for c in name[1:]):
-        return "camelCase"
-    if name[0].isupper():
-        return "PascalCase"
-    return None
-
-
-def _sanitize_event_name(name: str) -> str:
-    """Return event name with non-printable-ASCII characters stripped, for safe logging."""
-    return "".join(c for c in name if 0x20 <= ord(c) <= 0x7E)
-
-
-def _emit_hook_event_diagnostics(
-    event_names: list[str],
-    target_key: str,
-    event_map: dict[str, str],
-) -> None:
-    """Log hook events per-target and warn on unmapped casing mismatches.
-
-    This is informational only -- it never blocks deployment.
-    """
-    if not event_names:
-        return
-    event_label = "hook event" if len(event_names) == 1 else "hook events"
-    _log.info(
-        "target %s: detected %s: %s",
-        target_key,
-        event_label,
-        ", ".join(sorted(_sanitize_event_name(n) for n in event_names)),
-    )
-    expected_casing = _HOOK_EVENT_EXPECTED_CASING.get(target_key)
-    if not expected_casing:
-        return
-    # Warn for events whose detected casing does not match the target convention
-    # and that are not covered by an explicit rename in event_map.
-    mismatched = [
-        n
-        for n in event_names
-        if _detect_event_casing(n) not in (None, expected_casing) and n not in event_map
-    ]
-    if mismatched:
-        example = "preToolUse" if expected_casing == "camelCase" else "PreToolUse"
-        safe_mismatched = sorted(_sanitize_event_name(n) for n in mismatched)
-        _rich_warning(
-            f"Hook events for target '{target_key}' may not be recognized: "
-            f"{', '.join(safe_mismatched)}. "
-            f"Target expects {expected_casing} (e.g. {example}). "
-            f"Rename events to match the {expected_casing} convention, then reinstall."
-        )
-        _log.warning(
-            "target %s: hook event casing mismatch (no mapping): %s",
-            target_key,
-            ", ".join(safe_mismatched),
-        )
-
 
 def _validate_copilot_payload(payload: dict) -> list[str]:
     """Return native payload shape errors before any filesystem mutation."""
@@ -365,6 +296,12 @@ _MERGE_HOOK_TARGETS: dict[str, _MergeHookConfig] = {
         config_filename="hooks.json",
         target_key="windsurf",
         require_dir=True,
+    ),
+    "omp": _MergeHookConfig(
+        config_filename="hooks.json",
+        target_key="omp",
+        require_dir=False,
+        nested_handlers=True,
     ),
 }
 
@@ -524,6 +461,7 @@ class HookIntegrator(BaseIntegrator):
         target_names: Iterable[str],
         *,
         hook_files: list[Path] | None = None,
+        is_first_party: bool = False,
     ) -> HookSourceSelection:
         """Select hook inputs that each resolved target will materialize.
 
@@ -543,6 +481,7 @@ class HookIntegrator(BaseIntegrator):
             parse_hook_json=integrator._parse_hook_json,
             iter_bundle_files=iter_deployable_hook_bundle_files,
             merge_target_names=_MERGE_HOOK_TARGETS,
+            is_first_party=is_first_party,
         )
 
     def select_hook_sources_for_target(
@@ -551,6 +490,7 @@ class HookIntegrator(BaseIntegrator):
         target_name: str,
         *,
         source_plan=None,
+        is_first_party: bool = False,
     ) -> HookSourceSelection:
         """Read the plan's selection (empty when unauthorized) or build one; refuse widening."""
         if source_plan is not None:
@@ -559,7 +499,9 @@ class HookIntegrator(BaseIntegrator):
                 selection = HookSourceSelection({}, {})
         else:
             selection = self.select_deployable_hook_sources(
-                package_info.install_path, (target_name,)
+                package_info.install_path,
+                (target_name,),
+                is_first_party=is_first_party,
             )
         # Routing only; Claude events are checked at preflight and the Claude write.
         selection.require_configured_routing(hook_package_label(package_info))
@@ -1024,6 +966,7 @@ class HookIntegrator(BaseIntegrator):
             package_info,
             "copilot",
             source_plan=source_plan,
+            is_first_party=self._is_root_local_package(package_info, project_root),
         )
         hook_files = hook_sources.descriptors_for("copilot")
 
@@ -1227,6 +1170,7 @@ class HookIntegrator(BaseIntegrator):
             package_info,
             config.target_key,
             source_plan=source_plan,
+            is_first_party=self._is_root_local_package(package_info, project_root),
         )
         hook_files = hook_sources.descriptors_for(config.target_key)
         if not hook_files:
@@ -1634,8 +1578,9 @@ class HookIntegrator(BaseIntegrator):
         *,
         user_scope: bool = False,
         retiring_targets: frozenset[str] = frozenset(),
+        targets: Iterable[Any] | None = None,
     ) -> None:
-        """Check routing, Claude events and Cursor imports before any primitive write."""
+        """Check routing, Claude events, Cursor imports and omp hooks before any primitive write."""
         selection = source_plan.hook_source_selection
         if selection is not None:
             selection.require_deployable(package_info, _HOOK_EVENT_MAP)
@@ -1648,6 +1593,24 @@ class HookIntegrator(BaseIntegrator):
                 user_scope=user_scope,
                 retiring_targets=retiring_targets,
             )
+            omp_targets = (
+                (None,)
+                if targets is None
+                else (
+                    target
+                    for target in targets
+                    if target.name == "omp" and target.supports("hooks")
+                )
+            )
+            for target in omp_targets:
+                preflight_omp_hooks(
+                    self,
+                    package_info,
+                    project_root,
+                    selection,
+                    user_scope=user_scope,
+                    target=target,
+                )
 
     def integrate_hooks_for_target(
         self,
@@ -1703,6 +1666,16 @@ class HookIntegrator(BaseIntegrator):
                 source_plan=source_plan,
             )
 
+        if target.name == "omp":
+            return integrate_omp_hooks(
+                self,
+                package_info,
+                project_root,
+                target=target,
+                user_scope=user_scope,
+                source_plan=source_plan,
+            )
+
         config = _MERGE_HOOK_TARGETS.get(target.name)
         if config is not None:
             return self._integrate_merged_hooks(
@@ -1723,6 +1696,24 @@ class HookIntegrator(BaseIntegrator):
             files_updated=0,
             files_skipped=0,
             target_paths=[],
+        )
+
+    def reconcile_removed_owner_targets(
+        self,
+        project_root: Path,
+        source_markers: set[str],
+        *,
+        user_scope: bool = False,
+        native_roots: Iterable[Path] = (),
+    ) -> dict:
+        """Remove only retired owners, including roots no longer selected."""
+        from apm_cli.integration.omp_hook_integrator import reconcile_removed_omp_owners
+
+        return reconcile_removed_omp_owners(
+            project_root,
+            source_markers,
+            user_scope=user_scope,
+            native_roots=native_roots,
         )
 
     def reconcile_package_target_restriction(
@@ -1757,12 +1748,19 @@ class HookIntegrator(BaseIntegrator):
             "failed_paths": [],
         }
         for target in excluded_targets:
+            if not target.supports("hooks"):
+                continue
             config = _MERGE_HOOK_TARGETS.get(target.name)
             if config is None:
                 continue
             target_dir = project_root / target.root_dir
             json_path = target_dir / config.config_filename
             errors_before = stats["errors"]
+            if target.name == "omp":
+                clean_omp_hooks(target_dir, stats, source_markers=source_markers)
+                if stats["errors"] != errors_before:
+                    stats["failed_targets"].append(target.name)
+                continue
             self._clean_apm_source_from_json(
                 json_path,
                 source_markers,
@@ -1932,6 +1930,9 @@ class HookIntegrator(BaseIntegrator):
         for t in merge_source:
             config = _MERGE_HOOK_TARGETS.get(t.name)
             if config is not None:
+                if t.name == "omp":
+                    clean_omp_hooks(project_root / t.root_dir, stats)
+                    continue
                 json_path = project_root / t.root_dir / config.config_filename
                 self._clean_apm_entries_from_json(
                     json_path,
@@ -1950,7 +1951,7 @@ class HookIntegrator(BaseIntegrator):
         user_scope: bool = False,
         lockfile: "LockFile | None" = None,
     ) -> dict:
-        """Securely wipe and rebuild merged hooks from installed survivors."""
+        """Rebuild legacy merged hooks; omp dependency removal is owner-scoped."""
         from apm_cli.agent_plugins.errors import preflight_reintegration_survivors
         from apm_cli.constants import APM_MODULES_DIR
         from apm_cli.install.package_resolution import effective_dependency_selection
@@ -1976,6 +1977,11 @@ class HookIntegrator(BaseIntegrator):
         targets = resolve_targets(
             project_root, user_scope=user_scope, explicit_target=config_target or None
         )
+        # omp uses removed-owner reconciliation, never a blanket wipe/rebuild:
+        # first-party and edited surviving entries must remain byte-preserved.
+        targets = [target for target in targets if target.name != "omp"]
+        if not targets:
+            return {"files_removed": 0, "errors": 0}
         surviving_deps = surviving_dependency_refs_for_reintegration(
             apm_package, project_root, lockfile=lockfile
         )
@@ -2003,9 +2009,15 @@ class HookIntegrator(BaseIntegrator):
                 pkg_info,
                 list(target_selection.targets),
                 allow_map,
+                is_first_party=self._is_root_local_package(pkg_info, project_root),
             )
-            if source_plan.hook_source_selection is not None:
-                source_plan.hook_source_selection.require_deployable(pkg_info, _HOOK_EVENT_MAP)
+            self.preflight_hooks_for_targets(
+                pkg_info,
+                project_root,
+                source_plan,
+                user_scope=user_scope,
+                targets=target_selection.targets,
+            )
             rebuild_plan.append((dep_ref, pkg_info, target_selection, source_plan))
 
         # Empty managed_files (not None) skips file-level deletion while

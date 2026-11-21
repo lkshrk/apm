@@ -238,6 +238,12 @@ class InstallService:
                     f"  - MCP server {name!a} cannot reproduce its locked config "
                     "from the available source declarations"
                 )
+            for dep in current_mcp.dependencies:
+                for target, names in mcp_ownership.items():
+                    if dep.name in names and not dep.targets_runtime(target):
+                        reasons.append(
+                            f"  - MCP server {dep.name!a} has ownership for excluded target {target!a}"
+                        )
         deferred: set[tuple[str, str]] = set()
         native = mcp_native_runtimes or {}
         claims = [

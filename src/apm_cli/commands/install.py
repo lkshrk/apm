@@ -899,7 +899,7 @@ def _handle_mcp_install(  # noqa: PLR0913
     "Copilot profile) and is never recorded in apm.yml; record 'copilot' for JetBrains. "
     f"{target_all_exclusion_help()}. Combine explicit-only targets when needed. "
     "Experimental targets require their feature flags. "
-    "Target resolution: --runtime/--target > apm.yml targets: > apm config set target ... > "
+    "Target resolution: --target/--runtime > apm.yml targets: > apm config set target ... > "
     "auto-detect (only when no higher-priority selection exists). With nothing to detect, install "
     "exits 2 with a teaching message. For 'apm compile', use '--all'; '--target all' "
     "is deprecated.",

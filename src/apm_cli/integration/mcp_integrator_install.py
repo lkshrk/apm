@@ -49,7 +49,7 @@ _log = logging.getLogger(__name__)
 # IntelliJ owns a fail-closed atomic user-config contract. Other adapters retain
 # their existing best-effort behavior when a composed target set includes an
 # unavailable optional runtime.
-_STRICT_CONFIG_FAILURE_RUNTIMES = frozenset({"intellij"})
+_STRICT_CONFIG_FAILURE_RUNTIMES = frozenset({"intellij", "omp"})
 
 
 class _PrevalidatedRegistryServers(dict[str, dict]):
@@ -388,7 +388,10 @@ def _install_registry_group(  # noqa: PLR0913
 
                 successful_runtimes: list[str] = []
                 failed_runtimes: list[str] = []
+                declaration = group_dep_map.get(dep)
                 for rt in target_runtimes:
+                    if declaration is not None and not declaration.targets_runtime(rt):
+                        continue
                     if _skip_unsupported_remote_transport(
                         rt,
                         dep,
@@ -461,7 +464,17 @@ def _install_registry_group(  # noqa: PLR0913
                             NativeMcpConnectionState.MATCHING_MANAGED,
                             NativeMcpConnectionState.MATCHING_FOREIGN,
                         }:
-                            if state is NativeMcpConnectionState.MATCHING_MANAGED:
+                            if rt == "omp":
+                                _adopt_matching_omp(
+                                    client,
+                                    dep,
+                                    managed_target_servers,
+                                    native_hashes,
+                                    declared_fields=set(declaration.extra or {})
+                                    if declaration
+                                    else set(),
+                                )
+                            elif state is NativeMcpConnectionState.MATCHING_MANAGED:
                                 if managed_target_servers is not None:
                                     managed_target_servers.setdefault(rt, set()).add(dep)
                                 retain_native_receipt(
@@ -805,6 +818,29 @@ def _validate_target_configs(
     _raise_strict_config_failures(unsafe_runtimes, console=console, logger=logger)
 
 
+def _adopt_matching_omp(
+    client, name, managed_target_servers, native_hashes, *, declared_fields: set[str]
+) -> None:
+    """Record an equivalent omp connection without rewriting local preferences."""
+    from apm_cli.core.conflict_detector import MCPConflictDetector
+    from apm_cli.install.mcp.ownership import mcp_native_hash
+
+    native = MCPConflictDetector(client).get_existing_server_configs()[
+        client.determine_config_key(name, None)
+    ]
+    _record_managed_server(
+        managed_target_servers,
+        "omp",
+        name,
+        native_hashes=native_hashes,
+        written_hashes={
+            name: mcp_native_hash(
+                client.managed_server_config(native, declared_fields=declared_fields)
+            )
+        },
+    )
+
+
 def _record_managed_server(
     managed_target_servers: dict[str, set[str]] | None,
     runtime: str,
@@ -814,7 +850,7 @@ def _record_managed_server(
     written_hashes: dict[str, str] | None = None,
     written_connections: set[tuple[str, str]] | None = None,
 ) -> None:
-    """Record a server only after APM successfully writes its target config."""
+    """Record a successful native write or a verified-equivalent omp adoption."""
     if managed_target_servers is not None:
         managed_target_servers.setdefault(runtime, set()).add(server_name)
     if native_hashes is not None and written_hashes and server_name in written_hashes:
@@ -1511,7 +1547,7 @@ def _install_self_defined_deps(
         successful_runtimes: list[str] = []
         failed_runtimes: list[str] = []
         for rt in target_runtimes:
-            if rt in native_runtimes_of(dep):
+            if rt in native_runtimes_of(dep) or not dep.targets_runtime(rt):
                 continue
             if _skip_unsupported_remote_transport(
                 rt,
@@ -1527,6 +1563,7 @@ def _install_self_defined_deps(
                 continue
             installed_servers: set[str] = set()
             managed_fields: set[str] = set()
+            managed_env_keys: set[str] | None = set() if rt == "codex" else None
             written_hashes: dict[str, str] = {}
             claim_shared_destination(
                 managed_target_servers,
@@ -1550,6 +1587,7 @@ def _install_self_defined_deps(
                     managed=managed_target_servers is not None
                     and dep.name in managed_target_servers.get(rt, set()),
                     managed_fields=managed_fields,
+                    managed_env_keys=managed_env_keys,
                     native_hash=(native_hashes or {}).get(rt, {}).get(dep.name),
                     declaration_changed=is_update,
                     stale_receipts=stale_receipts,
@@ -1590,7 +1628,15 @@ def _install_self_defined_deps(
                     NativeMcpConnectionState.MATCHING_MANAGED,
                     NativeMcpConnectionState.MATCHING_FOREIGN,
                 }:
-                    if state is NativeMcpConnectionState.MATCHING_MANAGED:
+                    if rt == "omp":
+                        _adopt_matching_omp(
+                            client,
+                            dep.name,
+                            managed_target_servers,
+                            native_hashes,
+                            declared_fields=set(dep.extra or {}),
+                        )
+                    elif state is NativeMcpConnectionState.MATCHING_MANAGED:
                         if managed_target_servers is not None:
                             managed_target_servers.setdefault(rt, set()).add(dep.name)
                         retain_native_receipt(
@@ -1621,6 +1667,7 @@ def _install_self_defined_deps(
                 replace_existing=replace_existing,
                 installed_servers=installed_servers,
                 managed_fields=managed_fields,
+                managed_env_keys=managed_env_keys,
                 written_native_hashes=written_hashes,
             ):
                 successful_runtimes.append(rt)

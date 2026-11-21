@@ -19,7 +19,7 @@ the result is an empty list (no silent ``[copilot]`` fallback).
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -687,10 +687,17 @@ class TargetProfile:
 
         # Claude Code (CLAUDE_CONFIG_DIR), Hermes (HERMES_HOME), Codex
         # (CODEX_HOME) and Copilot CLI (COPILOT_HOME) relocate their user
-        # home; mirror that at user scope so `apm install -g` and
-        # `apm compile --global` land where the tool reads.
-        if self.name in USER_ROOT_VARIABLES:
-            configured = configured_user_root(self.name)
+        # home, and omp honors PI_CODING_AGENT_DIR unstripped; mirror that at
+        # user scope so `apm install -g` and `apm compile --global` land where
+        # the tool reads.
+        if self.name in USER_ROOT_VARIABLES or self.name == "omp":
+            if self.name == "omp":
+                import os
+
+                raw = os.environ.get("PI_CODING_AGENT_DIR", "")
+                configured = Path(raw) if raw else None
+            else:
+                configured = configured_user_root(self.name)
             if configured is not None:
                 # ``resolve`` collapses ``..`` so traversal segments cannot
                 # leak into ``root_dir`` and escape ``project_root / root_dir``.
@@ -722,7 +729,13 @@ class TargetProfile:
             filtered = merged
 
         return replace(
-            self, root_dir=new_root, primitives=filtered, generated_files=generated_files
+            self,
+            root_dir=new_root,
+            primitives=filtered,
+            generated_files=generated_files,
+            hooks_config_display=(
+                f"{new_root}/hooks.json" if self.name == "omp" else self.hooks_config_display
+            ),
         )
 
 
@@ -1123,6 +1136,29 @@ KNOWN_TARGETS: dict[str, TargetProfile] = {
         detect_by_dir=False,
         user_supported=True,
         user_root_dir=".grok",
+    ),
+    "omp": TargetProfile(
+        capability=TARGET_CAPABILITIES["omp"],
+        root_dir=".omp",
+        primitives={
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", deploy_root=".agents"
+            ),
+            "extensions": PrimitiveMapping("extensions", "", "omp_extension"),
+            "hooks": PrimitiveMapping("apm-hooks", ".json", "omp_hooks"),
+        },
+        auto_create=True,
+        detect_by_dir=False,
+        user_supported=True,
+        user_root_dir=".omp/agent",
+        user_primitive_overrides={
+            "skills": PrimitiveMapping(
+                "skills", "/SKILL.md", "skill_standard", deploy_root=".agents"
+            ),
+        },
+        pack_prefixes=(".omp/", ".agents/"),
+        hooks_config_display=".omp/hooks.json",
+        generated_files=("apm-hooks-runtime.json",),
     ),
     # Hermes agent (Nous Research) -- stable explicit-only. Hermes natively reads
     # the agentskills.io SKILL.md format and the AGENTS.md context-file
@@ -1839,6 +1875,27 @@ class AuditTargetDisabledError(ClickException):
     exit_code = 3
 
 
+def _recorded_layout_targets(
+    deployment_root: Path,
+    lock: LockFile | None,
+    *,
+    user_scope: bool,
+    explicit_target: str | list[str] | None,
+) -> list[TargetProfile]:
+    from apm_cli.integration.skill_layout import (
+        recorded_deployed_paths,
+        resolve_reintegration_targets,
+    )
+
+    return resolve_reintegration_targets(
+        deployment_root,
+        user_scope=user_scope,
+        explicit_target=explicit_target,
+        recorded_paths=recorded_deployed_paths(lock),
+        create_config=False,
+    )
+
+
 def resolve_audit_targets(
     project_root: Path,
     *,
@@ -1858,8 +1915,11 @@ def resolve_audit_targets(
         resolve_audit_target_decision,
     )
     from apm_cli.deps.lockfile import LockFile, get_lockfile_path
+    from apm_cli.integration.extension_roots import recorded_omp_roots
 
     lock = lockfile if lockfile is not None else LockFile.read(get_lockfile_path(project_root))
+    deployment_root = get_workspace_deploy_root(project_root)
+    native_roots = recorded_omp_roots(lock, deployment_root)
     recorded = (
         DeploymentLedgerCodec.recorded_target_names(
             lock,
@@ -1869,6 +1929,10 @@ def resolve_audit_targets(
         if lock is not None
         else ()
     )
+    if native_roots and "omp" not in recorded:
+        # Historical user locators can carry project scope; their explicit omp
+        # ownership still belongs to the selected scope's lockfile.
+        recorded = (*recorded, "omp")
     manifest_target = read_manifest_target(project_root)
     if include_recorded and manifest_target and recorded:
         manifest_target = sorted({*manifest_target, *recorded})
@@ -1889,15 +1953,28 @@ def resolve_audit_targets(
                 f"'{flag}' is disabled. "
                 f"{AUDIT_TARGET_FLAG_DISABLED.bind(flag=flag).sentence()}"
             )
-    from apm_cli.integration.skill_layout import (
-        recorded_deployed_paths,
-        resolve_reintegration_targets,
+    profiles = _recorded_layout_targets(
+        deployment_root, lock, user_scope=user_scope, explicit_target=decision.value
     )
-
-    return resolve_reintegration_targets(
-        get_workspace_deploy_root(project_root),
-        user_scope=user_scope,
-        explicit_target=decision.value,
-        recorded_paths=recorded_deployed_paths(lock),
-        create_config=False,
-    )
+    if not native_roots:
+        return profiles
+    audited: list[TargetProfile] = []
+    for profile in profiles:
+        if profile.name != "omp":
+            audited.append(profile)
+            continue
+        for root in sorted(native_roots):
+            try:
+                root_dir = root.relative_to(deployment_root).as_posix()
+            except ValueError:
+                root_dir = root.as_posix()
+            audited.append(
+                replace(
+                    profile,
+                    root_dir=root_dir,
+                    user_root_dir=root_dir,
+                    resolved_deploy_root=None,
+                    hooks_config_display=f"{root_dir}/hooks.json",
+                )
+            )
+    return audited

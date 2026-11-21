@@ -562,6 +562,7 @@ def _integrate_materialization(
                 command=ctx.integrators["command"],
                 hook=ctx.integrators["hook"],
                 canvas=ctx.integrators.get("canvas"),
+                extensions=ctx.integrators.get("extensions"),
             ),
             force=ctx.force,
             managed_files=ctx.managed_files,
@@ -586,6 +587,7 @@ def _integrate_materialization(
             "commands",
             "hooks",
             "canvases",
+            "extensions",
         )
         for k in (*mutation_keys, "links_resolved"):
             deltas[k] = int_result[k]

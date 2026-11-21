@@ -79,6 +79,26 @@ def _uninstall_summary(removed_count: int, retained_count: int, orphan_count: in
     return summary
 
 
+def _reconcile_removed_native_hooks(
+    lockfile, cleanup_keys, deploy_root, user_scope, logger
+) -> None:
+    """Release native hook ownership for removed packages, exiting when cleanup is incomplete."""
+    from ...install.removed_hook_ownership import reconcile_removed_native_hook_owners
+
+    native_hook_stats = reconcile_removed_native_hook_owners(
+        lockfile,
+        cleanup_keys,
+        deploy_root,
+        user_scope=user_scope,
+    )
+    if native_hook_stats.get("errors", 0):
+        logger.error(
+            "Native hook cleanup is incomplete; dependency ownership was retained. "
+            "Repair the reported omp artifacts and retry uninstall."
+        )
+        sys.exit(1)
+
+
 def _report_uninstall_outcome(
     logger: CommandLogger,
     summary: str,
@@ -804,7 +824,7 @@ def _finish_selected_profile_uninstall(
 @click.pass_context
 @serialized_lifecycle
 @lockfile_writer(LockfileWriter.UNINSTALL)
-def uninstall(ctx, packages, dry_run, verbose, global_):
+def uninstall(ctx, packages, dry_run, verbose, global_):  # noqa: PLR0915
     """Remove APM packages from apm.yml and apm_modules (like npm uninstall).
 
     This command removes packages from both the apm.yml dependencies list
@@ -1115,6 +1135,9 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
                 recorded_paths=recorded_deployed_paths(lockfile),
             )
             cleanup_keys = removed_keys | builtins.set(projected_orphans) | profile_keys
+            _reconcile_removed_native_hooks(
+                lockfile, cleanup_keys, deploy_root, scope is InstallScope.USER, logger
+            )
             cleanup_outcome = SelectedCleanupOutcome()
             reconcile_target_deployed_files(
                 project_root=deploy_root,
@@ -1264,6 +1287,7 @@ def uninstall(ctx, packages, dry_run, verbose, global_):
                         all_deployed_files=all_deployed_files,
                         surviving_deployed_files=surviving_deployed_files,
                         fully_refreshed_dependency_keys=refreshed_survivor_keys,
+                        retained_paths=frozenset(integration_cleanup.failed_paths),
                     )
                     or lockfile_updated
                 )

@@ -10,12 +10,13 @@ Authorization preparation is shared through ``deployment_plan``.
 from __future__ import annotations
 
 import builtins
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from apm_cli.agent_plugins.errors import enforce_agent_plugin_deployment_boundary
 from apm_cli.core.remediation import CLAUDE_NATIVE_SWITCH_LOOSE_HOOKS
+from apm_cli.integration.extension_integrator import ExtensionIntegrator
 
 from .deployed_paths import deployed_path_entry as _deployed_path_entry
 from .deployed_paths import destination_tree_lines as _destination_tree_lines
@@ -23,7 +24,13 @@ from .deployed_paths import format_target_collapse as _format_target_collapse
 from .deployed_paths import log_hook_display_payloads as _log_hook_display_payloads
 from .deployed_paths import skill_summary_paths as _skill_summary_paths
 from .deployment_plan import PackageDeploymentPlan, prepare_package_deployment
-from .exec_gate import plugin_bin_deployable, resolve_bin_skip
+from .exec_gate import (
+    log_extensions_skip,
+    log_hooks_skip,
+    native_extensions_approved,
+    plugin_bin_deployable,
+    resolve_bin_skip,
+)
 from .local_bundle_paths import bundle_deploy_relative_path as _bundle_rel
 from .local_bundle_paths import bundle_deploy_skip_warning as _bundle_skip_warning
 from .local_bundle_paths import bundle_pack_files as _bundle_pack_files
@@ -72,6 +79,7 @@ class IntegratorBundle:
     # keep working. Production sites (template.py, integrate_local_content,
     # drift.py) pass a real CanvasIntegrator; when None the loop skips canvas.
     canvas: BaseIntegrator | None = None
+    extensions: BaseIntegrator = field(default_factory=ExtensionIntegrator)
 
 
 def _label_and_deploy_dir(prim_name: str, mapping, target, deploy_dir: str) -> tuple[str, str]:
@@ -89,6 +97,8 @@ def _label_and_deploy_dir(prim_name: str, mapping, target, deploy_dir: str) -> t
         return "hook(s)", deploy_dir
     if prim_name == "canvas":
         return "canvas extension(s)", deploy_dir
+    if prim_name == "extensions":
+        return "native extension package(s)", deploy_dir
     return prim_name, deploy_dir
 
 
@@ -105,6 +115,8 @@ def _emit_integration_hints(prim_name: str, info: dict, log_integration) -> None
     # freshly-deployed canvas is not picked up mid-session.
     if prim_name == "canvas" and (info["files"] > 0 or info["adopted"] > 0):
         log_integration("  |-- reload the Copilot session (/clear) or restart to load the canvas")
+    if prim_name == "extensions" and (info["files"] > 0 or info["adopted"] > 0):
+        log_integration("  |-- restart omp to load native extension changes")
 
 
 def _targets_explicitly_requested(ctx: InstallContext | None) -> bool:
@@ -141,6 +153,21 @@ def _check_native_claude_transition(
         )
 
 
+def _previous_managed_file_hashes(
+    ctx: Any, explicit: dict[str, str] | None = None
+) -> dict[str, str] | None:
+    """*explicit*, else the deployed file hashes of the context's previous lockfile."""
+    if explicit is not None or ctx is None:
+        return explicit
+    from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
+    from apm_cli.deps.lockfile import LockFile
+
+    previous_lockfile = getattr(ctx, "existing_lockfile", None)
+    if isinstance(previous_lockfile, LockFile):
+        return DeploymentLedgerCodec.deployed_file_hashes(previous_lockfile)
+    return None
+
+
 def integrate_package_primitives(  # noqa: PLR0913
     package_info: Any,
     project_root: Path,
@@ -165,6 +192,7 @@ def integrate_package_primitives(  # noqa: PLR0913
     bin_skip_reason_override: str | None = None,
     native_claude_user_scope: bool = False,
     deployment_plan: PackageDeploymentPlan | None = None,
+    managed_file_hashes: dict[str, str] | None = None,
 ) -> dict:
     """Run the full integration pipeline for a single package.
 
@@ -216,12 +244,14 @@ def integrate_package_primitives(  # noqa: PLR0913
         "commands": 0,
         "hooks": 0,
         "canvases": 0,
+        "extensions": 0,
         "links_resolved": 0,
         "deployed_files": [],
         "native_plugin": False,
     }
 
     deployed = result["deployed_files"]
+    managed_file_hashes = _previous_managed_file_hashes(ctx, managed_file_hashes)
 
     # Drift replay must prove every write is redirected before target cleanup
     # or any other integration side effect can run.
@@ -283,6 +313,7 @@ def integrate_package_primitives(  # noqa: PLR0913
         _mcp_approved,
         _canvas_approved,
         _lsp_approved,
+        _extensions_approved,
     ) = deployment_plan.approvals
     _skip_bin = deployment_plan.skip_bin
     _bin_skip_reason_override = deployment_plan.bin_skip_reason
@@ -347,6 +378,14 @@ def integrate_package_primitives(  # noqa: PLR0913
 
     _verbose = bool(getattr(ctx, "verbose", False)) if ctx is not None else False
 
+    _extension_call_kwargs = {
+        "extensions": {
+            "trust_extensions": _extensions_approved,
+            "is_first_party": is_first_party,
+            "package_name": package_name,
+            "managed_file_hashes": managed_file_hashes,
+        }
+    }
     _INTEGRATOR_KWARGS = {
         "prompts": integrators.prompt,
         "agents": integrators.agent,
@@ -354,6 +393,7 @@ def integrate_package_primitives(  # noqa: PLR0913
         "instructions": integrators.instruction,
         "hooks": integrators.hook,
         "canvas": integrators.canvas,
+        "extensions": integrators.extensions,
         "skills": integrators.skill,
     }
 
@@ -381,6 +421,7 @@ def integrate_package_primitives(  # noqa: PLR0913
             source_plan,
             user_scope=scope is InstallScope.USER,
             retiring_targets=frozenset(target.name for target in target_selection.excluded_targets),
+            targets=projection_targets,
         )
 
     # Validate every converted instruction target before any primitive kind can
@@ -394,6 +435,19 @@ def integrate_package_primitives(  # noqa: PLR0913
             source_plan,
             force=force,
             diagnostics=diagnostics,
+        )
+
+    if _extensions_approved:
+        integrators.extensions.preflight_extensions_for_targets(
+            projection_targets,
+            package_info,
+            project_root,
+            source_plan,
+            package_name=package_name,
+            managed_files=managed_files,
+            managed_file_hashes=managed_file_hashes,
+            scope=scope,
+            is_first_party=is_first_party,
         )
 
     _reconcile_excluded_targets()
@@ -433,8 +487,6 @@ def integrate_package_primitives(  # noqa: PLR0913
         # Executable approval gate: skip hooks if not approved, and retire
         # the hooks this package deployed before it was gated (#3924).
         if _prim_name == "hooks" and not _hooks_approved:
-            from apm_cli.install.exec_gate import log_hooks_skip
-
             log_hooks_skip(package_name, package_info, logger, ctx)
             if callable(reconcile_package_targets):
                 _warn_target_reconcile_failure(
@@ -443,6 +495,16 @@ def integrate_package_primitives(  # noqa: PLR0913
                     reconcile_package_targets(package_info, project_root, targets),
                     "Could not fully remove hooks the executables gate no longer deploys",
                 )
+            continue
+        if _prim_name == "extensions" and not _extensions_approved:
+            log_extensions_skip(
+                package_name,
+                package_info,
+                targets,
+                logger,
+                diagnostics,
+                is_first_party=is_first_party,
+            )
             continue
         # Executable approval gate: skip canvas if not approved.
         # First-party (is_first_party=True) always deploys.
@@ -514,6 +576,7 @@ def integrate_package_primitives(  # noqa: PLR0913
                 _call_kwargs["trust_canvas"] = True
                 _call_kwargs["is_first_party"] = is_first_party
                 _call_kwargs["package_name"] = package_name
+            _call_kwargs.update(_extension_call_kwargs.get(_prim_name, {}))
             with recorded_writes(integrators.skill, _integrator, [_target], package_info):
                 _int_result = getattr(_integrator, _entry.integrate_method)(
                     _target, package_info, project_root, **_call_kwargs
@@ -701,6 +764,7 @@ def integrate_local_content(  # noqa: PLR0913
     source_root: Path | None = None,
     ctx: InstallContext | None = None,
     deployment_plan: PackageDeploymentPlan | None = None,
+    extension_integrator: Any = None,
 ) -> dict:
     """Integrate primitives from the project's own .apm/ directory.
 
@@ -746,6 +810,7 @@ def integrate_local_content(  # noqa: PLR0913
             command=command_integrator,
             hook=hook_integrator,
             canvas=CanvasIntegrator(),
+            extensions=extension_integrator or ExtensionIntegrator(),
         ),
         force=force,
         managed_files=managed_files,
@@ -775,6 +840,38 @@ _plugin_bin_deployable = plugin_bin_deployable
 # ---------------------------------------------------------------------------
 
 
+def _block_unapproved_native_extensions(
+    pack_files: dict[str, str],
+    *,
+    approved: bool,
+    approval_key: str | None,
+    slug: str,
+    user_scope: bool,
+    diagnostics: DiagnosticCollector | None,
+    logger: InstallLogger | None,
+) -> int:
+    """Drop native extension files unless approved for this exact bundle; return the count."""
+    from ..integration.extension_discovery import is_native_extension_path
+    from ..security.executables import local_bundle_approval_hint
+
+    if approved:
+        return 0
+    blocked = sorted(rel for rel in pack_files if is_native_extension_path(rel))
+    for rel in blocked:
+        pack_files.pop(rel, None)
+    if blocked:
+        message = (
+            f"Blocked native extensions from '{slug}': {len(blocked)} file(s) of executable "
+            "code are not approved for this exact bundle content. "
+            + local_bundle_approval_hint(str(approval_key), "extensions", user_scope=user_scope)
+        )
+        if diagnostics is not None:
+            diagnostics.warn(message=message, package=str(slug))
+        elif logger is not None:
+            logger.warning(message)
+    return len(blocked)
+
+
 def integrate_local_bundle(
     bundle_info: Any,
     project_root: Path,
@@ -789,6 +886,8 @@ def integrate_local_bundle(
     allow_executables: builtins.dict[str, builtins.dict[str, bool]] | None = None,
     approval_key: str | None = None,
     create_config: bool = True,
+    managed_files: set[str] | None = None,
+    managed_file_hashes: dict[str, str] | None = None,
 ) -> dict:
     """Integrate a detected local bundle into project / user scope.
 
@@ -917,7 +1016,13 @@ def integrate_local_bundle(
     # gate-disabled map approves it; a missing map approves nothing).
     from ..core.experimental import is_enabled
     from ..integration.canvas_integrator import is_canvas_bundle_path
-    from ..security.executables import EXEC_TYPE_CANVAS, EXEC_TYPE_HOOKS, package_type_approved
+    from ..integration.extension_discovery import is_native_extension_path
+    from ..security.executables import (
+        EXEC_TYPE_CANVAS,
+        EXEC_TYPE_HOOKS,
+        local_bundle_approval_hint,
+        package_type_approved,
+    )
 
     _bundle_keys = () if approval_key is None else (approval_key,)
     _canvas_enabled = is_enabled("canvas", create_config=create_config)
@@ -926,16 +1031,26 @@ def integrate_local_bundle(
     )
     _hooks_approved_bundle = package_type_approved(allow_executables, _bundle_keys, EXEC_TYPE_HOOKS)
 
+    skipped += _block_unapproved_native_extensions(
+        pack_files,
+        approved=native_extensions_approved(allow_executables, list(_bundle_keys)),
+        approval_key=approval_key,
+        slug=slug,
+        user_scope=scope is InstallScope.USER,
+        diagnostics=diagnostics,
+        logger=logger,
+    )
+
     if not (_canvas_enabled and _canvas_approved_bundle):
-        _blocked = sorted(r for r in pack_files if is_canvas_bundle_path(r))
+        _blocked = sorted(
+            r for r in pack_files if is_canvas_bundle_path(r) and not is_native_extension_path(r)
+        )
         if _blocked:
             for _r in _blocked:
                 pack_files.pop(_r, None)
             if _canvas_enabled:
                 # Canvas feature on but not approved: block and surface message.
                 skipped += len(_blocked)
-                from ..security.executables import local_bundle_approval_hint
-
                 _msg = (
                     f"Blocked {len(_blocked)} canvas extension file(s) from bundle "
                     f"'{slug}': canvas extensions are executable extension.mjs code "
@@ -948,6 +1063,21 @@ def integrate_local_bundle(
                     diagnostics.warn(message=_msg, package=str(slug))
                 elif logger is not None:
                     logger.warning(_msg)
+
+    from apm_cli.integration.extension_bundle_install import deploy_native_bundle_files
+
+    native_plans, native_records = deploy_native_bundle_files(
+        bundle_dir,
+        pack_files,
+        targets,
+        project_root,
+        dry_run=dry_run,
+        managed_files=managed_files,
+        managed_file_hashes=managed_file_hashes,
+        diagnostics=diagnostics,
+    )
+    deployed_files.extend(native_records)
+    deployed_hashes.update(native_records)
 
     if logger:
         logger.verbose_detail(
@@ -1170,6 +1300,7 @@ def integrate_local_bundle(
         "agents": 0,
         "commands": 0,
         "hooks": hook_result.hook_files,
+        "extensions": len(native_plans),
         "instructions": 0,
         "prompts": 0,
         "sub_skills": 0,

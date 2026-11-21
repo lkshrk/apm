@@ -766,6 +766,11 @@ def _check_config_consistency(
         )
 
     details = [f"{problem.package_key}: {problem.message}" for problem in view.problems]
+    declarations = {dep.name: dep for dep in view.dependencies}
+    for target, names in sorted(lock.mcp_target_servers.items()):
+        for name in sorted(names):
+            if name in declarations and not declarations[name].targets_runtime(target):
+                details.append(f"{name}: ownership recorded for excluded target {target}")
 
     # Preserve the established diagnostics while sourcing every partition from
     # the canonical symmetric diff.
@@ -899,6 +904,14 @@ def verify_deployed_file_hashes(
                 return True
         return False
 
+    def _unsafe_lexical_path(path: Path) -> bool:
+        from ..utils.path_security import has_symlink_component
+
+        if ".." in path.parts:
+            return True
+        absolute = path.absolute()
+        return has_symlink_component(Path(absolute.anchor), absolute)
+
     # Per-file hash verification across canonical deployment records.
     hash_mismatches: list[DeployedHashDrift] = []
     unresolved_hash_paths: list[str] = []
@@ -920,6 +933,10 @@ def verify_deployed_file_hashes(
                 KNOWN_TARGETS.get(locator.target),
             )
             if target is None:
+                continue
+            target_root = target.managed_deploy_root
+            if target_root is not None and _unsafe_lexical_path(target_root / locator.value):
+                unresolved_hash_paths.append(locator.value)
                 continue
             try:
                 resolved = DeploymentLedgerCodec.resolve_locator(
@@ -997,6 +1014,10 @@ def _check_content_integrity(
       * SHA-256 drift of local bundle compile staging (#3718), via
         ``LockFile.staged_hash_drift``.
       * Missing canonical ownership metadata for a legacy deployed-file hash.
+      * Native omp extension bundles and hook runtime claimed by explicit
+        ledger rows, verified as whole owned units (receipt, ledger, exact
+        tree, bridge state) with one failure each. Their files are raw assets
+        to the scanner, not prompt documents; unmanaged siblings are untouched.
 
     Missing files are deliberately skipped here -- ``_check_deployed_files_present``
     already reports those, and double-reporting muddies the audit output.
@@ -1049,6 +1070,17 @@ def _check_content_integrity(
     staged_drift = lock.staged_hash_drift(project_root)
     local_drift = _local_content_drift(project_root, lock)
 
+    # Native bundles/runtime are verified as whole owned units from explicit
+    # ledger rows; one structured failure each, never per-asset prompt errors.
+    from ..integration.extension_audit import audit_native_extension_ownership
+
+    native_failures = audit_native_extension_ownership(
+        project_root,
+        lock,
+        targets,
+        lambda value: _resolve_deployed_file_path(value, project_root, targets),
+    )
+
     if (
         not critical_files
         and not hash_mismatches
@@ -1057,6 +1089,7 @@ def _check_content_integrity(
         and not missing_ownership
         and not unresolved_hash_paths
         and not scan.incomplete
+        and not native_failures
     ):
         return CheckResult(
             name="content-integrity",
@@ -1073,6 +1106,7 @@ def _check_content_integrity(
         details.append(f"missing-ownership: {rel_path}")
     for rel_path in unresolved_hash_paths:
         details.append(f"unresolved: {rel_path}")
+    details.extend(failure.detail() for failure in native_failures)
     for dep_key, rel_path, expected, actual in (
         (drift.owner, drift.path, drift.expected, drift.actual) for drift in hash_mismatches
     ):
@@ -1131,6 +1165,11 @@ def _check_content_integrity(
     if unresolved_hash_paths:
         parts.append(f"{len(unresolved_hash_paths)} unsafe or unresolved deployed path(s)")
         remedies.append(remediation.MANAGED_PATHS_UNRESOLVED.clause())
+    if native_failures:
+        parts.append(
+            f"{len(native_failures)} native extension bundle(s) or runtime(s) failing ownership"
+        )
+        remedies.append("'apm install' after removing foreign or edited native extension content")
     summary = "; ".join(parts)
     remedy = "; ".join(remedies)
     return CheckResult(
@@ -1238,6 +1277,7 @@ def _check_drift(
     from ..core.scope import get_workspace_deploy_root
     from ..deps.lockfile import get_lockfile_path
     from ..deps.path_anchoring import LocalResolutionError
+    from ..hook_contract import HookContractError
     from ..install.audit_target_roots import external_replay_root
     from ..install.drift import (
         CacheMissError,
@@ -1265,7 +1305,7 @@ def _check_drift(
 
         try:
             scratch = run_replay(config, logger)
-        except (AgentPluginDeploymentBoundaryError, CodexNativeError) as exc:
+        except (AgentPluginDeploymentBoundaryError, CodexNativeError, HookContractError) as exc:
             return (
                 CheckResult(
                     name="drift",

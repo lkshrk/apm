@@ -12,8 +12,13 @@ def reconcile_uninstall_deployment_state(
     all_deployed_files: set[str],
     surviving_deployed_files: dict[str, set[str]],
     fully_refreshed_dependency_keys: set[str] | None = None,
+    retained_paths: frozenset[str] = frozenset(),
 ) -> bool:
-    """Reconcile survivor ownership and hashes without persisting."""
+    """Reconcile survivor ownership and hashes without persisting.
+
+    A fully refreshed survivor keeps its claim and recorded hash for each of
+    *retained_paths*, files cleanup could not remove and the rebuild left alone.
+    """
     from apm_cli.core.deployment_ledger import DeploymentLedgerCodec
     from apm_cli.core.deployment_state import (
         DeploymentIntent,
@@ -76,8 +81,17 @@ def reconcile_uninstall_deployment_state(
     for dep_key in sorted(fully_refreshed_dependency_keys or set()):
         if dep_key not in lockfile.dependencies:
             continue
-        deployed_files = sorted(surviving_deployed_files.get(dep_key, set()))
+        prior = lockfile.dependencies[dep_key]
+        kept = {path for path in prior.deployed_files if path in retained_paths}
+        deployed_files = sorted(set(surviving_deployed_files.get(dep_key, ())) | kept)
         hashes = compute_deployed_hashes(deployed_files, deploy_root)
+        hashes.update(
+            {
+                path: prior.deployed_file_hashes[path]
+                for path in kept
+                if path in prior.deployed_file_hashes
+            }
+        )
         DeploymentLedgerCodec.replace_legacy_owner(
             lockfile,
             dep_key,

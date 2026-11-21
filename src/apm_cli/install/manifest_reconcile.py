@@ -96,8 +96,8 @@ def merge_hook_config_projection_specs(
         root = str(getattr(target, "root_dir", "") or "").rstrip("/")
         if config is None or not root:
             continue
-        specs[f"{root}/{config.config_filename}"] = (
-            f"{root}/{_hi._APM_HOOKS_SIDECAR}",
+        specs[(Path(root) / config.config_filename).as_posix()] = (
+            (Path(root) / _hi._APM_HOOKS_SIDECAR).as_posix(),
             config.event_container_key,
         )
     return specs
@@ -209,12 +209,15 @@ def union_preserving(
         return UNATTRIBUTED_TARGET
 
     def _locator(path: str) -> DeploymentLocator:
+        target_name = _target_for(path)
         return DeploymentLocator(
             kind=LocatorKind.URI if "://" in path else LocatorKind.PROJECT_RELATIVE,
-            target=_target_for(path),
+            target=target_name,
             value=path,
             runtime=None,
-            scope=DeploymentLedgerCodec.legacy_scope(path),
+            scope="user"
+            if user_scope and target_name == "omp"
+            else DeploymentLedgerCodec.legacy_scope(path),
         )
 
     prior_values = set(prior_files or ())
@@ -394,6 +397,7 @@ def reconcile_dropped_merge_hook_targets(
     declared_targets: list[TargetProfile] | None,
     *,
     user_scope: bool = False,
+    lockfile: LockFile | None = None,
 ) -> dict[str, int]:
     """Clean merge-hook JSON/sidecar state for targets dropped from ``targets:``.
 
@@ -433,9 +437,14 @@ def reconcile_dropped_merge_hook_targets(
     dropped_names = [name for name in KNOWN_TARGETS if name not in allowed_names]
     if not dropped_names:
         return {"files_removed": 0, "errors": 0}
-    return HookIntegrator().reconcile_dropped_targets(
+    stats = HookIntegrator().reconcile_dropped_targets(
         project_root, dropped_names, user_scope=user_scope
     )
+    if "omp" in dropped_names and lockfile is not None:
+        from apm_cli.integration.omp_hook_integrator import clean_historical_omp_hooks
+
+        clean_historical_omp_hooks(lockfile, project_root, stats, user_scope=user_scope)
+    return stats
 
 
 def surviving_deployed_paths(
@@ -539,6 +548,7 @@ def reconcile_deployed_block(  # noqa: PLR0913 -- deployed-state chokepoint wrap
     user_scope: bool = False,
     completed_reintegration: CompletedReintegration | None = None,
     retained_values: frozenset[str] = frozenset(),
+    prior_lockfile: LockFile | None = None,
 ) -> tuple[list[str], dict[str, str]] | tuple[list[str], dict[str, str], DeploymentLedger]:
     """Reconcile one deployed-state block and safely remove dropped paths.
 
@@ -658,6 +668,7 @@ def reconcile_deployed_block(  # noqa: PLR0913 -- deployed-state chokepoint wrap
         # A departing owner (selected removal) releases a skill directory left
         # holding only user content, as prune and install cleanup do (#4162).
         failed_path_retained=desired_owners is None,
+        prior_lockfile=prior_lockfile,
     )
     if on_cleanup is not None:
         on_cleanup(cleanup)
@@ -699,6 +710,7 @@ def _dropped_target_of(
     active_targets: Iterable[TargetProfile],
     declared_targets: Iterable[TargetProfile] | None,
     user_scope: bool,
+    recorded_profiles: Iterable[TargetProfile] = (),
 ) -> Callable[[str], str | None]:
     """Return a classifier naming the undeclared known target that governs a path.
 
@@ -715,6 +727,7 @@ def _dropped_target_of(
         ).values()
         if profile.name not in allowed_names
     ]
+    dropped.extend((profile.name, *install_governance([profile])) for profile in recorded_profiles)
 
     def classify(path: str) -> str | None:
         if is_governed_by_install(path, allowed_prefixes, allowed_schemes):
@@ -804,8 +817,13 @@ def reconcile_target_deployed_files(
         if selected_owner_removal
         else None
     )
+    from apm_cli.integration.extension_roots import recorded_omp_profiles
+
     dropped_target = _dropped_target_of(
-        active_targets=active_targets, declared_targets=declared_targets, user_scope=user_scope
+        active_targets=active_targets,
+        declared_targets=declared_targets,
+        user_scope=user_scope,
+        recorded_profiles=recorded_omp_profiles(lockfile, project_root, user_scope=user_scope),
     )
 
     def _retained(files: list[str]) -> list[str]:
@@ -863,6 +881,7 @@ def reconcile_target_deployed_files(
                 frozenset(prior_files) if selected_owner_removal else frozenset()
             ),
             user_scope=user_scope,
+            prior_lockfile=lockfile,
         )
         if selected_owner_removal:
             if selected_outcome is not None:
@@ -910,6 +929,7 @@ def reconcile_target_deployed_files(
             prior_ledger=local_ledger,
             on_cleanup=partial(surface_target_cleanup, logger, "<local .apm/>"),
             user_scope=user_scope,
+            prior_lockfile=lockfile,
         )
         if local_files != prior_local or local_hashes != prior_local_hashes:
             DeploymentLedgerCodec.replace_legacy_owner(lockfile, ".", local_files, local_hashes)
@@ -929,6 +949,18 @@ def reconcile_deployed_state(
     user_scope: bool = False,
 ) -> bool:
     """Reconcile target-scoped deployed files and merge-hook state."""
+    hook_stats = reconcile_dropped_merge_hook_targets(
+        project_root,
+        active_targets=active_targets,
+        declared_targets=declared_targets,
+        user_scope=user_scope,
+        lockfile=lockfile,
+    )
+    if hook_stats.get("errors", 0):
+        raise RuntimeError(
+            "Dropped-target hook cleanup is incomplete; owned runtime artifacts "
+            "were preserved. Repair the reported paths and retry."
+        )
     changed = reconcile_target_deployed_files(
         project_root=project_root,
         lockfile=lockfile,
@@ -936,12 +968,6 @@ def reconcile_deployed_state(
         declared_targets=declared_targets,
         diagnostics=diagnostics,
         evidence=evidence,
-        user_scope=user_scope,
-    )
-    reconcile_dropped_merge_hook_targets(
-        project_root,
-        active_targets=active_targets,
-        declared_targets=declared_targets,
         user_scope=user_scope,
     )
     return changed

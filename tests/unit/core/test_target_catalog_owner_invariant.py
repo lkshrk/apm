@@ -22,6 +22,7 @@ TARGET_NAMES = frozenset(
         "hermes",
         "intellij",
         "kiro",
+        "omp",
         "openclaw",
         "opencode",
         "vscode",

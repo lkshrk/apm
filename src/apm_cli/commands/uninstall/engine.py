@@ -3,7 +3,7 @@
 import builtins
 import contextlib
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -16,6 +16,7 @@ from apm_cli.core.remediation import (
     MARKETPLACE_REF_UNRESOLVED,
     MCP_DEPENDENCY_DECLARED,
     REGISTRY_CANONICAL_UNRECORDED,
+    kept_note,
 )
 
 from ...bundle.local_bundle import looks_like_local_bundle
@@ -1365,9 +1366,11 @@ def _native_hook_state_exists(project_root: Path, targets: list[object]) -> bool
         if config is None:
             continue
         target_dir = project_root / target.root_dir
-        if (target_dir / config.config_filename).exists() or (
-            target_dir / _APM_HOOKS_SIDECAR
-        ).exists():
+        if (
+            (target_dir / config.config_filename).exists()
+            or (target_dir / _APM_HOOKS_SIDECAR).exists()
+            or (target.name == "omp" and (target_dir / "apm-hooks-runtime.json").exists())
+        ):
             return True
     return False
 
@@ -1388,6 +1391,91 @@ class _SurvivorRebuildLogger:
 
     def __getattr__(self, name: str):
         return getattr(self._logger, name)
+
+
+def _recorded_explicit_only_targets(
+    project_root: Path, lockfile: "LockFile | None", resolved: list, *, user_scope: bool
+) -> list:
+    """Return explicit-only targets the lock recorded, which auto-detection never selects."""
+    if lockfile is None:
+        return []
+    from ...core.deployment_ledger import DeploymentLedgerCodec
+    from ...core.target_catalog import get_target_capability
+    from ...integration.skill_layout import resolve_reintegration_targets
+    from ...integration.targets import KNOWN_TARGETS
+
+    present = {target.name for target in resolved}
+    names = [
+        name
+        for name in DeploymentLedgerCodec.recorded_target_names(
+            lockfile,
+            scope="user" if user_scope else "project",
+            supported_targets=KNOWN_TARGETS,
+        )
+        if name not in present and get_target_capability(name).explicit_only
+    ]
+    if not names:
+        return []
+    return resolve_reintegration_targets(project_root, user_scope=user_scope, explicit_target=names)
+
+
+def _sync_extension_bundles(
+    integrator,
+    target,
+    apm_package,
+    project_root: Path,
+    managed: set[str] | None,
+    *,
+    deployed_file_hashes,
+    evidence,
+    lockfile: "LockFile | None",
+    logger: CommandLogger,
+) -> tuple[int, list[str], int]:
+    """Remove native bundles; return ``(files removed, retained paths, errors)``.
+
+    A refreshed survivor's bundle that cannot be removed (operator edits) stays
+    installed and claimed; only a removed package's leftover bundle is an error.
+    """
+    surviving = {
+        path
+        for dependency in (lockfile.dependencies.values() if lockfile is not None else ())
+        for path in dependency.deployed_files
+    }
+    groups = (
+        [(managed, False)]
+        if managed is None
+        else [
+            ({path for path in managed if path not in surviving}, False),
+            ({path for path in managed if path in surviving}, True),
+        ]
+    )
+    removed = errors = 0
+    retained: list[str] = []
+    for subset, survivor in groups:
+        if subset is not None and not subset:
+            continue
+        result = integrator.sync_for_target(
+            target,
+            apm_package,
+            project_root,
+            managed_files=subset,
+            managed_file_hashes=deployed_file_hashes,
+            evidence=evidence,
+        )
+        removed += result.get("files_removed", 0)
+        failed = result.get("failed_paths", [])
+        retained.extend(failed)
+        if not survivor:
+            errors += result.get("errors", 0)
+        elif failed:
+            logger.warning(
+                kept_note(
+                    f"{len(failed)} native extension file(s) of a surviving package",
+                    "they changed since deployment",
+                    "Inspect them before reinstalling the package.",
+                )
+            )
+    return removed, retained, errors
 
 
 def _sync_integrations_after_uninstall(
@@ -1444,6 +1532,10 @@ def _sync_integrations_after_uninstall(
     _base_targets = resolve_reintegration_targets(
         project_root, user_scope=user_scope, explicit_target=_explicit
     )
+    if _explicit is None:
+        _base_targets += _recorded_explicit_only_targets(
+            project_root, lockfile, _base_targets, user_scope=user_scope
+        )
     _resolved_targets = resolve_skill_layout(
         _base_targets, recorded_paths=recorded_deployed_paths(lockfile)
     )
@@ -1481,6 +1573,7 @@ def _sync_integrations_after_uninstall(
         command=_integrators["commands"],
         hook=_integrators["hooks"],
         canvas=_integrators["canvas"],
+        extensions=_integrators["extensions"],
     )
 
     # Resolve targets once -- used for both Phase 1 removal and Phase 2 re-integration.
@@ -1542,6 +1635,8 @@ def _sync_integrations_after_uninstall(
 
     counts = {entry.counter_key: 0 for entry in _dispatch.values()}
     package_deployed_files: dict[str, list[str]] = {}
+    failed_extension_paths: list[str] = []
+    extension_errors = 0
 
     # Phase 1: Remove all APM-deployed files
     # Per-target sync for primitives with sync_for_target
@@ -1562,6 +1657,22 @@ def _sync_integrations_after_uninstall(
             if _buckets is not None:
                 _bucket_key = BaseIntegrator.partition_bucket_key(_prim_name, _target.name)
                 _managed_subset = _buckets.get(_bucket_key, set())
+            if _prim_name == "extensions":
+                removed, failed, errors = _sync_extension_bundles(
+                    _integrators[_prim_name],
+                    _target,
+                    apm_package,
+                    project_root,
+                    _managed_subset,
+                    deployed_file_hashes=deployed_file_hashes,
+                    evidence=evidence,
+                    lockfile=lockfile,
+                    logger=logger,
+                )
+                counts[_entry.counter_key] += removed
+                failed_extension_paths.extend(failed)
+                extension_errors += errors
+                continue
             result = _integrators[_prim_name].sync_for_target(
                 _target,
                 apm_package,
@@ -1665,12 +1776,14 @@ def _sync_integrations_after_uninstall(
     # Phase 2 rebuild loop below iterates -- so a harness dropped from
     # this project's `targets:` list is never wiped for packages that
     # remain declared and installed (#2250).
+    # Native omp ownership was surgically reconciled before lock release.
+    # Do not clear/re-render surviving or first-party native hook handlers.
     result = _integrators["hooks"].sync_integration(
         apm_package,
         project_root,
         managed_files=_buckets["hooks"] if _buckets else None,
         managed_file_hashes=deployed_file_hashes,
-        targets=_resolved_targets,
+        targets=[target for target in _resolved_targets if target.name != "omp"],
         evidence=evidence,
     )
     counts["hooks"] = result.get("files_removed", 0)
@@ -1727,15 +1840,43 @@ def _sync_integrations_after_uninstall(
             selection = effective_dependency_selection(dep_ref)
 
             try:
+                from ...integration.extension_integrator import RECEIPT_FILENAME
+
+                locked_survivor = lockfile.get_dependency(dep_key) if lockfile is not None else None
+                rebuild_extensions = locked_survivor is not None and any(
+                    path in all_deployed_files
+                    and Path(path).name == RECEIPT_FILENAME
+                    and not (project_root / path).exists()
+                    for path in locked_survivor.deployed_files
+                )
+                # Native bundles have exclusive receipt-backed ownership. Only
+                # a refreshed source slot whose old bundle was removed needs
+                # rematerialization; unrelated survivors retain their evidence.
+                preserved_native_kinds = (
+                    {"hooks"} if rebuild_extensions else {"hooks", "extensions"}
+                )
+                survivor_targets = [
+                    replace(
+                        target,
+                        primitives={
+                            kind: mapping
+                            for kind, mapping in target.primitives.items()
+                            if kind not in preserved_native_kinds
+                        },
+                    )
+                    if target.name == "omp"
+                    else target
+                    for target in authorized_targets
+                ]
                 integration_result = integrate_package_primitives(
                     pkg_info,
                     project_root,
-                    targets=authorized_targets,
+                    targets=survivor_targets,
                     integrators=_integrator_bundle,
                     force=False,
                     managed_files=None,
                     diagnostics=reintegration_diagnostics,
-                    package_name=dep_ref.get_identity(),
+                    package_name=dep_ref.get_unique_key(),
                     logger=_SurvivorRebuildLogger(logger),
                     scope=_rebuild_scope,
                     skill_subset=selection.skill_subset,
@@ -1759,8 +1900,8 @@ def _sync_integrations_after_uninstall(
     return IntegrationCleanupOutcome(
         counts=counts,
         deployed_files=package_deployed_files,
-        failed_paths=failed_hook_paths,
-        error_count=result.get("errors", 0),
+        failed_paths=failed_hook_paths + failed_extension_paths,
+        error_count=result.get("errors", 0) + extension_errors,
         materialization_session=materialization_session,
     )
 
@@ -2049,8 +2190,27 @@ def _cleanup_stale_mcp(
             for server in claims
         }
         retained_unowned = stale_servers - owned_servers
+    declarations = {dep.name: dep for dep in view.dependencies}
+    retired_targets = {
+        runtime: {
+            name
+            for name in servers & new_mcp_servers
+            if name in declarations and not declarations[name].targets_runtime(runtime)
+        }
+        for runtime, servers in target_servers.items()
+    }
+    retired_names = {name for names in retired_targets.values() for name in names}
+    if retired_names:
+        _remove_stale_mcp_from_recorded_targets(
+            retired_names,
+            lockfile,
+            project_root=project_root,
+            user_scope=user_scope,
+            scope=scope,
+            target_servers=retired_targets,
+        )
     contracted_claims = {
-        runtime: servers.intersection(new_mcp_servers)
+        runtime: servers.intersection(new_mcp_servers) - retired_targets[runtime]
         for runtime, servers in target_servers.items()
     }
     restore_pending_retired_claims(

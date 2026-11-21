@@ -12,7 +12,7 @@ import logging
 
 import pytest
 
-from apm_cli.integration.hook_integrator import (
+from apm_cli.integration.hook_diagnostics import (
     _HOOK_EVENT_EXPECTED_CASING,
     _detect_event_casing,
     _emit_hook_event_diagnostics,
@@ -74,7 +74,7 @@ class TestEmitHookEventDiagnosticsLogging:
     """Verify that per-target event names appear in structured INFO logs."""
 
     def test_logs_events_at_info_level(self, caplog):
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             _emit_hook_event_diagnostics(["PreToolUse", "Stop"], "claude", {})
 
         assert "claude" in caplog.text
@@ -82,7 +82,7 @@ class TestEmitHookEventDiagnosticsLogging:
         assert "Stop" in caplog.text
 
     def test_logs_events_for_copilot_target(self, caplog):
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             _emit_hook_event_diagnostics(["preToolUse", "postToolUse"], "copilot", {})
 
         assert "copilot" in caplog.text
@@ -90,14 +90,14 @@ class TestEmitHookEventDiagnosticsLogging:
         assert "postToolUse" in caplog.text
 
     def test_no_log_for_empty_events(self, caplog):
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             _emit_hook_event_diagnostics([], "claude", {})
 
         assert caplog.text == ""
 
     def test_multi_target_logs_are_distinct(self, caplog):
         """Events logged per target must be distinguishable in log output."""
-        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_integrator"):
+        with caplog.at_level(logging.INFO, logger="apm_cli.integration.hook_diagnostics"):
             _emit_hook_event_diagnostics(["PreToolUse", "Stop"], "claude", {})
             _emit_hook_event_diagnostics(["preToolUse", "postToolUse"], "copilot", {})
 

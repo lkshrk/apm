@@ -45,6 +45,7 @@ def _build_dispatch() -> dict[str, PrimitiveDispatch]:
     from apm_cli.integration.agent_integrator import AgentIntegrator
     from apm_cli.integration.canvas_integrator import CanvasIntegrator
     from apm_cli.integration.command_integrator import CommandIntegrator
+    from apm_cli.integration.extension_integrator import ExtensionIntegrator
     from apm_cli.integration.hook_integrator import HookIntegrator
     from apm_cli.integration.instruction_integrator import InstructionIntegrator
     from apm_cli.integration.prompt_integrator import PromptIntegrator
@@ -74,6 +75,12 @@ def _build_dispatch() -> dict[str, PrimitiveDispatch]:
             "integrate_canvases_for_target",
             "sync_for_target",
             "canvases",
+        ),
+        "extensions": PrimitiveDispatch(
+            ExtensionIntegrator,
+            "integrate_extensions_for_target",
+            "sync_for_target",
+            "extensions",
         ),
         "skills": PrimitiveDispatch(
             SkillIntegrator,

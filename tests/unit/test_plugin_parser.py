@@ -2127,3 +2127,24 @@ def test_missing_declared_component_names_the_manifest_folder_cause(tmp_path):
     assert "'.github/plugin'" in message
     assert "Report it to the plugin publisher" in message
     assert ".apm-resolution-staging" not in message
+
+
+class TestMixedNativeExtensionPlugin:
+    def test_unbuilt_native_entry_does_not_override_excluded_target(self, tmp_path):
+        (tmp_path / "apm.yml").write_text("name: mixed\nversion: 1.0.0\ntargets: [claude, codex]\n")
+        (tmp_path / "package.json").write_text('{"omp":{"extensions":["missing.ts"]}}')
+        result = synthesize_apm_yml_from_plugin(tmp_path, {"name": "mixed"})
+        assert yaml.safe_load(result.read_text())["targets"] == ["claude", "codex"]
+        assert not (tmp_path / ".apm" / "extensions").exists()
+
+    def test_mixed_package_keeps_resources_and_existing_targets(self, tmp_path):
+        (tmp_path / "apm.yml").write_text("name: mixed\nversion: 1.0.0\ntargets: [claude]\n")
+        manifest = '{"omp":{"extensions":["entry.ts"]}}'
+        (tmp_path / "package.json").write_text(manifest)
+        (tmp_path / "entry.ts").write_text("export default function () {}")
+        (tmp_path / "asset.txt").write_text("native resource")
+        result = synthesize_apm_yml_from_plugin(tmp_path, {"name": "mixed"})
+        assert yaml.safe_load(result.read_text())["targets"] == ["claude"]
+        assert (tmp_path / "package.json").read_text() == manifest
+        assert (tmp_path / "asset.txt").read_text() == "native resource"
+        assert not (tmp_path / ".apm" / "extensions").exists()
