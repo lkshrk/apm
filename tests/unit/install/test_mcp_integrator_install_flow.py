@@ -117,6 +117,65 @@ def test_self_defined_partial_runtime_failure_is_explicit() -> None:
     )
 
 
+def test_self_defined_summary_lists_only_runtimes_that_wrote() -> None:
+    """A forced re-check that finds the server unchanged is not reported as configured."""
+    from apm_cli.install.mcp.ownership import NativeMcpConnectionState
+    from apm_cli.integration.mcp_integrator import MCPIntegrator
+    from apm_cli.integration.mcp_integrator_install import _install_self_defined_deps
+    from apm_cli.models.dependency.mcp import MCPDependency
+
+    dependency = MCPDependency(
+        name="github", registry=False, transport="http", url="https://example.invalid/mcp"
+    )
+    outcomes = {
+        "opencode": {"failed": False, "installed": False, "skipped": True},
+        "claude": {"failed": False, "installed": True, "skipped": False},
+    }
+    console = MagicMock()
+    logger = MagicMock()
+
+    with (
+        patch.object(
+            MCPIntegrator, "_check_self_defined_servers_needing_installation", return_value=[]
+        ),
+        patch.object(MCPIntegrator, "_build_self_defined_info", return_value={}),
+        patch("apm_cli.factory.ClientFactory.create_client", return_value=MagicMock()),
+        patch(
+            "apm_cli.install.mcp.ownership.compare_native_mcp_connection",
+            return_value=NativeMcpConnectionState.ABSENT,
+        ),
+        patch(
+            "apm_cli.core.operations.install_package",
+            side_effect=lambda runtime, *_a, **_kw: outcomes[runtime],
+        ) as install_package,
+    ):
+        count = _install_self_defined_deps(
+            self_defined_deps=[dependency],
+            target_runtimes=["opencode", "claude"],
+            stored_mcp_configs={},
+            servers_to_update=set(),
+            successful_updates=set(),
+            project_root=None,
+            user_scope=True,
+            verbose=False,
+            console=console,
+            logger=logger,
+            managed_target_servers={},
+        )
+
+    assert count == 1
+    summary = [
+        str(call.args[0])
+        for call in console.print.call_args_list
+        if call.args and "->" in str(call.args[0])
+    ]
+    assert len(summary) == 1
+    assert "github -> Claude " in summary[0]
+    assert "Opencode" not in summary[0]
+    assert all(call.kwargs["quiet_skip"] for call in install_package.call_args_list)
+    logger.verbose_detail.assert_any_call("  github already configured, skipping")
+
+
 def test_registry_group_partial_runtime_failure_is_explicit() -> None:
     """Registry installs enforce the same strict IntelliJ failure contract."""
     from apm_cli.integration.mcp_integrator import MCPIntegrator

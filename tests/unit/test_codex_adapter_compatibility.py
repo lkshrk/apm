@@ -1040,35 +1040,49 @@ class TestForwardedStdioEnv:
 
 
 class TestForwardedStdioEnvScope:
-    """User scope keeps resolving values; unforwardable references warn by name."""
+    """User scope forwards or refuses references; project scope warns by name."""
 
-    def test_user_scope_resolves_value_and_has_no_env_vars(self, tmp_path: Path) -> None:
+    def test_user_scope_forwards_value_by_name(self, tmp_path: Path) -> None:
         adapter = _make_adapter(project_root=tmp_path, user_scope=True)
         with patch.dict(os.environ, {"FIGMA_API_KEY": "example-token"}):
             cfg = adapter._format_server_config(_raw_stdio_server(FIGMA_API_KEY="${FIGMA_API_KEY}"))
-        assert "env_vars" not in cfg
-        assert cfg["env"] == {"FIGMA_API_KEY": "example-token"}
+        assert cfg["env_vars"] == ["FIGMA_API_KEY"]
+        assert "env" not in cfg
 
-    def test_user_scope_env_prefixed_reference_resolves(self, tmp_path: Path) -> None:
+    def test_user_scope_env_prefixed_reference_forwards(self, tmp_path: Path) -> None:
         adapter = _make_adapter(project_root=tmp_path, user_scope=True)
         with patch.dict(os.environ, {"FIGMA_API_KEY": "example-token"}):
             cfg = adapter._format_server_config(
                 _raw_stdio_server(FIGMA_API_KEY="${env:FIGMA_API_KEY}")
             )
-        assert "env_vars" not in cfg
-        assert cfg["env"] == {"FIGMA_API_KEY": "example-token"}
+        assert cfg["env_vars"] == ["FIGMA_API_KEY"]
+        assert "env" not in cfg
 
-    def test_user_scope_never_matches_legacy_baseline(self, tmp_path: Path) -> None:
+    def test_user_scope_unrecorded_value_never_matches_legacy_baseline(
+        self, tmp_path: Path
+    ) -> None:
         adapter = _make_adapter(project_root=tmp_path, user_scope=True)
         expected = {"command": "npx", "env_vars": ["TOKEN"], "env": {}}
-        native = {"command": "npx", "env": {"TOKEN": "${TOKEN}"}}
-        assert adapter.matches_legacy_managed_server_config(native, expected) is False
+        native = {"command": "npx", "env": {"TOKEN": "example-token"}}
+        with patch.dict(os.environ, {"TOKEN": "example-token"}):
+            assert adapter.matches_legacy_managed_server_config(native, expected) is False
 
-    @pytest.mark.parametrize("user_scope", [False, True])
-    def test_mismatched_and_embedded_references_resolve(
-        self, tmp_path: Path, user_scope: bool
+    def test_user_scope_mismatched_and_embedded_references_are_refused(
+        self, tmp_path: Path
     ) -> None:
-        adapter = _make_adapter(project_root=tmp_path, user_scope=user_scope)
+        adapter = _make_adapter(project_root=tmp_path, user_scope=True)
+        server = _raw_stdio_server(TOKEN="${OTHER}", AUTH="Bearer ${OTHER}")
+        with (
+            patch.dict(os.environ, {"OTHER": "example-token"}),
+            patch("apm_cli.core.null_logger._rich_error") as error,
+        ):
+            assert adapter._format_server_config(server) is None
+        message = error.call_args.args[0]
+        assert "TOKEN" in message and "AUTH" in message
+        assert "example-token" not in message
+
+    def test_mismatched_and_embedded_references_resolve(self, tmp_path: Path) -> None:
+        adapter = _make_adapter(project_root=tmp_path)
         server = _raw_stdio_server(TOKEN="${OTHER}", AUTH="Bearer ${OTHER}")
         with patch.dict(os.environ, {"OTHER": "example-token"}):
             cfg = adapter._format_server_config(server)
@@ -1116,10 +1130,10 @@ class TestForwardedStdioEnvScope:
         warning.assert_not_called()
 
 
-class TestUserScopeStdioOutputUnchanged:
-    """User-scope Codex config keeps the exact pre-#3393 output and passthrough."""
+class TestUserScopeStdioOutput:
+    """User-scope Codex config forwards references and keeps extra passthrough."""
 
-    def test_user_scope_written_config_matches_previous_output(self, tmp_path: Path) -> None:
+    def test_user_scope_written_config_forwards_reference(self, tmp_path: Path) -> None:
         codex_home = tmp_path / "codex-home"
         codex_home.mkdir()
         server = _raw_stdio_server(FIGMA_API_KEY="${FIGMA_API_KEY}")
@@ -1135,9 +1149,7 @@ class TestUserScopeStdioOutputUnchanged:
             'command = "npx"\n'
             'args = ["-y", "figma-developer-mcp", "--stdio"]\n'
             'cwd = "/srv/tools"\n'
-            "\n"
-            "[mcp_servers.figma.env]\n"
-            'FIGMA_API_KEY = "example-token"\n'
+            'env_vars = ["FIGMA_API_KEY"]\n'
         )
 
     def test_user_scope_extra_env_vars_passthrough_is_unchanged(self, tmp_path: Path) -> None:

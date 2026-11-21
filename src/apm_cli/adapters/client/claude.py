@@ -170,19 +170,8 @@ class ClaudeClientAdapter(CopilotClientAdapter):
         "values does not remove them from Git history."
     )
 
-    @property
-    def _supports_runtime_env_substitution(self) -> bool:
-        """Keep ``${VAR}`` references in the project-scoped ``.mcp.json``.
-
-        Claude Code expands ``${VAR}`` and ``${VAR:-default}`` in a project
-        ``.mcp.json`` in ``command``, ``args``, ``env``, ``url`` and
-        ``headers`` when it starts a server (checked with Claude Code
-        2.1.310), so secrets stay in each developer's environment instead of
-        being copied into a file teams commit. User scope (``~/.claude.json``,
-        outside the repo, written ``0o600``) keeps install-time resolution.
-        See #1152 and #3252.
-        """
-        return not self._is_user_scope()
+    # Claude Code expands ${VAR} in .mcp.json and ~/.claude.json at server start (#1152, #3252).
+    _supports_runtime_env_substitution: bool = True
 
     def _format_runtime_env_placeholder(self, name: str) -> str:
         """Return Claude Code's native reference syntax, ``${NAME}``."""
@@ -319,7 +308,7 @@ class ClaudeClientAdapter(CopilotClientAdapter):
                 self._legacy_angle_offenders_by_server[config_key] = set(
                     self._last_legacy_angle_vars
                 )
-            if isinstance(previously_baked, dict):
+            if isinstance(previously_baked, dict) and not self._is_user_scope():
                 for _path, text in _expanded_leaves(previously_baked, server_config):
                     self._security_upgraded_keys.update(
                         m.group(1) for m in _CLAUDE_REFERENCE_RE.finditer(text)

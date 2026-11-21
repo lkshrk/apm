@@ -260,6 +260,31 @@ def _has_env_placeholder(value):
     return bool(_ENV_PLACEHOLDER_RE.search(value))
 
 
+def _placeholder_names(value) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    return {legacy or brace for legacy, brace in _ENV_PLACEHOLDER_RE.findall(value)}
+
+
+def env_references(server_info: dict) -> set[str]:
+    """Return the environment variable names a server's config refers to."""
+    raw = server_info.get("_raw_stdio") or {}
+    values = [*(raw.get("env") or {}).values(), *(raw.get("args") or [])]
+    for remote in server_info.get("remotes") or []:
+        headers = remote.get("headers") or []
+        if isinstance(headers, dict):
+            values.extend(headers.values())
+        else:
+            values.extend(h.get("value") for h in headers if isinstance(h, dict))
+    names = set().union(*map(_placeholder_names, values))
+    if "_raw_stdio" not in server_info:
+        for package in server_info.get("packages") or []:
+            names.update(
+                var["name"] for var in package.get("environment_variables") or [] if var.get("name")
+            )
+    return names
+
+
 def _stringify_env_literal(value):
     """Return MCP env literal values in the manifest ``map<string, string>`` shape."""
     if isinstance(value, bool):
@@ -418,6 +443,10 @@ class MCPClientAdapter(ABC):
             project_root=self.project_root,
             project_relative=self._plugin_root_reference() is not None,
         )
+
+    def writes_env_references(self) -> bool:
+        """Whether this adapter writes env references instead of resolved values."""
+        return self._supports_runtime_env_substitution
 
     def __init__(
         self,
@@ -1922,7 +1951,9 @@ class MCPClientAdapter(ABC):
             and bool(header.get("value"))
             for header in headers
         )
-        if is_github_server and not explicit_authorization:
+        # A resolving adapter at user scope would write the looked-up token itself.
+        never_look_up = self.user_scope and not self._supports_runtime_env_substitution
+        if is_github_server and not explicit_authorization and not never_look_up:
             resolver = AuthResolver(
                 token_manager=token_manager_class(), allow_external_fallback=False
             )

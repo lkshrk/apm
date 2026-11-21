@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..adapters.client.base import env_references
 from ..factory import ClientFactory
 from .command_logger import library_logger
 from .conflict_detector import MCPConflictDetector
@@ -55,6 +56,7 @@ class SafeMCPInstaller:
         logger=None,
         project_root: Path | str | None = None,
         user_scope: bool = False,
+        quiet_skip: bool = False,
     ):
         """Initialize the safe installer.
 
@@ -63,6 +65,7 @@ class SafeMCPInstaller:
             logger: Optional CommandLogger for structured output.
             project_root: Optional project root for repo-local runtime configs.
             user_scope: Whether runtime config should resolve in user scope.
+            quiet_skip: Leave the "already configured" message to the caller.
         """
         self.runtime = runtime
         self.adapter = ClientFactory.create_client(
@@ -72,6 +75,7 @@ class SafeMCPInstaller:
         )
         self.conflict_detector = MCPConflictDetector(self.adapter)
         self.logger = logger or library_logger()
+        self.quiet_skip = quiet_skip
 
     def install_servers(
         self,
@@ -108,6 +112,12 @@ class SafeMCPInstaller:
                 continue
 
             try:
+                reason = self._user_scope_refusal(server_ref, cached_info)
+                if reason:
+                    summary.add_failed(server_ref, reason)
+                    self._log_error(server_ref, reason)
+                    continue
+
                 # Pass environment overrides, server info cache, and runtime variables if provided
                 kwargs = {}
                 if env_overrides is not None:
@@ -149,8 +159,23 @@ class SafeMCPInstaller:
 
         return summary
 
+    def _user_scope_refusal(self, server_ref: str, server_info: dict[str, Any] | None) -> str:
+        """Why a user-scope adapter that resolves references must not configure this server."""
+        if not self.adapter.user_scope or self.adapter.writes_env_references():
+            return ""
+        if server_info is None:
+            return (
+                f"server info for {server_ref} unavailable; "
+                "cannot verify it has no secret references"
+            )
+        if env_references(server_info):
+            return f"{self.runtime} cannot keep secret references at user scope"
+        return ""
+
     def _log_skip(self, server_ref: str):
         """Log when a server is skipped due to existing configuration."""
+        if self.quiet_skip:
+            return
         self.logger.warning(f"  {server_ref} already configured, skipping")
 
     def _log_success(self, server_ref: str):
@@ -163,7 +188,7 @@ class SafeMCPInstaller:
         # One line per runtime, so name it: the same server fails once per target.
         self.logger.warning(f"  x {server_ref} installation failed for {self.runtime}")
 
-    def _log_error(self, server_ref: str, error: Exception):
+    def _log_error(self, server_ref: str, error: Exception | str):
         """Log error during server installation."""
         self.logger.error(f"  x {server_ref}: {error}")
 

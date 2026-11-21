@@ -577,18 +577,17 @@ class TestSiblingAdaptersUnchanged(unittest.TestCase):
             adapter = self._adapter(ClaudeClientAdapter, project_root=Path(tmp))
             self.assertTrue(adapter._supports_runtime_env_substitution)
 
-    def test_claude_user_scope_still_resolves_to_literal(self):
-        """Only Claude's project ``.mcp.json`` keeps placeholders (#3252);
-        user-scope ``~/.claude.json`` keeps install-time resolution."""
+    def test_claude_user_scope_keeps_reference(self):
+        """User-scope ``~/.claude.json`` keeps placeholders like the project ``.mcp.json``."""
         from apm_cli.adapters.client.claude import ClaudeClientAdapter
 
         adapter = self._adapter(ClaudeClientAdapter, user_scope=True)
-        self.assertFalse(adapter._supports_runtime_env_substitution)
+        self.assertTrue(adapter._supports_runtime_env_substitution)
         with patch.dict(os.environ, {"MY_TOKEN": "literal-value"}, clear=False):
             result = adapter._resolve_env_variable(
                 "Authorization", "Bearer ${env:MY_TOKEN}", env_overrides=None
             )
-        self.assertEqual(result, "Bearer literal-value")
+        self.assertEqual(result, "Bearer ${MY_TOKEN}")
 
     def test_windsurf_still_resolves_to_literal(self):
         from apm_cli.adapters.client.windsurf import WindsurfClientAdapter
@@ -740,19 +739,19 @@ class TestLegacyModeStdioEnvBlock(unittest.TestCase):
     pre-fix latent bug returns ``{}`` and every self-defined stdio MCP
     server silently loses its env block.
 
-    Claude at user scope is exercised as the representative legacy-mode
-    subclass; the method now lives on ``MCPClientAdapter`` so the contract
-    is shared with every adapter that inherits the base.
+    Windsurf is exercised as the representative legacy-mode adapter; the
+    method lives on ``MCPClientAdapter`` so the contract is shared with every
+    adapter that inherits the base.
     """
 
     def _adapter(self):
-        from apm_cli.adapters.client.claude import ClaudeClientAdapter
+        from apm_cli.adapters.client.windsurf import WindsurfClientAdapter
 
         with (
             patch("apm_cli.adapters.client.copilot.SimpleRegistryClient"),
             patch("apm_cli.adapters.client.copilot.RegistryIntegration"),
         ):
-            return ClaudeClientAdapter(user_scope=True)
+            return WindsurfClientAdapter()
 
     def test_dict_shape_resolves_all_three_placeholder_syntaxes(self):
         adapter = self._adapter()

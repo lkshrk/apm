@@ -50,6 +50,7 @@ def install_package(
     replace_existing: bool = False,
     managed_fields: set[str] | None = None,
     managed_env_keys: set[str] | None = None,
+    quiet_skip: bool = False,
 ):
     """Install an MCP package for a specific client type.
 
@@ -66,6 +67,7 @@ def install_package(
             project-local config for runtimes that support it.
         replace_existing (bool): Whether a drift update may replace an existing
             server entry.
+        quiet_skip (bool): Leave the "already configured" message to the caller.
 
     Returns:
         dict: Result with 'success' (bool), 'installed' (bool), 'skipped' (bool) keys.
@@ -76,6 +78,7 @@ def install_package(
             client_type,
             project_root=project_root,
             user_scope=user_scope,
+            quiet_skip=quiet_skip,
         )
 
         # Pass shared environment and runtime variables and server info cache if available

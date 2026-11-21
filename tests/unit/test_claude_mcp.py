@@ -364,7 +364,7 @@ class TestClaudeProjectEnvPlaceholders(unittest.TestCase):
         self.assertEqual(CopilotClientAdapter._security_upgraded_keys, set())
         self.assertEqual(CopilotClientAdapter._unset_env_keys_by_server, {})
 
-    def test_user_scope_keeps_install_time_resolution(self):
+    def test_user_scope_keeps_references(self):
         home = self.root / "home"
         home.mkdir()
         with (
@@ -376,7 +376,7 @@ class TestClaudeProjectEnvPlaceholders(unittest.TestCase):
             )
 
         data = json.loads((home / ".claude.json").read_text(encoding="utf-8"))
-        self.assertEqual(data["mcpServers"]["srv"]["env"], {"TOK": "user-secret"})
+        self.assertEqual(data["mcpServers"]["srv"]["env"], {"TOK": "${TOK}"})
 
     def test_command_and_url_references_use_claude_syntax(self):
         stdio = {

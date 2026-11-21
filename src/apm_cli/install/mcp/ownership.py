@@ -23,6 +23,7 @@ class NativeMcpConnectionState(Enum):
     MATCHING_FOREIGN = "matching-foreign"
     UPDATE_MANAGED = "update-managed"
     CONFLICT = "conflict"
+    REFUSED = "refused"
 
 
 # ``(server, runtime)`` pairs a ``--frozen`` install replays without writing:
@@ -203,6 +204,7 @@ def compare_native_mcp_connection(
     is added to *stale_receipts* when the recorded fingerprint predates a
     ``--frozen`` heal, so the caller refreshes the receipt without a write.
     """
+    from apm_cli.adapters.client._remote_shapes import UnsupportedRemoteTransportError
     from apm_cli.core.conflict_detector import MCPConflictDetector
     from apm_cli.deps.plugin_root_render import (
         RECORDED_RENDER_INFO_KEY,
@@ -224,13 +226,19 @@ def compare_native_mcp_connection(
     native = existing[key]
     requested = None
     if requested_info is not None:
-        requested = (
-            client.render_server_config(
-                requested_info, env_overrides=env_overrides, runtime_vars=runtime_vars
+        try:
+            requested = (
+                client.render_server_config(
+                    requested_info, env_overrides=env_overrides, runtime_vars=runtime_vars
+                )
+                if registry_request
+                else client.render_server_config(requested_info)
             )
-            if registry_request
-            else client.render_server_config(requested_info)
-        )
+        except UnsupportedRemoteTransportError:
+            raise
+        except ValueError:
+            # The adapter refuses this request; its own write path reports why.
+            return NativeMcpConnectionState.REFUSED
     recorded_info = (requested_info or {}).get(RECORDED_RENDER_INFO_KEY)
     if (
         managed
@@ -416,8 +424,7 @@ def compare_native_mcp_connection(
                 for env_key in baseline_codex_env_keys
             )
             if removed_local or removed_env:
-                # Projection would treat previously owned preferences as local and
-                # skip the removal; route it to the writer only for a verified baseline.
+                # Removing a previously owned preference must reach the writer.
                 return (
                     NativeMcpConnectionState.UPDATE_MANAGED
                     if matches_baseline
@@ -429,7 +436,6 @@ def compare_native_mcp_connection(
             and any(key in native and key not in requested for key in baseline_owned_auth_fields)
         ):
             # Runtime auth/OAuth is ignored only when it was never APM-owned.
-            # An explicit removal must reach the writer with old managed fields.
             return (
                 NativeMcpConnectionState.UPDATE_MANAGED
                 if matches_baseline
@@ -438,7 +444,6 @@ def compare_native_mcp_connection(
         requested_native = comparison if matches_baseline else native
         if client.target_name == "codex" and not registry_request and not matches_baseline:
             # Local preferences are tolerated only against a verified owned baseline.
-            # A foreign entry must not silently satisfy a different declaration.
             matches_request = client.matches_unmanaged_server_config(requested_native, requested)
         else:
             matches_request = (

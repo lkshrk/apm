@@ -228,6 +228,26 @@ def _announce_registry_endpoint(registry_client: Any, logger: Any) -> None:
     logger.progress(f"Using MCP registry: {safe_url} ({label})", symbol="info")
 
 
+def _collect_shared_variables(
+    operations: Any,
+    servers: list[str],
+    server_info_cache: dict,
+    group_dep_map: dict,
+    user_scope: bool,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Collect registry env and runtime variables; user scope never looks up or prompts."""
+    env_vars: dict[str, str] = {}
+    runtime_vars: dict[str, str] = {}
+    if not user_scope:
+        env_vars = operations.collect_environment_variables(servers, server_info_cache)
+        runtime_vars = operations.collect_runtime_variables(servers, server_info_cache)
+    for server_name in servers:
+        dep = group_dep_map.get(server_name)
+        if dep and dep.env:
+            env_vars.update(dep.env)
+    return env_vars, runtime_vars
+
+
 def _install_registry_group(  # noqa: PLR0913
     operations: Any,
     group_dep_names: list,
@@ -316,8 +336,10 @@ def _install_registry_group(  # noqa: PLR0913
         already_configured_servers = [
             dep for dep in already_configured_candidates if dep not in servers_to_update
         ]
+        rechecked_servers: builtins.set[str] = builtins.set()
         if protected_clients:
             # Names/registry IDs cannot prove that a native connection is unchanged.
+            rechecked_servers = builtins.set(valid_servers) - builtins.set(servers_to_install)
             servers_to_install = list(valid_servers)
             already_configured_servers = []
 
@@ -359,16 +381,8 @@ def _install_registry_group(  # noqa: PLR0913
                 operations, servers_to_install, group_dep_map, known=known
             )
 
-            # Collect env and runtime variables
-            shared_env_vars = operations.collect_environment_variables(
-                servers_to_install, server_info_cache
-            )
-            for server_name in servers_to_install:
-                dep = group_dep_map.get(server_name)
-                if dep and dep.env:
-                    shared_env_vars.update(dep.env)
-            shared_runtime_vars = operations.collect_runtime_variables(
-                servers_to_install, server_info_cache
+            shared_env_vars, shared_runtime_vars = _collect_shared_variables(
+                operations, servers_to_install, server_info_cache, group_dep_map, user_scope
             )
 
             # Install for each target runtime
@@ -386,7 +400,9 @@ def _install_registry_group(  # noqa: PLR0913
                         f"{dep}: {action_text.lower()} for {', '.join(target_runtimes)}..."
                     )
 
+                quiet_skip = dep in rechecked_servers and not is_update
                 successful_runtimes: list[str] = []
+                written_runtimes: list[str] = []
                 failed_runtimes: list[str] = []
                 declaration = group_dep_map.get(dep)
                 for rt in target_runtimes:
@@ -406,6 +422,7 @@ def _install_registry_group(  # noqa: PLR0913
                     ):
                         continue
                     installed_servers: set[str] = set()
+                    skipped_servers: set[str] = set()
                     written_hashes: dict[str, str] = {}
                     managed_fields: set[str] = set()
                     claim_shared_destination(
@@ -489,9 +506,14 @@ def _install_registry_group(  # noqa: PLR0913
                                 rt, dep, written_connections, user_scope=user_scope
                             ):
                                 successful_runtimes.append(rt)
+                                written_runtimes.append(rt)
                             logger.verbose_detail(f"{dep} already matches {rt}; no write")
                             continue
-                        replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
+                        # The adapter names a refusal itself and writes nothing.
+                        replace_existing = state in {
+                            NativeMcpConnectionState.UPDATE_MANAGED,
+                            NativeMcpConnectionState.REFUSED,
+                        }
                     if verbose:
                         logger.verbose_detail(f"Configuring {rt}...")
                     if MCPIntegrator._install_for_runtime(
@@ -507,8 +529,12 @@ def _install_registry_group(  # noqa: PLR0913
                         installed_servers=installed_servers,
                         written_native_hashes=written_hashes,
                         managed_fields=managed_fields,
+                        skipped_servers=skipped_servers,
+                        quiet_skip=quiet_skip,
                     ):
                         successful_runtimes.append(rt)
+                        if dep not in skipped_servers:
+                            written_runtimes.append(rt)
                         if dep in installed_servers:
                             _record_managed_server(
                                 managed_target_servers,
@@ -521,16 +547,16 @@ def _install_registry_group(  # noqa: PLR0913
                     else:
                         failed_runtimes.append(rt)
 
-                if successful_runtimes:
+                if written_runtimes:
                     if console:
                         label = "updated" if is_update else "configured"
                         console.print(
                             f"|  [green]{STATUS_SYMBOLS['check']}[/green]  {dep} -> "
-                            f"{', '.join([harness_label(rt) for rt in successful_runtimes])}"
+                            f"{', '.join([harness_label(rt) for rt in written_runtimes])}"
                             f" [dim]({label})[/dim]"
                         )
                         if not user_scope:
-                            _print_user_wide_configs(console, successful_runtimes)
+                            _print_user_wide_configs(console, written_runtimes)
                     configured_count += 1
                     if is_update:
                         successful_updates.add(dep)
@@ -1485,8 +1511,12 @@ def _install_self_defined_deps(
         project_root=project_root,
         user_scope=user_scope,
     )
+    rechecked_self_defined: builtins.set[str] = builtins.set()
     if protected_clients:
         # Native content must be checked even when every requested name exists.
+        rechecked_self_defined = builtins.set(self_defined_names) - builtins.set(
+            self_defined_to_install
+        )
         self_defined_to_install = list(self_defined_names)
     already_configured_candidates_sd = [
         name for name in self_defined_names if name not in self_defined_to_install
@@ -1544,7 +1574,9 @@ def _install_self_defined_deps(
                 f"{dep.name}: {action_text.lower()} for {', '.join(target_runtimes)}..."
             )
 
+        quiet_skip = dep.name in rechecked_self_defined and not is_update
         successful_runtimes: list[str] = []
+        written_runtimes: list[str] = []
         failed_runtimes: list[str] = []
         for rt in target_runtimes:
             if rt in native_runtimes_of(dep) or not dep.targets_runtime(rt):
@@ -1562,6 +1594,7 @@ def _install_self_defined_deps(
             ):
                 continue
             installed_servers: set[str] = set()
+            skipped_servers: set[str] = set()
             managed_fields: set[str] = set()
             managed_env_keys: set[str] | None = set() if rt == "codex" else None
             written_hashes: dict[str, str] = {}
@@ -1651,9 +1684,14 @@ def _install_self_defined_deps(
                         rt, dep.name, written_connections, user_scope=user_scope
                     ):
                         successful_runtimes.append(rt)
+                        written_runtimes.append(rt)
                     logger.verbose_detail(f"{dep.name} already matches {rt}; no write")
                     continue
-                replace_existing = state is NativeMcpConnectionState.UPDATE_MANAGED
+                # The adapter names a refusal itself and writes nothing.
+                replace_existing = state in {
+                    NativeMcpConnectionState.UPDATE_MANAGED,
+                    NativeMcpConnectionState.REFUSED,
+                }
             if verbose:
                 logger.verbose_detail(f"Configuring {dep.name} for {rt}...")
             if MCPIntegrator._install_for_runtime(
@@ -1669,8 +1707,12 @@ def _install_self_defined_deps(
                 managed_fields=managed_fields,
                 managed_env_keys=managed_env_keys,
                 written_native_hashes=written_hashes,
+                skipped_servers=skipped_servers,
+                quiet_skip=quiet_skip,
             ):
                 successful_runtimes.append(rt)
+                if dep.name not in skipped_servers:
+                    written_runtimes.append(rt)
                 if dep.name in installed_servers:
                     _record_managed_server(
                         managed_target_servers,
@@ -1696,16 +1738,16 @@ def _install_self_defined_deps(
             fail_on_write_error=fail_on_write_error,
         )
 
-        if successful_runtimes:
+        if written_runtimes:
             if console:
                 label = "updated" if is_update else "configured"
                 console.print(
                     f"|  [green]{STATUS_SYMBOLS['check']}[/green]  {dep.name} -> "
-                    f"{', '.join([harness_label(rt) for rt in successful_runtimes])}"
+                    f"{', '.join([harness_label(rt) for rt in written_runtimes])}"
                     f" [dim]({label})[/dim]"
                 )
                 if not user_scope:
-                    _print_user_wide_configs(console, successful_runtimes)
+                    _print_user_wide_configs(console, written_runtimes)
             configured_count += 1
             if is_update:
                 successful_updates.add(dep.name)

@@ -541,13 +541,17 @@ _FORWARDED_STDIO = {
 
 
 def _compare_codex(
-    tmp_path: Path, written_value: str, recorded_value: str | None = None
+    tmp_path: Path,
+    written_value: str,
+    recorded_value: str | None = None,
+    *,
+    user_scope: bool = False,
 ) -> NativeMcpConnectionState:
     """Compare a Codex entry the older formatter wrote with its current rendering.
 
     ``recorded_value`` simulates the lockfile fingerprint of the earlier write.
     """
-    client = CodexClientAdapter(project_root=tmp_path)
+    client = CodexClientAdapter(project_root=tmp_path, user_scope=user_scope)
     requested = MCPIntegrator._build_self_defined_info(MCPDependency.from_dict(_FORWARDED_STDIO))
     native = deepcopy(client.render_server_config(requested))
     native.pop("env_vars")
@@ -597,23 +601,30 @@ def test_codex_entry_with_manual_edit_stays_a_conflict(
     assert _compare_codex(tmp_path, "edited-by-hand") is NativeMcpConnectionState.CONFLICT
 
 
-def test_codex_user_scope_entry_never_takes_the_legacy_upgrade_path(
+def test_codex_user_scope_entry_with_recorded_write_upgrades(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("MY_TOKEN", raising=False)
+    state = _compare_codex(
+        tmp_path, "previous-value", recorded_value="previous-value", user_scope=True
+    )
+    assert state is NativeMcpConnectionState.UPDATE_MANAGED
+
+
+def test_codex_user_scope_unrecorded_reference_upgrades(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("MY_TOKEN", "resolved-value")
-    client = CodexClientAdapter(project_root=tmp_path, user_scope=True)
-    requested = MCPIntegrator._build_self_defined_info(MCPDependency.from_dict(_FORWARDED_STDIO))
-    native = deepcopy(client.render_server_config(requested))
-    assert "env_vars" not in native
-    state = compare_native_mcp_connection(
-        client,
-        "managed",
-        requested_info=requested,
-        stored_config=_FORWARDED_STDIO,
-        managed=True,
-        existing_configs={"managed": native},
-    )
-    assert state is NativeMcpConnectionState.MATCHING_MANAGED
+    state = _compare_codex(tmp_path, "${MY_TOKEN}", user_scope=True)
+    assert state is NativeMcpConnectionState.UPDATE_MANAGED
+
+
+def test_codex_user_scope_unrecorded_value_is_not_compared_with_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MY_TOKEN", "resolved-value")
+    state = _compare_codex(tmp_path, "resolved-value", user_scope=True)
+    assert state is NativeMcpConnectionState.CONFLICT
 
 
 def test_codex_expanded_env_names_lists_forwarded_names_stored_as_values(

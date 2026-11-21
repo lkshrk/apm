@@ -65,7 +65,7 @@ class CopilotClientAdapter(MCPClientAdapter):
     # Subclasses (Windsurf / OpenCode / Gemini) override this to ``False``
     # until their respective config formats are individually audited for
     # runtime-substitution support. Cursor has audited native ``${env:VAR}``
-    # support. Claude enables it for the project-scoped ``.mcp.json`` (see
+    # support. Claude enables it for ``.mcp.json`` and ``~/.claude.json`` (see
     # ``ClaudeClientAdapter``).
     _supports_runtime_env_substitution: bool = True
 
